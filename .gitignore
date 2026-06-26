@@ -1,0 +1,36 @@
+﻿# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Local database (runtime data)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Secrets and env
+.env
+.env.*
+!.env.example
+
+# Excel lock files
+~$*.xlsx
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE / editor
+.cursor/
+.vscode/
+.idea/
+
+# Agent tooling
+agent-tools/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
