@@ -1,4 +1,9 @@
-import type { User, Project, ProjectRow, WorkReference, RefAuthor, BaseWork, Constants, HistoryEntry, RefType } from './types';
+import type {
+  User, Project, ProjectRow, WorkReference, RefAuthor, BaseWork, Constants, HistoryEntry, RefType,
+  Briefing, BriefingFull, BriefingCalcResult, Industry, Segment, MaturityLevel,
+  Problem, Solution, Widget, FsCatalogItem, FsPhase, BriefingParams, CatalogLink,
+  ProjectType, ProjectTypeRate, HeadcountCoefficient, BriefingAssessment,
+} from './types';
 
 const BASE = '/api';
 
@@ -77,3 +82,101 @@ export const useReference = (id: number) =>
   req<{ ok: boolean }>(`/references/${id}/use`, { method: 'POST' });
 export const deleteReference = (id: number) =>
   req<{ ok: boolean }>(`/references/${id}`, { method: 'DELETE' });
+
+// === Briefings ===
+export const getBriefings = () => req<Briefing[]>('/briefings');
+export const getBriefing = (id: number) => req<BriefingFull>(`/briefings/${id}`);
+export const createBriefing = (data: { name?: string; created_by?: number }) =>
+  req<{ id: number }>('/briefings', { method: 'POST', body: JSON.stringify(data) });
+export const updateBriefing = (id: number, data: Partial<Briefing>) =>
+  req<{ ok: boolean }>(`/briefings/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const deleteBriefing = (id: number) =>
+  req<{ ok: boolean }>(`/briefings/${id}`, { method: 'DELETE' });
+export const saveBriefingProblems = (id: number, selections: { problem_id?: number; custom_text?: string }[]) =>
+  req<{ ok: boolean }>(`/briefings/${id}/problems`, { method: 'PUT', body: JSON.stringify({ selections }) });
+export const saveBriefingSolutions = (id: number, solution_ids: number[]) =>
+  req<{ ok: boolean }>(`/briefings/${id}/solutions`, { method: 'PUT', body: JSON.stringify({ solution_ids }) });
+export const saveBriefingWidgets = (id: number, selections: { solution_id: number; widget_id: number }[]) =>
+  req<{ ok: boolean }>(`/briefings/${id}/widgets`, { method: 'PUT', body: JSON.stringify({ selections }) });
+export const saveBriefingFs = (id: number, items: {
+  fs_item_id: number; enabled?: number; queue?: string;
+  queues_json?: string | Record<string, number>;
+  source?: string; story_points?: number;
+}[]) =>
+  req<{ ok: boolean }>(`/briefings/${id}/fs`, { method: 'PUT', body: JSON.stringify({ items }) });
+export const saveBriefingParams = (id: number, params: Partial<BriefingParams>) =>
+  req<{ ok: boolean }>(`/briefings/${id}/params`, { method: 'PUT', body: JSON.stringify(params) });
+export const getBriefingAssessment = (id: number) => req<BriefingAssessment>(`/briefings/${id}/assessment`);
+export const patchBriefingAssessment = (id: number, data: Record<string, unknown>) =>
+  req<BriefingAssessment>(`/briefings/${id}/assessment`, { method: 'PATCH', body: JSON.stringify(data) });
+export const deriveBriefingFs = (id: number) =>
+  req<{ items: unknown[] }>(`/briefings/${id}/derive-fs`, { method: 'POST' });
+export const calculateBriefing = (id: number) => req<BriefingCalcResult>(`/briefings/${id}/calculate`);
+export const generateProjectFromBriefing = (id: number, data: { name?: string; created_by?: number }) =>
+  req<{ project_id: number }>(`/briefings/${id}/generate-project`, { method: 'POST', body: JSON.stringify(data) });
+
+// === Catalog ===
+export const getIndustries = () => req<Industry[]>('/catalog/industries');
+export const getSegments = () => req<Segment[]>('/catalog/segments');
+export const getSegmentsByIndustry = (industryId: number) => req<Segment[]>(`/catalog/industry-segments/${industryId}`);
+export const getMaturityLevels = () => req<MaturityLevel[]>('/catalog/maturity-levels');
+export const getProblems = (filters?: { industry_id?: number; segment_id?: number; maturity_id?: number }) => {
+  const p = new URLSearchParams();
+  if (filters?.industry_id) p.set('industry_id', String(filters.industry_id));
+  if (filters?.segment_id) p.set('segment_id', String(filters.segment_id));
+  if (filters?.maturity_id) p.set('maturity_id', String(filters.maturity_id));
+  return req<Problem[]>(`/catalog/problems?${p}`);
+};
+export const getSolutions = (problemIds?: number[]) => {
+  const p = problemIds?.length ? `?problem_ids=${problemIds.join(',')}` : '';
+  return req<Solution[]>(`/catalog/solutions${p}`);
+};
+export const getWidgets = () => req<Widget[]>('/catalog/widgets');
+export const getWidgetsBySolution = (solutionId: number) => req<Widget[]>(`/catalog/widgets-by-solution/${solutionId}`);
+export const getFsCatalog = () => req<FsCatalogItem[]>('/catalog/fs-catalog');
+export const getFsPhases = () => req<FsPhase[]>('/catalog/fs-phases');
+
+export const createWidget = (data: { name: string; description?: string; type?: string }) =>
+  req<{ id: number }>('/catalog/widgets', { method: 'POST', body: JSON.stringify(data) });
+export const updateWidget = (id: number, data: Partial<Widget>) =>
+  req<{ ok: boolean }>(`/catalog/widgets/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const deleteWidget = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/widgets/${id}`, { method: 'DELETE' });
+
+export const getProblemSolutionLinks = () => req<CatalogLink[]>('/catalog/links/problem-solution');
+export const addProblemSolutionLink = (problem_id: number, solution_id: number) =>
+  req<{ ok: boolean }>('/catalog/links/problem-solution', { method: 'POST', body: JSON.stringify({ problem_id, solution_id }) });
+export const removeProblemSolutionLink = (problem_id: number, solution_id: number) =>
+  req<{ ok: boolean }>('/catalog/links/problem-solution', { method: 'DELETE', body: JSON.stringify({ problem_id, solution_id }) });
+
+export const getSolutionWidgetLinks = () => req<CatalogLink[]>('/catalog/links/solution-widget');
+export const addSolutionWidgetLink = (solution_id: number, widget_id: number) =>
+  req<{ ok: boolean }>('/catalog/links/solution-widget', { method: 'POST', body: JSON.stringify({ solution_id, widget_id }) });
+export const removeSolutionWidgetLink = (solution_id: number, widget_id: number) =>
+  req<{ ok: boolean }>('/catalog/links/solution-widget', { method: 'DELETE', body: JSON.stringify({ solution_id, widget_id }) });
+
+export const getSolutionFsLinks = () => req<CatalogLink[]>('/catalog/links/solution-fs');
+export const addSolutionFsLink = (solution_id: number, fs_item_id: number) =>
+  req<{ ok: boolean }>('/catalog/links/solution-fs', { method: 'POST', body: JSON.stringify({ solution_id, fs_item_id }) });
+export const removeSolutionFsLink = (solution_id: number, fs_item_id: number) =>
+  req<{ ok: boolean }>('/catalog/links/solution-fs', { method: 'DELETE', body: JSON.stringify({ solution_id, fs_item_id }) });
+
+export const getWidgetFsLinks = () => req<CatalogLink[]>('/catalog/links/widget-fs');
+export const addWidgetFsLink = (widget_id: number, fs_item_id: number) =>
+  req<{ ok: boolean }>('/catalog/links/widget-fs', { method: 'POST', body: JSON.stringify({ widget_id, fs_item_id }) });
+export const removeWidgetFsLink = (widget_id: number, fs_item_id: number) =>
+  req<{ ok: boolean }>('/catalog/links/widget-fs', { method: 'DELETE', body: JSON.stringify({ widget_id, fs_item_id }) });
+
+export const getProjectTypes = () => req<ProjectType[]>('/catalog/project-types');
+export const createProjectType = (data: Partial<ProjectType>) =>
+  req<{ id: number }>('/catalog/project-types', { method: 'POST', body: JSON.stringify(data) });
+export const updateProjectType = (id: number, data: Partial<ProjectType>) =>
+  req<{ ok: boolean }>(`/catalog/project-types/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const deleteProjectType = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/project-types/${id}`, { method: 'DELETE' });
+export const getProjectTypeRates = (id: number) => req<ProjectTypeRate[]>(`/catalog/project-types/${id}/rates`);
+export const addProjectTypeRate = (id: number, data: { hourly_rate: number; valid_from?: string }) =>
+  req<{ id: number }>(`/catalog/project-types/${id}/rates`, { method: 'POST', body: JSON.stringify(data) });
+export const getProjectTypeCoefficients = (id: number) => req<HeadcountCoefficient[]>(`/catalog/project-types/${id}/coefficients`);
+export const saveProjectTypeCoefficients = (id: number, coefficients: HeadcountCoefficient[]) =>
+  req<{ ok: boolean }>(`/catalog/project-types/${id}/coefficients`, { method: 'PUT', body: JSON.stringify({ coefficients }) });

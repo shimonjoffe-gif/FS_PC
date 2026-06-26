@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import type { User, Project, ProjectRow, Constants, BaseWork } from './types';
+import type { User, Project, ProjectRow, Constants, BaseWork, Briefing } from './types';
 import {
   getUsers, createUser,
-  getProjects,
+  getProjects, createProject,
   getRows,
   getConstants, getEtaps, getBaseWorks,
   getHistory,
   updateProject,
+  getBriefings, createBriefing,
   type Etap,
 } from './api';
 import Sidebar from './components/Sidebar';
@@ -14,9 +15,11 @@ import WorkTable from './components/WorkTable';
 import Summary from './components/Summary';
 import HistoryLog from './components/HistoryLog';
 import Catalog from './components/Catalog';
+import BriefingWorkspace from './components/BriefingWorkspace';
+import CatalogLinks from './components/CatalogLinks';
 
 type Tab = 'работы' | 'итоги' | 'история';
-type AppMode = 'project' | 'catalog';
+type AppMode = 'project' | 'catalog' | 'briefing' | 'briefing-admin';
 
 export default function App() {
   const [users, setUsers]         = useState<User[]>([]);
@@ -32,6 +35,8 @@ export default function App() {
   const [history, setHistory]     = useState<any[]>([]);
   const [tab, setTab]             = useState<Tab>('работы');
   const [mode, setMode] = useState<AppMode>('project');
+  const [briefings, setBriefings] = useState<Briefing[]>([]);
+  const [selectedBriefingId, setSelectedBriefingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState('');
   const [newUserName, setNewUserName] = useState('');
@@ -40,13 +45,14 @@ export default function App() {
   const selectedProject = projects.find(p => p.id === selectedId) ?? null;
 
   useEffect(() => {
-    Promise.all([getUsers(), getProjects(), getConstants(), getEtaps(), getBaseWorks()])
-      .then(([u, p, c, e, bw]) => {
+    Promise.all([getUsers(), getProjects(), getConstants(), getEtaps(), getBaseWorks(), getBriefings()])
+      .then(([u, p, c, e, bw, b]) => {
         setUsers(u);
         setProjects(p);
         setConsts(c);
         setEtaps(e);
         setBaseWorks(bw);
+        setBriefings(b);
         if (p.length > 0 && !selectedId) {
           const first = p.find(x => !x.is_template) ?? p[0];
           setSelectedId(first.id);
@@ -70,12 +76,43 @@ export default function App() {
     getProjects().then(setProjects);
   }, []);
 
+  const refreshBriefings = useCallback(() => {
+    getBriefings().then(setBriefings);
+  }, []);
+
   const handleSelectProject = useCallback((id: number) => {
     setSelectedId(id);
     setTab('работы');
     setMode('project');
     getRows(id).then(setRows);
   }, []);
+
+  const handleSelectBriefing = useCallback((id: number) => {
+    setSelectedBriefingId(id);
+    setMode('briefing');
+  }, []);
+
+  const handleProjectGenerated = useCallback((projectId: number) => {
+    refreshProjects();
+    handleSelectProject(projectId);
+    refreshBriefings();
+  }, [refreshProjects, handleSelectProject, refreshBriefings]);
+
+  async function handleNewProjectChoice(choice: 'quick' | 'briefing') {
+    if (choice === 'quick') {
+      const name = prompt('Название проекта:');
+      if (!name?.trim()) return;
+      const { id } = await createProject({ name: name.trim(), created_by: currentUserId ?? undefined });
+      refreshProjects();
+      handleSelectProject(id);
+    } else {
+      const { id } = await createBriefing({ created_by: currentUserId ?? undefined });
+      refreshBriefings();
+      handleSelectBriefing(id);
+    }
+  }
+
+  const selectedBriefing = briefings.find(b => b.id === selectedBriefingId) ?? null;
 
   function handleUserChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const val = e.target.value;
@@ -115,14 +152,29 @@ export default function App() {
         currentUserId={currentUserId}
         mode={mode}
         onOpenCatalog={() => setMode('catalog')}
+        briefings={briefings}
+        selectedBriefingId={selectedBriefingId}
+        onSelectBriefing={handleSelectBriefing}
+        onRefreshBriefings={refreshBriefings}
+        onNewProjectChoice={handleNewProjectChoice}
+        onOpenBriefingAdmin={() => setMode('briefing-admin')}
       />
 
       {/* Основная область */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {/* Шапка */}
         <header className="bg-white border-b border-slate-200 px-4 py-2 flex items-center gap-4 shrink-0">
           <div className="flex-1 min-w-0">
-            {selectedProject ? (
+            {mode === 'briefing' && selectedBriefing ? (
+              <div className="flex items-center gap-2">
+                <h1 className="text-sm font-semibold text-slate-800 truncate">{selectedBriefing.name}</h1>
+                <span className="text-[10px] px-1.5 py-0.5 rounded border text-purple-500 border-purple-200 bg-purple-50">
+                  предоценка
+                </span>
+              </div>
+            ) : mode === 'briefing-admin' ? (
+              <h1 className="text-sm font-semibold text-slate-800">Админка справочников</h1>
+            ) : selectedProject ? (
               editingName ? (
                 <div className="flex items-center gap-2">
                   <input
@@ -153,8 +205,10 @@ export default function App() {
                   </button>
                 </div>
               )
+            ) : mode === 'project' ? (
+              <span className="text-sm text-slate-400">Выберите проект из списка слева</span>
             ) : (
-              <span className="text-sm text-slate-400">Выберите проект</span>
+              <span className="text-sm text-slate-400">Предварительная оценка</span>
             )}
           </div>
 
@@ -192,6 +246,14 @@ export default function App() {
 
         {mode === 'catalog' ? (
           <Catalog />
+        ) : mode === 'briefing-admin' ? (
+          <CatalogLinks />
+        ) : mode === 'briefing' && selectedBriefingId ? (
+          <BriefingWorkspace
+            briefingId={selectedBriefingId}
+            currentUserId={currentUserId}
+            onProjectGenerated={handleProjectGenerated}
+          />
         ) : !selectedProject ? (
           <div className="flex-1 flex items-center justify-center text-slate-300">
             <div className="text-center">
@@ -219,7 +281,7 @@ export default function App() {
             </div>
 
             {/* Контент */}
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 min-h-0 overflow-hidden">
               {tab === 'работы' && consts && (
                 <WorkTable
                   projectId={selectedId!}
