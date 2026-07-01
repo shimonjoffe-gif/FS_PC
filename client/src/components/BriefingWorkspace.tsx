@@ -28,12 +28,17 @@ import {
 } from '../assessmentCalc';
 import { loadAssessmentNsi, type AssessmentNsiCache } from '../assessmentNsi';
 import AssessmentTab from './AssessmentTab';
-import HeadcountCoeffsPanel from './HeadcountCoeffsPanel';
 import PhaseCalcTable from './PhaseCalcTable';
 import PhaseCalcParamsPanel from './PhaseCalcParamsPanel';
 import AssessmentScenariosTab from './AssessmentScenariosTab';
 import {
   mergePhaseCalcParams,
+  resetQueuePhaseParamToAuto,
+  resetQueuePhaseParamToBaseQueue,
+  resetQueueRdModeToAuto,
+  resetQueueRdModeToBaseQueue,
+  resetHeadcountOpeToAuto,
+  resetHeadcountOpeToBaseQueue,
   patchTrainingManualGh,
   resetTrainingManualGh,
   patchTrainingEManual,
@@ -43,6 +48,7 @@ import {
   type TrainingRowKey,
   type PhaseCalcNumericKey,
 } from '../phaseCalcParams';
+import { computeAutoC89FromR81 } from '../phaseCalc';
 
 type Tab = 'customer' | 'problems' | 'solutions' | 'fs' | 'assessment' | 'params' | 'scenarios' | 'summary';
 
@@ -559,6 +565,9 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
     setLoadError(null);
     try {
       const b = await getBriefing(briefingId);
+      if (b.assessment?.phase_calc_params) {
+        b.assessment.phase_calc_params = mergePhaseCalcParams(b.assessment.phase_calc_params);
+      }
       setData(b);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Ошибка загрузки';
@@ -1038,25 +1047,102 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
     });
   }
 
-  function resetPhaseCalcParamKey(key: PhaseCalcNumericKey) {
-    updateAssessment({ phase_calc_params_omit: [key] });
+  function resetPhaseCalcParamToAuto(key: PhaseCalcNumericKey) {
+    if (!data?.assessment) return;
+    const result = resetQueuePhaseParamToAuto(
+      data.assessment.phase_calc_params,
+      phaseQueue,
+      key,
+      data.assessment,
+    );
+    updateAssessment({
+      phase_calc_params: result.phase_calc_params,
+      ...(result.phase_calc_params_omit
+        ? { phase_calc_params_omit: result.phase_calc_params_omit }
+        : {}),
+    });
+  }
+
+  function resetPhaseCalcParamToQueue1(key: PhaseCalcNumericKey) {
+    if (!data?.assessment) return;
+    updateAssessment({
+      phase_calc_params: resetQueuePhaseParamToBaseQueue(
+        data.assessment.phase_calc_params,
+        phaseQueue,
+        key,
+      ),
+    });
+  }
+
+  function resetRdModeToAuto() {
+    if (!data?.assessment) return;
+    const result = resetQueueRdModeToAuto(data.assessment.phase_calc_params, phaseQueue);
+    updateAssessment({
+      phase_calc_params: result.phase_calc_params,
+      ...(result.phase_calc_params_omit
+        ? { phase_calc_params_omit: result.phase_calc_params_omit }
+        : {}),
+    });
+  }
+
+  function resetRdModeToQueue1() {
+    if (!data?.assessment) return;
+    updateAssessment({
+      phase_calc_params: resetQueueRdModeToBaseQueue(
+        data.assessment.phase_calc_params,
+        phaseQueue,
+      ),
+    });
+  }
+
+  function resetHeadcountOpeParamToAuto(field: 'c67' | 'c68') {
+    if (!data?.assessment) return;
+    updateAssessment({
+      phase_calc_params: resetHeadcountOpeToAuto(
+        data.assessment.phase_calc_params,
+        phaseQueue,
+        field,
+        data.assessment,
+      ),
+    });
+  }
+
+  function resetHeadcountOpeParamToQueue1(field: 'c67' | 'c68') {
+    if (!data?.assessment) return;
+    updateAssessment({
+      phase_calc_params: resetHeadcountOpeToBaseQueue(
+        data.assessment.phase_calc_params,
+        phaseQueue,
+        field,
+      ),
+    });
   }
 
   function patchC89(value: string | number) {
     if (!data?.assessment) return;
-    const params = mergePhaseCalcParams(data.assessment.phase_calc_params);
     const num = typeof value === 'string' ? Number(value) : value;
     if (!Number.isFinite(num) || num < 0) return;
+    const auto = computeAutoC89FromR81(phaseQueue, data.assessment, data.fs_items);
+    if (Math.round(num) === Math.round(auto)) {
+      resetC89();
+      return;
+    }
     updateAssessment({
-      phase_calc_params: patchC89Manual(params, phaseQueue, Math.round(num)),
+      phase_calc_params: patchC89Manual(
+        data.assessment.phase_calc_params,
+        phaseQueue,
+        Math.round(num),
+      ),
     });
   }
 
   function resetC89() {
     if (!data?.assessment) return;
-    const params = mergePhaseCalcParams(data.assessment.phase_calc_params);
     updateAssessment({
-      phase_calc_params: resetC89Manual(params, phaseQueue),
+      phase_calc_params: resetC89Manual(
+        data.assessment.phase_calc_params,
+        phaseQueue,
+      ),
     });
   }
 
@@ -1280,333 +1366,294 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
         {tab === 'params' && (
           <div className="w-full space-y-4">
             {data.assessment && (
-              <>
-                <HeadcountCoeffsPanel
-                  assessment={data.assessment}
-                  recalcFlash={assessmentRecalcFlash}
-                  onChange={handleAssessmentChange}
-                />
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div>
-                      <div className="text-xs text-slate-500">Технология и ставки по очередям (C33, C32)</div>
-                      <p className="text-[10px] text-slate-400 mt-0.5">
-                        Технология на каждую очередь — авто из оценки или вручную. Ставка из НСИ по технологии.
-                      </p>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <div className="text-xs text-slate-500">
+                      Story Points, технология и ставки по очередям — C20, C21, D20, E20, C33, C32
                     </div>
-                    <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      Технология на каждую очередь — авто из оценки или вручную. Ставка из НСИ по технологии.
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={data.assessment.unified_rate_enabled}
+                      onChange={e => {
+                        const enabled = e.target.checked;
+                        if (enabled) {
+                          const maxRate = computeAutoUnifiedRate(
+                            data.assessment!.queue_calcs,
+                          );
+                          updateAssessment({
+                            unified_rate_enabled: true,
+                            unified_rate: maxRate,
+                            unified_rate_manual: false,
+                          });
+                        } else {
+                          updateAssessment({ unified_rate_enabled: false });
+                        }
+                      }}
+                    />
+                    Единая ставка по очередям
+                  </label>
+                </div>
+                {data.assessment.unified_rate_enabled && (
+                  <div className="mb-3 flex items-end gap-3 flex-wrap">
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Единая ставка, руб/ч</label>
                       <input
-                        type="checkbox"
-                        checked={data.assessment.unified_rate_enabled}
+                        type="number"
+                        min="0"
+                        className={`w-40 text-sm border rounded px-3 py-2 text-right ${
+                          data.assessment.unified_rate_manual ? 'bg-amber-50 border-amber-300' : ''
+                        }`}
+                        value={
+                          isUnifiedRateAutoMode(data.assessment)
+                            ? computeAutoUnifiedRate(data.assessment.queue_calcs)
+                            : data.assessment.unified_rate
+                        }
                         onChange={e => {
-                          const enabled = e.target.checked;
-                          if (enabled) {
-                            const maxRate = computeAutoUnifiedRate(
-                              data.assessment!.queue_calcs,
-                            );
-                            updateAssessment({
-                              unified_rate_enabled: true,
-                              unified_rate: maxRate,
-                              unified_rate_manual: false,
-                            });
-                          } else {
-                            updateAssessment({ unified_rate_enabled: false });
-                          }
+                          updateAssessment({
+                            unified_rate: Number(e.target.value),
+                            unified_rate_manual: true,
+                          });
                         }}
                       />
-                      Единая ставка по очередям
-                    </label>
-                  </div>
-                  {data.assessment.unified_rate_enabled && (
-                    <div className="mb-3 flex items-end gap-3 flex-wrap">
-                      <div>
-                        <label className="text-xs text-slate-500 block mb-1">Единая ставка, руб/ч</label>
-                        <input
-                          type="number"
-                          min="0"
-                          className={`w-40 text-sm border rounded px-3 py-2 text-right ${
-                            data.assessment.unified_rate_manual ? 'bg-amber-50 border-amber-300' : ''
-                          }`}
-                          value={
-                            isUnifiedRateAutoMode(data.assessment)
-                              ? computeAutoUnifiedRate(data.assessment.queue_calcs)
-                              : data.assessment.unified_rate
-                          }
-                          onChange={e => {
-                            updateAssessment({
-                              unified_rate: Number(e.target.value),
-                              unified_rate_manual: true,
-                            });
-                          }}
-                        />
-                      </div>
-                      {data.assessment.unified_rate_manual && (
-                        <button
-                          type="button"
-                          className="text-xs text-blue-600 hover:underline pb-2"
-                          onClick={() => {
-                            const maxRate = computeAutoUnifiedRate(
-                              data.assessment!.queue_calcs,
-                            );
-                            updateAssessment({
-                              unified_rate: maxRate,
-                              unified_rate_manual: false,
-                            });
-                          }}
-                        >
-                          Сбросить к max
-                        </button>
-                      )}
                     </div>
-                  )}
-                  <table className="w-full text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-slate-50 text-slate-500">
-                        <th className="p-2 border text-left">Очередь</th>
-                        <th className="p-2 border text-left min-w-[140px]">Технология (C33)</th>
-                        <th className="p-2 border text-right w-24" title="Авто из технологии и НСИ">Ставка (C32)</th>
-                        <th className="p-2 border text-right w-28">Ручная</th>
-                        <th className="p-2 border w-28"></th>
-                      </tr>
-                      <tr className="bg-slate-50 text-slate-400 text-[10px]">
-                        <th className="p-1 border" />
-                        <th className="p-1 border text-center">по очереди</th>
-                        <th className="p-1 border text-center">₽/ч</th>
-                        <th className="p-1 border text-center">₽/ч</th>
-                        <th className="p-1 border" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.assessment.queue_calcs.map(qc => (
-                        <tr key={qc.queue}>
-                          <td className="p-2 border">{FS_QUEUE_LABELS[qc.queue as FsQueueKey] ?? qc.queue}</td>
-                          <td className="p-2 border">
-                            <select
-                              className={`w-full text-xs border rounded px-1 py-1 ${
-                                qc.technology_manual ? 'bg-amber-50 border-amber-300' : ''
-                              }`}
-                              value={normalizeQueueTechnologyLabel(
-                                qc.technology ?? qc.auto_technology ?? QUEUE_TECHNOLOGY_OPTIONS[0],
-                              )}
-                              onChange={e => {
-                                updateAssessment(a => ({
-                                  queue_calcs: a.queue_calcs.map(r =>
-                                    r.queue === qc.queue
-                                      ? {
-                                          ...r,
-                                          technology: e.target.value,
-                                          technology_manual: 1,
-                                          rate_manual: 0,
-                                        }
-                                      : r,
-                                  ),
-                                }));
-                              }}
-                            >
-                              {QUEUE_TECHNOLOGY_OPTIONS.map(opt => (
-                                <option key={opt} value={opt}>{opt}</option>
-                              ))}
-                            </select>
-                            {!qc.technology_manual && (
-                              <div className="text-[10px] text-slate-400 mt-0.5">авто</div>
+                    {data.assessment.unified_rate_manual && (
+                      <button
+                        type="button"
+                        className="text-xs text-blue-600 hover:underline pb-2"
+                        onClick={() => {
+                          const maxRate = computeAutoUnifiedRate(
+                            data.assessment!.queue_calcs,
+                          );
+                          updateAssessment({
+                            unified_rate: maxRate,
+                            unified_rate_manual: false,
+                          });
+                        }}
+                      >
+                        Сбросить к max
+                      </button>
+                    )}
+                  </div>
+                )}
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-500">
+                      <th className="p-2 border text-left">Очередь</th>
+                      <th className="p-2 border text-center w-16">Активна</th>
+                      <th className="p-2 border text-right w-24"
+                        title="Функциональный объём — без интеграций и НМД">SP</th>
+                      <th className="p-2 border text-right w-28">SP Интегр.</th>
+                      <th className="p-2 border text-right w-24">SP НМД</th>
+                      <th className="p-2 border text-right w-28"
+                        title="Сценарии нагрузочного тестирования — авто ROUNDUP(C20/5, 0)">
+                        Сцен. НТ
+                      </th>
+                      <th className="p-2 border text-left min-w-[140px]">Технология (C33)</th>
+                      <th className="p-2 border text-right w-24" title="Авто из технологии и НСИ">Ставка (C32)</th>
+                      <th className="p-2 border text-right w-28">Ручная ставка</th>
+                      <th className="p-2 border w-28"></th>
+                    </tr>
+                    <tr className="bg-slate-50 text-slate-400 text-[10px]">
+                      <th className="p-1 border" />
+                      <th className="p-1 border text-center">Яч.</th>
+                      <th className="p-1 border text-center">C20</th>
+                      <th className="p-1 border text-center">C21</th>
+                      <th className="p-1 border text-center">D20</th>
+                      <th className="p-1 border text-center">E20</th>
+                      <th className="p-1 border text-center">по очереди</th>
+                      <th className="p-1 border text-center">₽/ч</th>
+                      <th className="p-1 border text-center">₽/ч</th>
+                      <th className="p-1 border" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const fsSp = computeQueueSpFromFs(data.fs_items ?? []);
+                      return FS_QUEUE_KEYS.map(q => {
+                        const row = data.assessment!.org_volume.queues[q];
+                        const qc = data.assessment!.queue_calcs.find(r => r.queue === q);
+                        const functionalPlaceholder = (fsSp.functional_sp[q] || 0) > 0
+                          ? String(fsSp.functional_sp[q])
+                          : String(DEV_TEST_FUNCTIONAL_SP[q]);
+                        const integrationsPlaceholder = (fsSp.integrations_sp_auto[q] || 0) > 0
+                          ? String(fsSp.integrations_sp_auto[q])
+                          : String(DEV_TEST_INTEGRATIONS_SP[q]);
+                        const nmdPlaceholder = (fsSp.nmd_sp_auto[q] || 0) > 0
+                          ? String(fsSp.nmd_sp_auto[q])
+                          : String(DEV_TEST_NMD_SP[q]);
+                        const c20Effective = effectiveFunctionalSp(
+                          q, row.functional_sp, fsSp.functional_sp[q],
+                        );
+                        const loadTestPlaceholder = String(
+                          autoLoadTestScenarios(row.active, c20Effective),
+                        );
+                        return (
+                          <tr key={q}>
+                            <td className="p-2 border font-medium">{FS_QUEUE_LABELS[q]}</td>
+                            <td className="p-2 border text-center">
+                              <input type="checkbox" checked={row.active} disabled
+                                className="opacity-60" title="Из ФС (активные очереди)" />
+                            </td>
+                            <td className="p-2 border text-right" title="SP функционала (C20)">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
+                                value={isQueueSpUnset(row.functional_sp) ? '' : row.functional_sp}
+                                placeholder={functionalPlaceholder}
+                                onChange={e => setOrgSpField(q, 'functional_sp', e.target.value)}
+                                onBlur={e => commitOrgSpField(q, 'functional_sp', e.target.value)}
+                                {...numericInputHandlers}
+                              />
+                            </td>
+                            <td className="p-2 border text-right" title="SP интеграций (C21)">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
+                                value={isQueueSpUnset(row.integrations_sp) ? '' : row.integrations_sp}
+                                placeholder={integrationsPlaceholder}
+                                onChange={e => setOrgSpField(q, 'integrations_sp', e.target.value)}
+                                onBlur={e => commitOrgSpField(q, 'integrations_sp', e.target.value)}
+                                {...numericInputHandlers}
+                              />
+                            </td>
+                            <td className="p-2 border text-right" title="SP НМД (D20)">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
+                                value={isQueueSpUnset(row.nmd_sp) ? '' : row.nmd_sp}
+                                placeholder={nmdPlaceholder}
+                                onChange={e => setOrgSpField(q, 'nmd_sp', e.target.value)}
+                                onBlur={e => commitOrgSpField(q, 'nmd_sp', e.target.value)}
+                                {...numericInputHandlers}
+                              />
+                            </td>
+                            <td className="p-2 border text-right" title="Сценариев нагрузочного тестирования (E20)">
+                              <input
+                                type="number"
+                                min="0"
+                                step="1"
+                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
+                                value={isQueueSpUnset(row.load_test_scenarios) ? '' : row.load_test_scenarios}
+                                placeholder={loadTestPlaceholder}
+                                onChange={e => setOrgSpField(q, 'load_test_scenarios', e.target.value)}
+                                onBlur={e => commitOrgSpField(q, 'load_test_scenarios', e.target.value)}
+                                {...numericInputHandlers}
+                              />
+                            </td>
+                            {qc ? (
+                              <>
+                                <td className="p-2 border">
+                                  <select
+                                    className={`w-full text-xs border rounded px-1 py-1 ${
+                                      qc.technology_manual ? 'bg-amber-50 border-amber-300' : ''
+                                    }`}
+                                    value={normalizeQueueTechnologyLabel(
+                                      qc.technology ?? qc.auto_technology ?? QUEUE_TECHNOLOGY_OPTIONS[0],
+                                    )}
+                                    onChange={e => {
+                                      updateAssessment(a => ({
+                                        queue_calcs: a.queue_calcs.map(r =>
+                                          r.queue === q
+                                            ? {
+                                                ...r,
+                                                technology: e.target.value,
+                                                technology_manual: 1,
+                                                rate_manual: 0,
+                                              }
+                                            : r,
+                                        ),
+                                      }));
+                                    }}
+                                  >
+                                    {QUEUE_TECHNOLOGY_OPTIONS.map(opt => (
+                                      <option key={opt} value={opt}>{opt}</option>
+                                    ))}
+                                  </select>
+                                  {!qc.technology_manual && (
+                                    <div className="text-[10px] text-slate-400 mt-0.5">авто</div>
+                                  )}
+                                </td>
+                                <td className="p-2 border text-right tabular-nums font-medium">
+                                  {(qc.nsi_rate ?? 0).toLocaleString('ru')}
+                                </td>
+                                <td className="p-2 border">
+                                  <input type="number" min="0"
+                                    className={`w-full text-right border rounded px-2 py-1 ${qc.rate_manual ? 'bg-amber-50 border-amber-300' : ''}`}
+                                    value={qc.rate}
+                                    onChange={e => {
+                                      const rate = Number(e.target.value);
+                                      updateAssessment(a => ({
+                                        queue_calcs: a.queue_calcs.map(r =>
+                                          r.queue === q ? { ...r, rate, rate_manual: 1 } : r
+                                        ),
+                                      }));
+                                    }} />
+                                </td>
+                                <td className="p-2 border text-center text-[10px]">
+                                  {qc.rate_manual ? (
+                                    <button type="button" className="text-blue-600 hover:underline"
+                                      onClick={() => {
+                                        updateAssessment(a => ({
+                                          queue_calcs: a.queue_calcs.map(r =>
+                                            r.queue === q ? { ...r, rate: r.nsi_rate, rate_manual: 0 } : r
+                                          ),
+                                        }));
+                                      }}>
+                                      Сбросить ставку
+                                    </button>
+                                  ) : null}
+                                  {qc.technology_manual ? (
+                                    <button type="button" className="text-blue-600 hover:underline block mt-0.5"
+                                      onClick={() => {
+                                        updateAssessment(a => ({
+                                          queue_calcs: a.queue_calcs.map(r =>
+                                            r.queue === q
+                                              ? { ...r, technology_manual: 0, rate_manual: 0 }
+                                              : r,
+                                          ),
+                                        }));
+                                      }}>
+                                      Сбросить технологию
+                                    </button>
+                                  ) : null}
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="p-2 border text-slate-400">—</td>
+                                <td className="p-2 border text-slate-400">—</td>
+                                <td className="p-2 border text-slate-400">—</td>
+                                <td className="p-2 border" />
+                              </>
                             )}
-                          </td>
-                          <td className="p-2 border text-right tabular-nums font-medium">
-                            {(qc.nsi_rate ?? 0).toLocaleString('ru')}
-                          </td>
-                          <td className="p-2 border">
-                            <input type="number" min="0"
-                              className={`w-full text-right border rounded px-2 py-1 ${qc.rate_manual ? 'bg-amber-50 border-amber-300' : ''}`}
-                              value={qc.rate}
-                              onChange={e => {
-                                const rate = Number(e.target.value);
-                                updateAssessment(a => ({
-                                  queue_calcs: a.queue_calcs.map(r =>
-                                    r.queue === qc.queue ? { ...r, rate, rate_manual: 1 } : r
-                                  ),
-                                }));
-                              }} />
-                          </td>
-                          <td className="p-2 border text-center text-[10px]">
-                            {qc.rate_manual ? (
-                              <button type="button" className="text-blue-600 hover:underline"
-                                onClick={() => {
-                                  updateAssessment(a => ({
-                                    queue_calcs: a.queue_calcs.map(r =>
-                                      r.queue === qc.queue ? { ...r, rate: r.nsi_rate, rate_manual: 0 } : r
-                                    ),
-                                  }));
-                                }}>
-                                Сбросить ставку
-                              </button>
-                            ) : null}
-                            {qc.technology_manual ? (
-                              <button type="button" className="text-blue-600 hover:underline block mt-0.5"
-                                onClick={() => {
-                                  updateAssessment(a => ({
-                                    queue_calcs: a.queue_calcs.map(r =>
-                                      r.queue === qc.queue
-                                        ? { ...r, technology_manual: 0, rate_manual: 0 }
-                                        : r,
-                                    ),
-                                  }));
-                                }}>
-                                Сбросить технологию
-                              </button>
-                            ) : null}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div>
-                  <div className="text-xs text-slate-500 mb-2">
-                    Story Points по очередям — C20, C21, D20, E20 (независимые столбцы)
-                  </div>
-                  <table className="w-full text-xs border-collapse max-w-3xl">
-                    <thead>
-                      <tr className="bg-slate-50 text-slate-500">
-                        <th className="p-2 border text-left">Очередь</th>
-                        <th className="p-2 border text-center w-16">Активна</th>
-                        <th className="p-2 border text-right w-24"
-                          title="Функциональный объём — без интеграций и НМД">SP</th>
-                        <th className="p-2 border text-right w-28">SP Интегр.</th>
-                        <th className="p-2 border text-right w-24">SP НМД</th>
-                        <th className="p-2 border text-right w-28"
-                          title="Сценарии нагрузочного тестирования — авто ROUNDUP(C20/5, 0)">
-                          Сцен. НТ
-                        </th>
-                      </tr>
-                      <tr className="bg-slate-50 text-slate-400 text-[10px]">
-                        <th className="p-1 border" />
-                        <th className="p-1 border text-center">Яч.</th>
-                        <th className="p-1 border text-center">C20</th>
-                        <th className="p-1 border text-center">C21</th>
-                        <th className="p-1 border text-center">D20</th>
-                        <th className="p-1 border text-center">E20</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(() => {
-                        const fsSp = computeQueueSpFromFs(data.fs_items ?? []);
-                        return FS_QUEUE_KEYS.map(q => {
-                          const row = data.assessment!.org_volume.queues[q];
-                          const functionalPlaceholder = (fsSp.functional_sp[q] || 0) > 0
-                            ? String(fsSp.functional_sp[q])
-                            : String(DEV_TEST_FUNCTIONAL_SP[q]);
-                          const integrationsPlaceholder = (fsSp.integrations_sp_auto[q] || 0) > 0
-                            ? String(fsSp.integrations_sp_auto[q])
-                            : String(DEV_TEST_INTEGRATIONS_SP[q]);
-                          const nmdPlaceholder = (fsSp.nmd_sp_auto[q] || 0) > 0
-                            ? String(fsSp.nmd_sp_auto[q])
-                            : String(DEV_TEST_NMD_SP[q]);
-                          const c20Effective = effectiveFunctionalSp(
-                            q, row.functional_sp, fsSp.functional_sp[q],
-                          );
-                          const loadTestPlaceholder = String(
-                            autoLoadTestScenarios(row.active, c20Effective),
-                          );
-                          return (
-                            <tr key={q}>
-                              <td className="p-2 border font-medium">{FS_QUEUE_LABELS[q]}</td>
-                              <td className="p-2 border text-center">
-                                <input type="checkbox" checked={row.active} disabled
-                                  className="opacity-60" title="Из ФС (активные очереди)" />
-                              </td>
-                              <td className="p-2 border text-right" title="SP функционала (C20)">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="1"
-                                  className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
-                                  value={isQueueSpUnset(row.functional_sp) ? '' : row.functional_sp}
-                                  placeholder={functionalPlaceholder}
-                                  onChange={e => setOrgSpField(q, 'functional_sp', e.target.value)}
-                                  onBlur={e => commitOrgSpField(q, 'functional_sp', e.target.value)}
-                                  {...numericInputHandlers}
-                                />
-                              </td>
-                              <td className="p-2 border text-right" title="SP интеграций (C21)">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="1"
-                                  className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
-                                  value={isQueueSpUnset(row.integrations_sp) ? '' : row.integrations_sp}
-                                  placeholder={integrationsPlaceholder}
-                                  onChange={e => setOrgSpField(q, 'integrations_sp', e.target.value)}
-                                  onBlur={e => commitOrgSpField(q, 'integrations_sp', e.target.value)}
-                                  {...numericInputHandlers}
-                                />
-                              </td>
-                              <td className="p-2 border text-right" title="SP НМД (D20)">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="1"
-                                  className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
-                                  value={isQueueSpUnset(row.nmd_sp) ? '' : row.nmd_sp}
-                                  placeholder={nmdPlaceholder}
-                                  onChange={e => setOrgSpField(q, 'nmd_sp', e.target.value)}
-                                  onBlur={e => commitOrgSpField(q, 'nmd_sp', e.target.value)}
-                                  {...numericInputHandlers}
-                                />
-                              </td>
-                              <td className="p-2 border text-right" title="Сценариев нагрузочного тестирования (E20)">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="1"
-                                  className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
-                                  value={isQueueSpUnset(row.load_test_scenarios) ? '' : row.load_test_scenarios}
-                                  placeholder={loadTestPlaceholder}
-                                  onChange={e => setOrgSpField(q, 'load_test_scenarios', e.target.value)}
-                                  onBlur={e => commitOrgSpField(q, 'load_test_scenarios', e.target.value)}
-                                  {...numericInputHandlers}
-                                />
-                              </td>
-                            </tr>
-                          );
-                        });
-                      })()}
-                    </tbody>
-                    <tfoot>
-                      <tr>
-                        <td colSpan={5} className="p-2 border text-[10px] text-slate-400">
-                          Три независимых столбца: C20 (функционал), C21 (интеграции), D20 (НМД).
-                          Placeholder — подсказка из ФС или тестовое значение; позже заполнение из ФС, редактирование закроем.
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-                <div>
-                  <div className="text-xs text-slate-500 mb-2">Риски (справочно, с вкладки «Параметры оценки»)</div>
-                  <div className="grid grid-cols-3 gap-2 text-xs bg-slate-50 border rounded p-3">
-                    <div>РПО: {(data.assessment.risks.c52_rpo * 100).toFixed(0)}%</div>
-                    <div>Фонд: {(data.assessment.risks.c53_company_fund * 100).toFixed(1)}%</div>
-                    <div>РК: {(data.assessment.risks.c57_rk * 100).toFixed(0)}%</div>
-                    <div>Риски дог.: {(data.assessment.risks.c54_contract_rpo * 100).toFixed(0)}%</div>
-                    <div>Комп. продаж: {(data.assessment.risks.c56_sales_comp * 100).toFixed(0)}%</div>
-                  </div>
-                </div>
-              </>
-            )}
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Точность оценки (C58), %</label>
-              <div className="relative">
-                <input
-                  type="number"
-                  step="1"
-                  className="w-full text-sm border rounded px-3 py-2 pr-8"
-                  value={params.accuracy ?? 0}
-                  onChange={e => saveParams({ accuracy: Number(e.target.value) })}
-                  {...numericInputHandlers}
-                />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">%</span>
+                          </tr>
+                        );
+                      });
+                    })()}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={10} className="p-2 border text-[10px] text-slate-400">
+                        Три независимых столбца SP: C20 (функционал), C21 (интеграции), D20 (НМД).
+                        Placeholder — подсказка из ФС или тестовое значение; позже заполнение из ФС, редактирование закроем.
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
-            </div>
+            )}
             {data.assessment?.phase_calc_params && (
               <PhaseCalcParamsPanel
                 params={data.assessment.phase_calc_params}
@@ -1614,14 +1661,26 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                 fsItems={data.fs_items}
                 queue={phaseQueue}
                 onQueueChange={setPhaseQueue}
-                onChange={patch => updateAssessment({ phase_calc_params: patch })}
-                onParamReset={resetPhaseCalcParamKey}
+                onChange={(patch, omit) => updateAssessment({
+                  phase_calc_params: patch,
+                  ...(omit?.length ? { phase_calc_params_omit: omit } : {}),
+                })}
+                onParamResetToAuto={resetPhaseCalcParamToAuto}
+                onParamResetToQueue1={resetPhaseCalcParamToQueue1}
+                onRdModeResetToAuto={resetRdModeToAuto}
+                onRdModeResetToQueue1={resetRdModeToQueue1}
+                onHeadcountOpeResetToAuto={resetHeadcountOpeParamToAuto}
+                onHeadcountOpeResetToQueue1={resetHeadcountOpeParamToQueue1}
                 onC89Change={patchC89}
                 onC89Reset={resetC89}
                 onTrainingEChange={(field, value) => patchTrainingE(phaseQueue, field, value)}
                 onTrainingEReset={field => resetTrainingE(phaseQueue, field)}
                 onTrainingGhChange={patchTrainingGh}
                 onTrainingGhReset={resetTrainingGh}
+                recalcFlash={assessmentRecalcFlash}
+                onAssessmentChange={handleAssessmentChange}
+                accuracyPct={params.accuracy ?? 0}
+                onAccuracyChange={v => saveParams({ accuracy: v })}
               />
             )}
             {data.assessment?.phase_calc_defs && data.assessment.phase_calc && (

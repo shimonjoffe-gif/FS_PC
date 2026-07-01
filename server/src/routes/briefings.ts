@@ -715,8 +715,9 @@ briefingsRouter.patch('/:id/assessment', (req, res) => {
   if (body.reset_phase_calc_params) {
     phase_calc_params_json = '{}';
   } else if (body.phase_calc_params) {
-    const merged = mergePhaseCalcParams(parsePhaseCalcParamsJson(phase_calc_params_json));
-    phase_calc_params_json = JSON.stringify({ ...merged, ...body.phase_calc_params });
+    phase_calc_params_json = JSON.stringify(
+      mergePhaseCalcParams(body.phase_calc_params as Partial<PhaseCalcParams>),
+    );
   }
 
   let assessment_scenarios_json = (cur.assessment_scenarios_json as string | null) ?? '[]';

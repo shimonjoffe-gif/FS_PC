@@ -6,7 +6,6 @@ import type {
 import type { PhaseBaseResult } from '../phaseCalc';
 import { computeAllPhaseBases } from '../phaseCalc';
 import { computeAllPhaseProds, type PhaseProdSide } from '../phaseCalcProd';
-import { FS_QUEUE_KEYS, FS_QUEUE_LABELS } from '../types';
 import {
   formatRiskPct,
   parseRiskPctInput,
@@ -16,6 +15,7 @@ import {
   buildManualRiskPatchForSide,
   type RiskSide,
 } from '../assessmentCalc';
+import QueueSwitcher from './QueueSwitcher';
 import { yesNoLabel, yesNoClass, YES_NO_BADGE_CLASS } from '../utils/yesNoBadge';
 import { numericInputHandlers } from '../utils/numericInputHandlers';
 import { formatMoneyRub, formatStepNumber, formatGroupedInteger } from '../utils/formatNumber';
@@ -512,22 +512,7 @@ export default function PhaseCalcTable({
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="text-xs text-slate-500">Расчёт фаз по очереди</div>
-        <div className="flex gap-1">
-          {FS_QUEUE_KEYS.map(q => (
-            <button
-              key={q}
-              type="button"
-              onClick={() => setActiveQueue(q)}
-              className={`text-xs px-3 py-1.5 rounded border transition-colors ${
-                activeQueue === q
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-              }`}
-            >
-              {FS_QUEUE_LABELS[q]}
-            </button>
-          ))}
-        </div>
+        <QueueSwitcher showLabel value={activeQueue} onChange={setActiveQueue} />
       </div>
 
       <div className="overflow-x-auto border rounded">

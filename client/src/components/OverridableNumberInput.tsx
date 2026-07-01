@@ -10,30 +10,55 @@ type Props = {
   value: number;
   autoValue: number;
   step?: number;
-  overridden: boolean;
+  /** Значение отличается от системного авто. */
+  overridden?: boolean;
+  /** Собственное значение для текущей очереди (не наследуется от оч. 1). */
+  queueSpecific?: boolean;
   onChange: (v: number) => void;
-  onReset: () => void;
+  onReset?: () => void;
+  onResetToAuto?: () => void;
+  onResetToQueue1?: () => void;
   title?: string;
-  /** Показывать разделители разрядов (для сумм в ₽). */
   grouped?: boolean;
+  /** Расчётное поле: небо по умолчанию, янтарь только при ручной правке. */
+  calculated?: boolean;
   overrideClass?: string;
+  calculatedClass?: string;
+  queueSpecificClass?: string;
 };
 
 export function OverridableNumberInput({
   value,
   autoValue,
   step = 0.5,
-  overridden,
+  overridden = false,
+  queueSpecific = false,
   onChange,
   onReset,
+  onResetToAuto,
+  onResetToQueue1,
   title,
   grouped = false,
+  calculated = false,
   overrideClass = 'bg-amber-50 border-amber-300',
+  calculatedClass = 'bg-sky-50 border-sky-300',
+  queueSpecificClass = 'bg-sky-50 border-sky-300',
 }: Props) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState('');
 
   const autoLabel = grouped ? formatGroupedInteger(autoValue) : String(autoValue);
+  const resetAuto = onResetToAuto ?? onReset;
+  const showResetAuto = calculated
+    ? Boolean(resetAuto) && overridden
+    : Boolean(resetAuto) && (overridden || (queueSpecific && value !== autoValue));
+  const showResetQueue1 = Boolean(onResetToQueue1) && queueSpecific;
+
+  const inputClass = calculated
+    ? (overridden ? overrideClass : calculatedClass)
+    : queueSpecific
+      ? queueSpecificClass
+      : (overridden ? overrideClass : '');
 
   function commitDraft(raw: string) {
     const parsed = grouped ? parseGroupedInteger(raw) : Number(raw);
@@ -45,8 +70,6 @@ export function OverridableNumberInput({
     if (grouped) {
       setFocused(true);
       setDraft(String(value));
-      e.currentTarget.select();
-      return;
     }
     numericInputHandlers.onFocus(e);
   }
@@ -73,15 +96,22 @@ export function OverridableNumberInput({
     : value;
 
   return (
-    <div className="flex items-center justify-end gap-1 min-w-0">
+    <div className="flex items-center justify-end gap-0.5 min-w-0">
       <input
         type={grouped ? 'text' : 'number'}
         inputMode={grouped ? 'numeric' : undefined}
         step={grouped ? undefined : step}
         min={grouped ? undefined : 0}
-        className={`${VALUE_INPUT_CLASS} ${overridden ? overrideClass : ''}`}
+        className={`${VALUE_INPUT_CLASS} ${inputClass}`}
         value={inputValue}
-        title={title ?? (overridden ? `Авто: ${autoLabel}` : undefined)}
+        title={
+          title ?? (
+            [
+              overridden ? `Авто: ${autoLabel}` : null,
+              queueSpecific ? 'Индивидуально для очереди' : null,
+            ].filter(Boolean).join(' · ') || undefined
+          )
+        }
         onFocus={handleFocus}
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
@@ -94,14 +124,23 @@ export function OverridableNumberInput({
             onChange(Number(e.target.value));
           }
         }}
-        {...(grouped ? {} : numericInputHandlers)}
       />
-      {overridden && (
+      {showResetQueue1 && (
         <button
           type="button"
           className="shrink-0 text-[10px] text-blue-600 hover:underline px-0.5"
-          title={`Вернуть авто (${autoLabel})`}
-          onClick={onReset}
+          title="Как очередь 1"
+          onClick={onResetToQueue1}
+        >
+          ↺1
+        </button>
+      )}
+      {showResetAuto && (
+        <button
+          type="button"
+          className="shrink-0 text-[10px] text-blue-600 hover:underline px-0.5"
+          title={`Авто (${autoLabel})`}
+          onClick={resetAuto}
         >
           ↺
         </button>

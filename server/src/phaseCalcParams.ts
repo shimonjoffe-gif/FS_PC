@@ -1,4 +1,7 @@
 /** Excel C35–C49, C65–C66 on queue sheets («Прочие параметры расчёта»). Defaults from «Очередь 1 ПРОФ_КОРП». */
+
+export type RdDeliveryMode = 'doc' | 'video' | 'doc_video';
+
 export interface TrainingManualState {
   queues: Partial<Record<string, Record<string, { g?: number; h?: number; g_manual?: boolean; h_manual?: boolean }>>>;
 }
@@ -11,6 +14,43 @@ export interface C89ManualState {
   queues: Partial<Record<string, number>>;
 }
 
+export type TrainingDeliveryFormat = 'groups' | 'webinar';
+
+export interface TrainingRowDeliveryOverride {
+  format?: TrainingDeliveryFormat;
+  format_manual?: boolean;
+  webinar_count?: number;
+  webinar_qa_reserve?: number;
+}
+
+export interface TrainingDeliveryState {
+  queues?: Partial<Record<string, Partial<Record<string, TrainingRowDeliveryOverride>>>>;
+}
+
+export interface QueuePhaseValues {
+  queues: Partial<
+    Record<string, Partial<Record<string, number>> & { rd_delivery_mode?: RdDeliveryMode }>
+  >;
+}
+
+export interface HeadcountOpeHours {
+  queues: Partial<Record<string, { c67?: number; c68?: number }>>;
+}
+
+export interface QueueAutoOverrides {
+  queues?: Partial<Record<string, {
+    params?: Partial<Record<string, true>>;
+    rd_delivery_mode?: true;
+  }>>;
+}
+
+export interface QueueExplicitOverrides {
+  queues?: Partial<Record<string, {
+    params?: Partial<Record<string, true>>;
+    rd_delivery_mode?: true;
+  }>>;
+}
+
 export interface PhaseCalcParams {
   c35_methodical_hours_per_fe: number;
   c37_requirements_hours_per_fe: number;
@@ -21,6 +61,8 @@ export interface PhaseCalcParams {
   c43_db_access_hours: number;
   c44_db_workplaces_hours: number;
   c45_rd_hours: number;
+  rd_delivery_mode: RdDeliveryMode;
+  rd_video_hours: number;
   c46_training_prep_hours: number;
   c47_users_per_group: number;
   d47_users_hours_per_group: number;
@@ -39,6 +81,11 @@ export interface PhaseCalcParams {
   training_manual?: TrainingManualState;
   training_e_manual?: TrainingEManualState;
   c89_manual?: C89ManualState;
+  training_delivery?: TrainingDeliveryState;
+  queue_values?: QueuePhaseValues;
+  headcount_ope_hours?: HeadcountOpeHours;
+  queue_auto_overrides?: QueueAutoOverrides;
+  queue_explicit_overrides?: QueueExplicitOverrides;
 }
 
 export const DEFAULT_PHASE_CALC_PARAMS: PhaseCalcParams = {
@@ -51,6 +98,8 @@ export const DEFAULT_PHASE_CALC_PARAMS: PhaseCalcParams = {
   c43_db_access_hours: 32,
   c44_db_workplaces_hours: 32,
   c45_rd_hours: 112,
+  rd_delivery_mode: 'doc',
+  rd_video_hours: 40,
   c46_training_prep_hours: 40,
   c47_users_per_group: 5,
   d47_users_hours_per_group: 16,
@@ -78,11 +127,39 @@ export function computeC40(params: PhaseCalcParams): number {
     + params.c44_db_workplaces_hours;
 }
 
+export function effectiveRdDeliveryMode(mode: RdDeliveryMode | undefined): RdDeliveryMode {
+  if (mode === 'doc' || mode === 'video' || mode === 'doc_video') return mode;
+  return 'doc';
+}
+
 export function mergePhaseCalcParams(
   stored: Partial<PhaseCalcParams> | null | undefined,
 ): PhaseCalcParams {
-  const { training_manual, training_e_manual, c89_manual, ...numeric } = stored ?? {};
-  return { ...DEFAULT_PHASE_CALC_PARAMS, ...numeric, training_manual, training_e_manual, c89_manual };
+  const {
+    training_manual,
+    training_e_manual,
+    c89_manual,
+    training_delivery,
+    rd_delivery_mode,
+    queue_values,
+    headcount_ope_hours,
+    queue_auto_overrides,
+    queue_explicit_overrides,
+    ...numeric
+  } = stored ?? {};
+  return {
+    ...DEFAULT_PHASE_CALC_PARAMS,
+    ...numeric,
+    rd_delivery_mode: effectiveRdDeliveryMode(rd_delivery_mode),
+    training_manual,
+    training_e_manual,
+    c89_manual,
+    training_delivery,
+    queue_values,
+    headcount_ope_hours,
+    queue_auto_overrides,
+    queue_explicit_overrides,
+  };
 }
 
 export function parsePhaseCalcParamsJson(

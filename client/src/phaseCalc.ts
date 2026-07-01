@@ -13,14 +13,21 @@ import {
   getEffectiveQueueRate,
 } from './assessmentCalc';
 import {
-  mergePhaseCalcParams,
+  effectivePhaseCalcParamsForQueue,
+  effectiveHeadcountOpeForQueue,
+  isPhaseCalcParamOverAuto,
+  autoC90DbSupportAmount,
   computeC40,
   effectiveFeNormsForTechnology,
-  effectiveC90DbSupportAmount,
   effectiveC89ForQueue,
+  effectiveTrainingRowDelivery,
+  webinarRowCost,
+  WEBINAR_HOURS_PER_SESSION,
   computeC36FromNorms,
   travelDaysFromTrainingGroup,
+  type EffectiveTrainingRowDelivery,
   type PhaseCalcParams,
+  type RdDeliveryMode,
   type TrainingManualByQueue,
   type TrainingRowKey,
 } from './phaseCalcParams';
@@ -77,6 +84,8 @@ export interface PhaseCalcInputs {
   c43: number;
   c44: number;
   c45: number;
+  rd_delivery_mode: RdDeliveryMode;
+  rd_video_hours: number;
   c46: number;
   c5: number;
   c6: number;
@@ -107,6 +116,9 @@ export interface PhaseCalcInputs {
   /** F47×D47, F48×D48 — по строкам параметров */
   r85_row47_fd: number;
   r85_row48_fd: number;
+  training_row47: EffectiveTrainingRowDelivery;
+  training_row48: EffectiveTrainingRowDelivery;
+  training_row49: EffectiveTrainingRowDelivery;
   c65: number;
   c66: number;
   c67: number;
@@ -140,7 +152,8 @@ export function buildPhaseCalcInputs(
   const queueRow = assessment.org_volume?.queues?.[queue] ?? EMPTY_QUEUE_ROW;
   const qc = assessment.queue_calcs.find(r => r.queue === queue);
 
-  const params = mergePhaseCalcParams(assessment.phase_calc_params);
+  const params = effectivePhaseCalcParamsForQueue(queue, assessment.phase_calc_params);
+  const storedParams = assessment.phase_calc_params;
   const c20 = effectiveFunctionalSp(queue, queueRow.functional_sp, fsAuto.functional_sp[queue]);
   const projectTypeCode = qc?.technology
     ? typeCodeForTechnologyLabel(qc.technology)
@@ -157,6 +170,10 @@ export function buildPhaseCalcInputs(
   const e5 = sumRegionalOrgField(queueRow, 'rp_rpo');
   const e6 = sumRegionalOrgField(queueRow, 'executors');
   const training = computeTrainingGroups(queueRow, params, queue);
+  const trainingE = effectiveTrainingEValues(queueRow);
+  const training_row47 = effectiveTrainingRowDelivery(queue, 'row47', trainingE.e47, storedParams);
+  const training_row48 = effectiveTrainingRowDelivery(queue, 'row48', trainingE.e48, storedParams);
+  const training_row49 = effectiveTrainingRowDelivery(queue, 'row49', trainingE.e49, storedParams);
   const c65 = isCase && c32 > 0 ? CASE_OPE_INTRO_AMOUNT / c32 : params.c65_ope_intro_hours;
   const c66 = isCase && c32 > 0 ? CASE_OPE_SUPPORT_AMOUNT / c32 : params.c66_ope_hours;
 
@@ -176,13 +193,17 @@ export function buildPhaseCalcInputs(
     e7: effectiveE7RegionalRg(queueRow),
     c50: params.c50_business_trip_day_cost,
     c88: params.c88_ib_doc_amount,
-    c90: effectiveC90DbSupportAmount(projectTypeCode, params, assessment.phase_calc_params),
+    c90: isPhaseCalcParamOverAuto(queue, 'c90_db_support_amount', storedParams, assessment)
+      ? params.c90_db_support_amount
+      : autoC90DbSupportAmount(projectTypeCode),
     c40: computeC40(params),
     c41: params.c41_db_install_hours,
     c42: params.c42_db_nsi_hours,
     c43: params.c43_db_access_hours,
     c44: params.c44_db_workplaces_hours,
     c45: params.c45_rd_hours,
+    rd_delivery_mode: params.rd_delivery_mode,
+    rd_video_hours: params.rd_video_hours,
     c46: params.c46_training_prep_hours,
     c5,
     c6,
@@ -206,13 +227,16 @@ export function buildPhaseCalcInputs(
     r85_row48_fd: training.row48.fd,
     r85_training_hours: training.row47.fd + training.row48.fd,
     r85_travel_days: training.row47.h + training.row48.h,
+    training_row47,
+    training_row48,
+    training_row49,
     d47: params.d47_users_hours_per_group,
     d48: params.d48_executors_hours_per_group,
     d49: params.d49_admins_hours_per_group,
     c65,
     c66,
-    c67: assessment.headcount_coeffs.c67,
-    c68: assessment.headcount_coeffs.c68,
+    c67: effectiveHeadcountOpeForQueue(queue, assessment, storedParams, 'c67'),
+    c68: effectiveHeadcountOpeForQueue(queue, assessment, storedParams, 'c68'),
     projectTypeCode,
   };
 
@@ -365,13 +389,15 @@ const R78_FORMULA = 'C21 × C36 × C32 × C64';
 const R79_FORMULA = 'E20 × 250 000';
 const R80_FORMULA_PROF = 'SUM(C75:C78) × 0.1 + C40 × C32';
 const R80_FORMULA_CASE = 'C40 × C32 × C64';
-const R81_FORMULA_PROF = 'SUM(C76:C77) × 0.1 + C45 × C32 × C63';
-const R81_FORMULA_CASE = 'MAX(C45 × C32 × C63, SUM(C77:C78) × 0.1)';
+const R81_FORMULA_PROF = 'SUM(C76:C77) × 0.1 + РД (документация и/или видео)';
+const R81_FORMULA_CASE = 'MAX(РД (документация и/или видео), SUM(C77:C78) × 0.1)';
 const R82_FORMULA_PROF = 'SUM(C76:C77) × 0.1';
 const R82_FORMULA_CASE = 'SUM(C77:C78) × 0.1';
 const R83_FORMULA = '192 000 + 96 000 × 5';
 const R84_FORMULA = '(C46 + F49×D49) × C32 + H49×C50';
+const R84_FORMULA_WEBINAR = 'N × 4 × C32 × (1 + резерв)';
 const R85_FORMULA = '(F47×D47 + F48×D48) × C32 + SUM(H47:H48)×C50';
+const R85_FORMULA_MIXED = 'сумма строк 47–48 (группы / вебинары)';
 const R86_FORMULA_PROF = '((C5×C67 + C6×C68)×0.5 + C65) × C32 + E5×C50';
 const R86_FORMULA_CASE = 'C65×C32 + E7×C50';
 const R87_FORMULA_PROF = '((C5×C67 + C6×C68)×0.5 + C66) × C32 + E5×C50';
@@ -632,15 +658,79 @@ function computeR80(inputs: PhaseCalcInputs): PhaseBaseResult {
   return { total, steps, formula: R80_FORMULA_PROF };
 }
 
+function rdContentParts(
+  mode: RdDeliveryMode,
+  c45: number,
+  rdVideoHours: number,
+  c32: number,
+  c63: number,
+): { docPart: number; videoPart: number; contentPart: number } {
+  const docPart = (mode === 'doc' || mode === 'doc_video') ? c45 * c32 * c63 : 0;
+  const videoPart = (mode === 'video' || mode === 'doc_video') ? rdVideoHours * c32 * c63 : 0;
+  return { docPart, videoPart, contentPart: docPart + videoPart };
+}
+
+function rdContentSteps(
+  mode: RdDeliveryMode,
+  c45: number,
+  rdVideoHours: number,
+  c32: number,
+  c63: number,
+  parts: ReturnType<typeof rdContentParts>,
+): PhaseBaseStep[] {
+  const steps: PhaseBaseStep[] = [
+    {
+      label: 'Состав РД',
+      expression: mode === 'doc' ? 'документация'
+        : mode === 'video' ? 'видео-ролики'
+          : 'документация + видео',
+      value: 0,
+      kind: 'header',
+    },
+  ];
+  if (mode === 'doc' || mode === 'doc_video') {
+    steps.push(
+      { label: 'C45 — часы РД', expression: String(c45), value: c45 },
+      { label: 'C32 — ставка очереди, ₽/ч', expression: String(c32), value: c32 },
+      { label: 'C63 — коэфф. численности', expression: String(c63), value: c63 },
+      {
+        label: 'C45 × C32 × C63',
+        expression: `${c45} × ${c32} × ${c63}`,
+        value: parts.docPart,
+      },
+    );
+  }
+  if (mode === 'video' || mode === 'doc_video') {
+    steps.push(
+      { label: 'Часы видео-роликов', expression: String(rdVideoHours), value: rdVideoHours },
+      { label: 'C32 — ставка очереди, ₽/ч', expression: String(c32), value: c32 },
+      { label: 'C63 — коэфф. численности', expression: String(c63), value: c63 },
+      {
+        label: 'часы видео × C32 × C63',
+        expression: `${rdVideoHours} × ${c32} × ${c63}`,
+        value: parts.videoPart,
+      },
+    );
+  }
+  if (mode === 'doc_video') {
+    steps.push({
+      label: 'Сумма документация + видео',
+      expression: `${parts.docPart} + ${parts.videoPart}`,
+      value: parts.contentPart,
+    });
+  }
+  return steps;
+}
+
 function computeR81(inputs: PhaseCalcInputs): PhaseBaseResult {
-  const { c45, c32, c63, projectTypeCode } = inputs;
+  const { c45, rd_delivery_mode, rd_video_hours, c32, c63, projectTypeCode } = inputs;
   const phases = sumPhaseBases(inputs);
-  const rdPart = c45 * c32 * c63;
+  const parts = rdContentParts(rd_delivery_mode, c45, rd_video_hours, c32, c63);
   const isCase = isCaseProjectType(projectTypeCode);
 
   if (isCase) {
     const reserve77_78 = (phases.c77 + phases.c78) * 0.1;
-    const total = Math.max(rdPart, reserve77_78);
+    const total = Math.max(parts.contentPart, reserve77_78);
     const steps: PhaseBaseStep[] = [
       { label: 'C76 — фаза 3', expression: String(phases.c76), value: phases.c76 },
       { label: 'C77 — фаза 4.1', expression: String(phases.c77), value: phases.c77 },
@@ -650,17 +740,10 @@ function computeR81(inputs: PhaseCalcInputs): PhaseBaseResult {
         expression: `(${phases.c77} + ${phases.c78}) × 0.1`,
         value: reserve77_78,
       },
-      { label: 'C45 — часы РД', expression: String(c45), value: c45 },
-      { label: 'C32 — ставка очереди, ₽/ч', expression: String(c32), value: c32 },
-      { label: 'C63 — коэфф. численности', expression: String(c63), value: c63 },
-      {
-        label: 'C45 × C32 × C63',
-        expression: `${c45} × ${c32} × ${c63}`,
-        value: rdPart,
-      },
+      ...rdContentSteps(rd_delivery_mode, c45, rd_video_hours, c32, c63, parts),
       {
         label: 'MAX(…)',
-        expression: `MAX(${rdPart}, ${reserve77_78})`,
+        expression: `MAX(${parts.contentPart}, ${reserve77_78})`,
         value: total,
       },
       { label: 'Итого', expression: String(total), value: total },
@@ -669,7 +752,7 @@ function computeR81(inputs: PhaseCalcInputs): PhaseBaseResult {
   }
 
   const reserve76_77 = (phases.c76 + phases.c77) * 0.1;
-  const total = reserve76_77 + rdPart;
+  const total = reserve76_77 + parts.contentPart;
   const steps: PhaseBaseStep[] = [
     { label: 'C76 — фаза 3', expression: String(phases.c76), value: phases.c76 },
     { label: 'C77 — фаза 4.1', expression: String(phases.c77), value: phases.c77 },
@@ -678,17 +761,10 @@ function computeR81(inputs: PhaseCalcInputs): PhaseBaseResult {
       expression: `(${phases.c76} + ${phases.c77}) × 0.1`,
       value: reserve76_77,
     },
-    { label: 'C45 — часы РД', expression: String(c45), value: c45 },
-    { label: 'C32 — ставка очереди, ₽/ч', expression: String(c32), value: c32 },
-    { label: 'C63 — коэфф. численности', expression: String(c63), value: c63 },
-    {
-      label: 'C45 × C32 × C63',
-      expression: `${c45} × ${c32} × ${c63}`,
-      value: rdPart,
-    },
+    ...rdContentSteps(rd_delivery_mode, c45, rd_video_hours, c32, c63, parts),
     {
       label: 'Итого',
-      expression: `${reserve76_77} + ${rdPart}`,
+      expression: `${reserve76_77} + ${parts.contentPart}`,
       value: total,
     },
   ];
@@ -753,14 +829,64 @@ function computeR83(inputs: PhaseCalcInputs): PhaseBaseResult {
   return { total, steps, formula: R83_FORMULA };
 }
 
+function trainingFormatHeader(format: 'groups' | 'webinar'): PhaseBaseStep {
+  return {
+    kind: 'header',
+    label: format === 'webinar' ? 'Вид обучения: вебинары' : 'Вид обучения: группы',
+    expression: '',
+    value: 0,
+  };
+}
+
+function webinarCostSteps(
+  label: string,
+  count: number,
+  reserve: number,
+  c32: number,
+): { core: number; steps: PhaseBaseStep[] } {
+  const core = webinarRowCost(count, c32, reserve);
+  const reservePct = reserve * 100;
+  const steps: PhaseBaseStep[] = [
+    { label: `${label} — кол-во вебинаров`, expression: String(count), value: count },
+    { label: 'Часов на вебинар (подготовка + проведение)', expression: String(WEBINAR_HOURS_PER_SESSION), value: WEBINAR_HOURS_PER_SESSION },
+    { label: 'C32 — ставка очереди, ₽/ч', expression: String(c32), value: c32 },
+    { label: 'Резерв на разбор вопросов, %', expression: `${reservePct}%`, value: reservePct },
+    {
+      label: 'N × 4 × C32 × (1 + резерв)',
+      expression: `${count} × ${WEBINAR_HOURS_PER_SESSION} × ${c32} × (1 + ${reservePct}%)`,
+      value: core,
+    },
+  ];
+  return { core, steps };
+}
+
 function computeR84(inputs: PhaseCalcInputs): PhaseBaseResult {
-  const { c46, f49, g49, d49, c32, h49, c50, r84_row49_fd } = inputs;
+  const {
+    c46, f49, g49, d49, c32, h49, c50, r84_row49_fd, training_row49,
+  } = inputs;
+
+  if (training_row49.format === 'webinar') {
+    const { core, steps: wSteps } = webinarCostSteps(
+      'Строка 49 (админы)',
+      training_row49.webinarCount,
+      training_row49.webinarReserve,
+      c32,
+    );
+    const steps: PhaseBaseStep[] = [
+      trainingFormatHeader('webinar'),
+      ...wSteps,
+      { label: 'Итого', expression: String(core), value: core },
+    ];
+    return finishBase(core, steps, R84_FORMULA_WEBINAR, core, 0);
+  }
+
   const trainingHours = c46 + r84_row49_fd;
   const core = trainingHours * c32;
   const travel = h49 * c50;
   const total = core + travel;
 
   const steps: PhaseBaseStep[] = [
+    trainingFormatHeader('groups'),
     { label: 'C46 — подготовка к обучению, ч', expression: String(c46), value: c46 },
     { label: 'F49 — групп обучения (всего)', expression: String(f49), value: f49 },
     { label: 'G49 — в т.ч. групп в регионах', expression: String(g49), value: g49 },
@@ -793,47 +919,78 @@ function computeR84(inputs: PhaseCalcInputs): PhaseBaseResult {
 function computeR85(inputs: PhaseCalcInputs): PhaseBaseResult {
   const {
     f47, f48, h47, h48, d47, d48, c32, c50,
-    r85_training_hours, r85_travel_days, r85_row47_fd, r85_row48_fd,
+    r85_row47_fd, r85_row48_fd, training_row47, training_row48,
   } = inputs;
-  const core = r85_training_hours * c32;
-  const travel = r85_travel_days * c50;
+
+  let core = 0;
+  let travel = 0;
+  const steps: PhaseBaseStep[] = [];
+  const bothGroups = training_row47.format === 'groups' && training_row48.format === 'groups';
+  const formula = bothGroups ? R85_FORMULA : R85_FORMULA_MIXED;
+
+  function addRow47() {
+    steps.push({ kind: 'header', label: 'Строка 47 — пользователи', expression: '', value: 0 });
+    steps.push(trainingFormatHeader(training_row47.format));
+    if (training_row47.format === 'webinar') {
+      const { core: rowCore, steps: wSteps } = webinarCostSteps(
+        'Строка 47',
+        training_row47.webinarCount,
+        training_row47.webinarReserve,
+        c32,
+      );
+      core += rowCore;
+      steps.push(...wSteps);
+      return;
+    }
+    steps.push(
+      { label: 'F47 — групп обучения', expression: String(f47), value: f47 },
+      { label: 'D47 — часов на группу', expression: String(d47), value: d47 },
+      { label: 'F47×D47', expression: `${f47}×${d47}`, value: r85_row47_fd },
+      { label: 'F47×D47 × C32', expression: `${r85_row47_fd} × ${c32}`, value: r85_row47_fd * c32 },
+      { label: 'H47 — дней командировок', expression: String(h47), value: h47 },
+      { label: 'H47 × C50', expression: `${h47} × ${c50}`, value: h47 * c50 },
+    );
+    core += r85_row47_fd * c32;
+    travel += h47 * c50;
+  }
+
+  function addRow48() {
+    steps.push({ kind: 'header', label: 'Строка 48 — исполнители', expression: '', value: 0 });
+    steps.push(trainingFormatHeader(training_row48.format));
+    if (training_row48.format === 'webinar') {
+      const { core: rowCore, steps: wSteps } = webinarCostSteps(
+        'Строка 48',
+        training_row48.webinarCount,
+        training_row48.webinarReserve,
+        c32,
+      );
+      core += rowCore;
+      steps.push(...wSteps);
+      return;
+    }
+    steps.push(
+      { label: 'F48 — групп обучения', expression: String(f48), value: f48 },
+      { label: 'D48 — часов на группу', expression: String(d48), value: d48 },
+      { label: 'F48×D48', expression: `${f48}×${d48}`, value: r85_row48_fd },
+      { label: 'F48×D48 × C32', expression: `${r85_row48_fd} × ${c32}`, value: r85_row48_fd * c32 },
+      { label: 'H48 — дней командировок', expression: String(h48), value: h48 },
+      { label: 'H48 × C50', expression: `${h48} × ${c50}`, value: h48 * c50 },
+    );
+    core += r85_row48_fd * c32;
+    travel += h48 * c50;
+  }
+
+  addRow47();
+  addRow48();
   const total = core + travel;
-
-  const steps: PhaseBaseStep[] = [
-    { kind: 'header', label: 'РП/РПО (стр. 47, блок «Обучение»)', expression: '', value: 0 },
-    { label: 'F47 — групп обучения', expression: String(f47), value: f47 },
-    { label: 'D47 — часов на группу', expression: String(d47), value: d47 },
-    { label: 'F47×D47 — из параметров', expression: `${f47}×${d47}`, value: r85_row47_fd },
-    { label: 'H47 — дней командировок', expression: String(h47), value: h47 },
-    { kind: 'header', label: 'Исполнители (стр. 48, блок «Обучение»)', expression: '', value: 0 },
-    { label: 'F48 — групп обучения', expression: String(f48), value: f48 },
-    { label: 'D48 — часов на группу', expression: String(d48), value: d48 },
-    { label: 'F48×D48 — из параметров', expression: `${f48}×${d48}`, value: r85_row48_fd },
-    { label: 'H48 — дней командировок', expression: String(h48), value: h48 },
-    { kind: 'header', label: 'Стоимость обучения', expression: '', value: 0 },
-    {
-      label: 'F47×D47 + F48×D48 — из параметров',
-      expression: `${r85_row47_fd} + ${r85_row48_fd}`,
-      value: r85_training_hours,
-    },
-    { label: 'C32 — ставка очереди, ₽/ч', expression: String(c32), value: c32 },
-    {
-      label: '(F47×D47 + F48×D48) × C32',
-      expression: `${r85_training_hours} × ${c32}`,
-      value: core,
-    },
-    { kind: 'header', label: 'Командировки', expression: '', value: 0 },
-    {
-      label: 'SUM(H47:H48) — из параметров',
-      expression: `${h47} + ${h48}`,
-      value: r85_travel_days,
-    },
-    { label: 'C50 — стоимость дня командировки, ₽', expression: String(c50), value: c50 },
-    { label: 'SUM(H47:H48) × C50', expression: `${r85_travel_days} × ${c50}`, value: travel },
+  steps.push(
+    { kind: 'header', label: 'Итого', expression: '', value: 0 },
+    { label: 'Стоимость обучения', expression: String(core), value: core },
+    { label: 'Командировки', expression: String(travel), value: travel },
     { label: 'Итого', expression: `${core} + ${travel}`, value: total },
-  ];
+  );
 
-  return finishBase(total, steps, R85_FORMULA, core, travel);
+  return finishBase(total, steps, formula, core, travel);
 }
 
 function computeR86(inputs: PhaseCalcInputs): PhaseBaseResult {

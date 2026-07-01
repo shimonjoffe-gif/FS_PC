@@ -4,7 +4,7 @@ import type {
   ProjectType, QueueOrgVolume, RisksC51C57, RisksManualKeys, PhaseCalcState,
   AssessmentScenario,
 } from './types';
-import { mergePhaseCalcParams, type PhaseCalcParams } from './phaseCalcParams';
+import { mergePhaseCalcParams, mergeIncomingPhaseCalcParams, type PhaseCalcParams } from './phaseCalcParams';
 import {
   FS_QUEUE_KEYS, type FsQueueKey, anyQueueEnabled, itemQueues,
 } from './types';
@@ -1708,7 +1708,12 @@ export function applyAssessmentPatch(
       }
     }
     if (patch.phase_calc_params && typeof patch.phase_calc_params === 'object') {
-      Object.assign(base, patch.phase_calc_params as Partial<PhaseCalcParams>);
+      const incoming = patch.phase_calc_params as Partial<PhaseCalcParams>;
+      const merged = mergeIncomingPhaseCalcParams(base, incoming);
+      for (const key of Object.keys(base) as (keyof PhaseCalcParams)[]) {
+        if (!(key in merged)) delete base[key];
+      }
+      Object.assign(base, merged);
     }
     next.phase_calc_params = mergePhaseCalcParams(base);
   }
