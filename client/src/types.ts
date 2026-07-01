@@ -178,6 +178,29 @@ export const FS_QUEUE_LABELS: Record<FsQueueKey, string> = {
   '4': 'Развитие',
 };
 
+export type QueueLabelsMap = Record<FsQueueKey, string>;
+
+export function defaultQueueLabels(): QueueLabelsMap {
+  return { ...FS_QUEUE_LABELS };
+}
+
+export function parseQueueLabels(
+  raw: string | QueueLabelsMap | null | undefined,
+): QueueLabelsMap {
+  const defaults = defaultQueueLabels();
+  if (!raw) return defaults;
+  if (typeof raw === 'object') return { ...defaults, ...raw };
+  try {
+    return { ...defaults, ...(JSON.parse(raw) as Partial<QueueLabelsMap>) };
+  } catch {
+    return defaults;
+  }
+}
+
+export function queueLabel(labels: QueueLabelsMap | undefined, q: FsQueueKey): string {
+  return labels?.[q]?.trim() || FS_QUEUE_LABELS[q];
+}
+
 export type FsQueuesMap = Record<FsQueueKey, number>;
 
 export function parseQueuesJson(raw: string | FsQueuesMap | null | undefined): FsQueuesMap {
@@ -288,6 +311,7 @@ export interface BriefingParams {
   sp_cost_rub: number;
   phases_json: string | PhaseConfig[];
   team_json: string | TeamProportions;
+  queue_labels_json?: string | QueueLabelsMap;
 }
 
 export interface ProjectType {
@@ -444,8 +468,12 @@ export interface PhaseCalcLineDef {
 
 export type PhaseCalcQueuesState = Record<FsQueueKey, Record<string, boolean>>;
 
+/** Доли FTE по ролям: очередь → id фазы → роли. */
+export type PhaseCalcTeamFteState = Partial<Record<FsQueueKey, Record<string, TeamProportions>>>;
+
 export interface PhaseCalcState {
   queues: PhaseCalcQueuesState;
+  team_fte?: PhaseCalcTeamFteState;
 }
 
 export type { PhaseCalcParams } from './phaseCalcParams';
@@ -470,9 +498,30 @@ export interface ScenarioQueueTechnologyOverride {
   rate?: number;
 }
 
+/** Детализация ОТ по фазе (сумма по активным очередям). */
+export interface ScenarioPhaseDetail {
+  budgetWithRisks: number;
+  travel: number;
+  productionCore: number;
+  hours: number;
+  weeks: number;
+  reserveRpo: number;
+  reserveCompany: number;
+  salesComp: number;
+  companyFund: number;
+  contractRpoRisks: number;
+  contractFundRisks: number;
+  total: number;
+}
+
 export interface ScenarioSnapshotOtTotals {
   byPhase: Record<string, number>;
   grandTotal: number;
+  /** Недели по фазам (сумма по активным очередям). */
+  weeksByPhase: Record<string, number>;
+  grandTotalWeeks: number;
+  detailByPhase: Record<string, ScenarioPhaseDetail>;
+  grandDetail: ScenarioPhaseDetail;
 }
 
 export interface ScenarioSnapshotResults {

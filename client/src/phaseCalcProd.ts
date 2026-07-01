@@ -1,7 +1,8 @@
-import type { BriefingAssessment, BriefingFsSel, FsQueueKey, RisksC51C57 } from './types';
+import type { BriefingAssessment, BriefingFsSel, FsQueueKey, RisksC51C57, TeamProportions } from './types';
 import type { PhaseBaseResult } from './phaseCalc';
 import { getEffectiveQueueRate } from './assessmentCalc';
 import { computeAllPhaseBases } from './phaseCalc';
+import { effectiveTeamForPhaseLine, sumTeamFte } from './teamLabels';
 
 export interface PhaseProdSide {
   /** L / V — полная производственная (свёрнутый столбец). */
@@ -100,11 +101,12 @@ export function computeAllPhaseProds(
   risksOt: RisksC51C57,
   risksDo: RisksC51C57,
   accuracyPct: number,
-  teamFteSum: number,
+  defaultTeam: TeamProportions,
   enabledByLine: Record<string, boolean>,
   bases?: Record<string, PhaseBaseResult>,
 ): Record<string, PhaseProdRow> {
   const resolvedBases = bases ?? computeAllPhaseBases(queue, assessment, fsItems);
+  const phaseCalc = assessment.phase_calc;
   const qc = assessment.queue_calcs.find(r => r.queue === queue);
   const c32 = qc
     ? getEffectiveQueueRate(qc, assessment.unified_rate_enabled, assessment.unified_rate)
@@ -113,6 +115,9 @@ export function computeAllPhaseProds(
   const result: Record<string, PhaseProdRow> = {};
   for (const def of assessment.phase_calc_defs ?? []) {
     const enabled = enabledByLine[def.id] ?? def.default_enabled;
+    const teamFteSum = sumTeamFte(
+      effectiveTeamForPhaseLine(queue, def.id, phaseCalc, defaultTeam),
+    );
     result[def.id] = computePhaseProdRow(
       resolvedBases[def.id],
       enabled,

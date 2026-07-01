@@ -1,6 +1,6 @@
 import type {
   AssessmentScenario, BriefingAssessment, BriefingFsSel, FsQueueKey, PhaseCalcLineDef,
-  ScenarioSnapshotResults,
+  ScenarioPhaseDetail, ScenarioSnapshotResults, TeamProportions,
 } from './types';
 import { FS_QUEUE_KEYS, anyQueueEnabled, itemQueues } from './types';
 import type { FsQueuesMap } from './types';
@@ -11,7 +11,102 @@ import {
   normalizeQueueTechnologyLabel, QUEUE_TECHNOLOGY_OPTIONS,
 } from './assessmentCalc';
 import { computeAllPhaseBases } from './phaseCalc';
-import { computeAllPhaseProds } from './phaseCalcProd';
+import { computeAllPhaseProds, type PhaseProdSide } from './phaseCalcProd';
+import type { RisksC51C57 } from './types';
+import { sumTeamFte } from './teamLabels';
+
+export const EMPTY_SCENARIO_PHASE_DETAIL: ScenarioPhaseDetail = {
+  budgetWithRisks: 0,
+  travel: 0,
+  productionCore: 0,
+  hours: 0,
+  weeks: 0,
+  reserveRpo: 0,
+  reserveCompany: 0,
+  salesComp: 0,
+  companyFund: 0,
+  contractRpoRisks: 0,
+  contractFundRisks: 0,
+  total: 0,
+};
+
+export function addScenarioPhaseDetails(
+  a: ScenarioPhaseDetail,
+  b: ScenarioPhaseDetail,
+): ScenarioPhaseDetail {
+  return {
+    budgetWithRisks: a.budgetWithRisks + b.budgetWithRisks,
+    travel: a.travel + b.travel,
+    productionCore: a.productionCore + b.productionCore,
+    hours: a.hours + b.hours,
+    weeks: a.weeks + b.weeks,
+    reserveRpo: a.reserveRpo + b.reserveRpo,
+    reserveCompany: a.reserveCompany + b.reserveCompany,
+    salesComp: a.salesComp + b.salesComp,
+    companyFund: a.companyFund + b.companyFund,
+    contractRpoRisks: a.contractRpoRisks + b.contractRpoRisks,
+    contractFundRisks: a.contractFundRisks + b.contractFundRisks,
+    total: a.total + b.total,
+  };
+}
+
+function detailFromOtSide(ot: PhaseProdSide, risks: RisksC51C57): ScenarioPhaseDetail {
+  const p = ot.production;
+  return {
+    budgetWithRisks: ot.budgetWithRisks,
+    travel: ot.travel,
+    productionCore: ot.productionCore,
+    hours: ot.hours,
+    weeks: ot.weeks,
+    reserveRpo: p * risks.c52_rpo,
+    reserveCompany: p * risks.c57_rk,
+    salesComp: p * risks.c56_sales_comp,
+    companyFund: p * risks.c53_company_fund,
+    contractRpoRisks: p * risks.c54_contract_rpo,
+    contractFundRisks: p * risks.c55_contract_fund,
+    total: ot.total,
+  };
+}
+
+/** Нормализация старых снимков без detailByPhase. */
+export function normalizeScenarioOtTotals(
+  raw: Partial<ScenarioOtTotals> | null | undefined,
+): ScenarioOtTotals {
+  if (!raw) {
+    return {
+      byPhase: {},
+      grandTotal: 0,
+      weeksByPhase: {},
+      grandTotalWeeks: 0,
+      detailByPhase: {},
+      grandDetail: { ...EMPTY_SCENARIO_PHASE_DETAIL },
+    };
+  }
+  const detailByPhase = raw.detailByPhase ?? {};
+  let grandDetail = raw.grandDetail
+    ? { ...raw.grandDetail }
+    : { ...EMPTY_SCENARIO_PHASE_DETAIL };
+  if (!raw.grandDetail && Object.keys(detailByPhase).length > 0) {
+    grandDetail = { ...EMPTY_SCENARIO_PHASE_DETAIL };
+    for (const d of Object.values(detailByPhase)) {
+      grandDetail = addScenarioPhaseDetails(grandDetail, d);
+    }
+  } else if (!raw.grandDetail && raw.byPhase) {
+    grandDetail = {
+      ...EMPTY_SCENARIO_PHASE_DETAIL,
+      total: raw.grandTotal ?? 0,
+      weeks: raw.grandTotalWeeks ?? 0,
+    };
+  }
+  return {
+    byPhase: raw.byPhase ?? {},
+    grandTotal: raw.grandTotal ?? 0,
+    weeksByPhase: raw.weeksByPhase ?? {},
+    grandTotalWeeks: raw.grandTotalWeeks ?? 0,
+    detailByPhase,
+    grandDetail,
+  };
+}
 
 export function newScenarioId(): string {
   return `sc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -68,7 +163,10 @@ export function resolveScenarioAssessment(
       if (!deltaQ) continue;
       mergedQueues[q] = { ...(mergedQueues[q] ?? {}), ...deltaQ };
     }
-    result = { ...result, phase_calc: { queues: mergedQueues } };
+    result = { ...result, phase_calc: {
+      queues: mergedQueues,
+      ...(base.phase_calc.team_fte ? { team_fte: base.phase_calc.team_fte } : {}),
+    } };
   }
 
   if (hasTech) {
@@ -272,37 +370,57 @@ export function setScenarioPhaseEnabled(
 export interface ScenarioOtTotals {
   byPhase: Record<string, number>;
   grandTotal: number;
+  weeksByPhase: Record<string, number>;
+  grandTotalWeeks: number;
+  detailByPhase: Record<string, ScenarioPhaseDetail>;
+  grandDetail: ScenarioPhaseDetail;
 }
 
 export function computeScenarioOtTotals(
   assessment: BriefingAssessment,
   fsItems: BriefingFsSel[],
   accuracyPct: number,
-  teamFteSum: number,
+  defaultTeam: TeamProportions,
 ): ScenarioOtTotals {
   const activeQueues = getActiveQueueKeys(assessment.org_volume);
   const otRisks = assessment.effective_risks_ot;
   const doRisks = assessment.effective_risks_do;
   const byPhase: Record<string, number> = {};
+  const weeksByPhase: Record<string, number> = {};
+  const detailByPhase: Record<string, ScenarioPhaseDetail> = {};
   let grandTotal = 0;
+  let grandTotalWeeks = 0;
+  let grandDetail = { ...EMPTY_SCENARIO_PHASE_DETAIL };
 
   for (const q of activeQueues) {
     const queueLines = assessment.phase_calc?.queues?.[q] ?? {};
     const bases = computeAllPhaseBases(q, assessment, fsItems);
     const prods = computeAllPhaseProds(
       q, assessment, fsItems, otRisks, doRisks,
-      accuracyPct, teamFteSum, queueLines, bases,
+      accuracyPct, defaultTeam, queueLines, bases,
     );
     for (const def of assessment.phase_calc_defs ?? []) {
       const enabled = queueLines[def.id] ?? def.default_enabled;
-      const ot = prods[def.id]?.ot?.total;
-      if (!enabled || ot == null || !Number.isFinite(ot)) continue;
-      byPhase[def.id] = (byPhase[def.id] ?? 0) + ot;
-      grandTotal += ot;
+      const otSide = prods[def.id]?.ot;
+      if (!enabled || !otSide) continue;
+
+      const piece = detailFromOtSide(otSide, otRisks);
+      detailByPhase[def.id] = addScenarioPhaseDetails(
+        detailByPhase[def.id] ?? { ...EMPTY_SCENARIO_PHASE_DETAIL },
+        piece,
+      );
+      byPhase[def.id] = (byPhase[def.id] ?? 0) + otSide.total;
+      grandTotal += otSide.total;
+
+      if (otSide.weeks > 0) {
+        weeksByPhase[def.id] = (weeksByPhase[def.id] ?? 0) + otSide.weeks;
+        grandTotalWeeks += otSide.weeks;
+      }
+      grandDetail = addScenarioPhaseDetails(grandDetail, piece);
     }
   }
 
-  return { byPhase, grandTotal };
+  return { byPhase, grandTotal, weeksByPhase, grandTotalWeeks, detailByPhase, grandDetail };
 }
 
 export interface ScenarioComparison {
@@ -315,14 +433,17 @@ export function computeScenarioComparison(
   fsItems: BriefingFsSel[],
   scenario: AssessmentScenario | null | undefined,
   accuracyPct: number,
-  teamFteSum: number,
+  defaultTeam: TeamProportions,
   nsi?: AssessmentNsiCache,
 ): ScenarioComparison {
-  const base = computeScenarioOtTotals(baseAssessment, fsItems, accuracyPct, teamFteSum);
+  const base = computeScenarioOtTotals(baseAssessment, fsItems, accuracyPct, defaultTeam);
   const effective = resolveScenarioAssessment(baseAssessment, scenario, nsi);
   const scenarioFs = resolveScenarioFsItems(fsItems, scenario);
-  const scenarioTotals = computeScenarioOtTotals(effective, scenarioFs, accuracyPct, teamFteSum);
-  return { base, scenario: scenarioTotals };
+  const scenarioTotals = computeScenarioOtTotals(effective, scenarioFs, accuracyPct, defaultTeam);
+  return {
+    base: normalizeScenarioOtTotals(base),
+    scenario: normalizeScenarioOtTotals(scenarioTotals),
+  };
 }
 
 export function phaseRowsForComparison(defs: PhaseCalcLineDef[]): PhaseCalcLineDef[] {
@@ -350,7 +471,7 @@ export function buildScenarioSnapshotPayload(
   fsItems: BriefingFsSel[],
   scenario: AssessmentScenario | null,
   accuracyPct: number,
-  teamFteSum: number,
+  defaultTeam: TeamProportions,
   options: {
     name: string;
     sent_to_client: boolean;
@@ -360,7 +481,7 @@ export function buildScenarioSnapshotPayload(
   nsi?: AssessmentNsiCache,
 ): CreateSnapshotPayload {
   const comparison = computeScenarioComparison(
-    assessment, fsItems, scenario, accuracyPct, teamFteSum, nsi,
+    assessment, fsItems, scenario, accuracyPct, defaultTeam, nsi,
   );
   const sp = computeScenarioSpDelta(fsItems, scenario);
 
@@ -383,7 +504,7 @@ export function buildScenarioSnapshotPayload(
       assessment: JSON.parse(JSON.stringify(assessment)),
       fs_items: JSON.parse(JSON.stringify(fsItems)),
       accuracy_pct: accuracyPct,
-      team_fte_sum: teamFteSum,
+      team_fte_sum: sumTeamFte(defaultTeam),
     };
   }
 

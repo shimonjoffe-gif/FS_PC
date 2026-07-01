@@ -1,6 +1,7 @@
 import { db } from './db';
 import {
   FS_QUEUE_KEYS, FsQueuesMap, EMPTY_QUEUES, parseQueuesJson, queuesFromLegacy, primaryQueue, anyQueueEnabled, enabledFromQueues,
+  FS_QUEUE_LABELS,
 } from './fsQueues';
 import { compareFsByGroupThenPrefix } from './fsPrefixSort';
 import { loadBriefingQueueRates, effectiveRateForQueue } from './briefingAssessmentRates';
@@ -28,6 +29,7 @@ export interface BriefingParams {
   sp_cost_rub: number;
   phases_json: PhaseConfig[];
   team_json: TeamProportions;
+  queue_labels_json?: Record<string, string>;
 }
 
 export interface FsSelection {
@@ -183,6 +185,7 @@ export function getDefaultParams(): BriefingParams {
     sp_cost_rub: hourlyRate * hoursPerDay,
     phases_json: phases.map(p => ({ phase_id: p.id, name: p.name, enabled: p.enabled_default === 1 })),
     team_json: { ...DEFAULT_TEAM },
+    queue_labels_json: { ...FS_QUEUE_LABELS },
   };
 }
 

@@ -1,17 +1,18 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import type {
   BriefingFull, Industry, Segment, MaturityLevel, Problem, Solution, Widget,
-  BriefingFsSel, BriefingParams, TeamProportions, BriefingCalcResult,
-  FsQueueKey, FsQueuesMap, BriefingAssessment,
+  BriefingFsSel, BriefingParams, TeamProportions,
+  FsQueueKey, FsQueuesMap, BriefingAssessment, QueueLabelsMap,
 } from '../types';
 import {
-  FS_QUEUE_KEYS, FS_QUEUE_LABELS, parseQueuesJson, anyQueueEnabled, itemQueues,
+  FS_QUEUE_KEYS, FS_QUEUE_LABELS, parseQueuesJson, parseQueueLabels, queueLabel,
+  anyQueueEnabled, itemQueues,
 } from '../types';
 import { compareFsByGroupPrefix, compareFsPrefix } from '../utils/fsPrefixSort';
 import {
   getBriefing, updateBriefing, saveBriefingProblems, saveBriefingSolutions,
   saveBriefingWidgets, saveBriefingFs, saveBriefingParams, deriveBriefingFs,
-  calculateBriefing, generateProjectFromBriefing, patchBriefingAssessment,
+  generateProjectFromBriefing, patchBriefingAssessment,
   getIndustries, getSegmentsByIndustry, getMaturityLevels, getProblems, getSolutions,
   getWidgetsBySolution,
 } from '../api';
@@ -30,7 +31,11 @@ import { loadAssessmentNsi, type AssessmentNsiCache } from '../assessmentNsi';
 import AssessmentTab from './AssessmentTab';
 import PhaseCalcTable from './PhaseCalcTable';
 import PhaseCalcParamsPanel from './PhaseCalcParamsPanel';
+import CollapsibleSection from './CollapsibleSection';
+import QueueSwitcher from './QueueSwitcher';
 import AssessmentScenariosTab from './AssessmentScenariosTab';
+import SummaryPhaseDoTable from './SummaryPhaseDoTable';
+import { computeSummaryPhaseDoTable } from '../summaryPhaseCalc';
 import {
   mergePhaseCalcParams,
   resetQueuePhaseParamToAuto,
@@ -49,6 +54,9 @@ import {
   type PhaseCalcNumericKey,
 } from '../phaseCalcParams';
 import { computeAutoC89FromR81 } from '../phaseCalc';
+import { DEFAULT_TEAM } from '../teamLabels';
+import { yesNoLabel, yesNoClass } from '../utils/yesNoBadge';
+import { numericInputHandlers } from '../utils/numericInputHandlers';
 
 type Tab = 'customer' | 'problems' | 'solutions' | 'fs' | 'assessment' | 'params' | 'scenarios' | 'summary';
 
@@ -74,21 +82,8 @@ function categoryToHeadcount(cat: string): number {
 
 const OVERRIDE_INPUT_CLASS = 'bg-amber-50 border-amber-300';
 
-const TEAM_LABELS: { key: keyof TeamProportions; label: string }[] = [
-  { key: 'рп', label: 'РП' },
-  { key: 'аналит_конс', label: 'Аналитик-консультант' },
-  { key: 'аналит_эксп', label: 'Аналитик-эксперт' },
-  { key: 'архит', label: 'Архитектор' },
-  { key: 'програм1', label: 'Программист 1' },
-  { key: 'програм2', label: 'Программист 2' },
-  { key: 'куратор', label: 'Куратор' },
-];
-
 const SAVE_BTN_CLASS =
   'text-sm bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:opacity-50';
-
-import { yesNoLabel, yesNoClass } from '../utils/yesNoBadge';
-import { numericInputHandlers } from '../utils/numericInputHandlers';
 
 function defaultExpandedGroups(items: BriefingFsSel[]): Set<string> {
   const groups = groupFsItems(items);
@@ -148,11 +143,68 @@ function aggregateGroupQueues(groupItems: BriefingFsSel[]): { allOn: boolean; by
 
 type QueueDragPayload = { fsItemId: number; fromQueue: FsQueueKey };
 
+function EditableQueueHeader({
+  label,
+  onChange,
+}: {
+  label: string;
+  onChange: (next: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(label);
+
+  useEffect(() => {
+    setDraft(label);
+  }, [label]);
+
+  if (editing) {
+    return (
+      <input
+        type="text"
+        className="w-full min-w-[4.5rem] text-center text-[10px] border border-blue-300 rounded px-1 py-0.5 bg-white"
+        value={draft}
+        autoFocus
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => {
+          onChange(draft);
+          setEditing(false);
+        }}
+        onKeyDown={e => {
+          if (e.key === 'Enter') {
+            onChange(draft);
+            setEditing(false);
+          }
+          if (e.key === 'Escape') {
+            setDraft(label);
+            setEditing(false);
+          }
+        }}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="w-full text-center hover:text-blue-600 truncate"
+      title="Клик — переименовать очередь"
+      onClick={() => setEditing(true)}
+    >
+      {label}
+    </button>
+  );
+}
+
 function FsQueueTable({
-  items, onChange,
+  items,
+  onChange,
+  queueLabels,
+  onQueueLabelChange,
 }: {
   items: BriefingFsSel[];
   onChange: (item: BriefingFsSel, patch: Partial<BriefingFsSel>) => void;
+  queueLabels: QueueLabelsMap;
+  onQueueLabelChange: (q: FsQueueKey, label: string) => void;
 }) {
   const [dragPayload, setDragPayload] = useState<QueueDragPayload | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => defaultExpandedGroups(items));
@@ -255,7 +307,12 @@ function FsQueueTable({
             <th className="text-left p-2 border min-w-[140px] bg-slate-50">Виджеты</th>
             <th className="text-center p-2 border w-24 bg-slate-50">Все очереди</th>
             {FS_QUEUE_KEYS.map(q => (
-              <th key={q} className="text-center p-2 border w-20 bg-slate-50">{FS_QUEUE_LABELS[q]}</th>
+              <th key={q} className="text-center p-2 border w-24 bg-slate-50">
+                <EditableQueueHeader
+                  label={queueLabel(queueLabels, q)}
+                  onChange={next => onQueueLabelChange(q, next)}
+                />
+              </th>
             ))}
           </tr>
         </thead>
@@ -518,7 +575,7 @@ function TabSaveBar({
   const saving = savingTab === tabId;
   const fb = feedback?.tab === tabId ? feedback : null;
   return (
-    <div className="flex items-center gap-3 pt-4 mt-4 border-t border-slate-100">
+    <div className="flex items-center gap-3">
       <button onClick={onSave} disabled={saving} className={SAVE_BTN_CLASS}>
         {saving ? 'Сохранение...' : 'Сохранить'}
       </button>
@@ -552,7 +609,6 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
   const [problems, setProblems] = useState<Problem[]>([]);
   const [availableSolutions, setAvailableSolutions] = useState<Solution[]>([]);
   const [solutionWidgets, setSolutionWidgets] = useState<Record<number, Widget[]>>({});
-  const [calc, setCalc] = useState<BriefingCalcResult | null>(null);
   const [savingTab, setSavingTab] = useState<Tab | null>(null);
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
   const [customProblem, setCustomProblem] = useState('');
@@ -634,11 +690,17 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
     }
   }, [data?.solutions]);
 
-  useEffect(() => {
-    if (tab === 'summary' && data) {
-      calculateBriefing(briefingId).then(setCalc);
-    }
-  }, [tab, briefingId, data?.fs_items]);
+  const summaryPhaseDo = useMemo(() => {
+    if (!data?.assessment) return null;
+    const p = data.params;
+    const t = parseJson<TeamProportions>(p.team_json, DEFAULT_TEAM);
+    return computeSummaryPhaseDoTable(
+      data.assessment,
+      data.fs_items,
+      p.accuracy ?? 0,
+      t,
+    );
+  }, [data, assessmentRecalcFlash]);
 
   async function runTabSave(tabId: Tab, fn: () => Promise<void>) {
     setSavingTab(tabId);
@@ -715,6 +777,9 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
           story_points: i.story_points ?? undefined,
         };
       }));
+      await saveBriefingParams(briefingId, {
+        queue_labels_json: parseQueueLabels(data.params.queue_labels_json),
+      });
       await load();
     });
   }
@@ -825,14 +890,12 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
   function saveParamsTab() {
     if (!data) return;
     const p = data.params;
-    const tm = parseJson<TeamProportions>(p.team_json, {
-      рп: 0.15, аналит_конс: 0.25, аналит_эксп: 0.1,
-      архит: 0.15, програм1: 0.2, програм2: 0.1, куратор: 0.05,
-    });
+    const tm = parseJson<TeamProportions>(p.team_json, DEFAULT_TEAM);
     void runTabSave('params', async () => {
       await saveBriefingParams(briefingId, {
         accuracy: p.accuracy,
         team_json: tm,
+        queue_labels_json: parseQueueLabels(p.queue_labels_json),
       });
       if (data.assessment) {
         const a = data.assessment;
@@ -880,10 +943,7 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
   }
 
   function saveSummaryTab() {
-    void runTabSave('summary', async () => {
-      const result = await calculateBriefing(briefingId);
-      setCalc(result);
-    });
+    void runTabSave('summary', async () => {});
   }
 
   async function toggleProblem(problemId: number) {
@@ -928,10 +988,10 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
     await load();
   }
 
-  async function handleDeriveFs() {
+  async function handleDeriveFs(goToFsTab = true) {
     await deriveBriefingFs(briefingId);
     await load();
-    setTab('fs');
+    if (goToFsTab) setTab('fs');
   }
 
   async function updateFsItem(item: BriefingFsSel, patch: Partial<BriefingFsSel>) {
@@ -1161,11 +1221,29 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
   }
 
   const params = data.params;
-  const team = parseJson<TeamProportions>(params.team_json, {
-    рп: 0.15, аналит_конс: 0.25, аналит_эксп: 0.1,
-    архит: 0.15, програм1: 0.2, програм2: 0.1, куратор: 0.05,
-  });
-  const teamFteSum = TEAM_LABELS.reduce((sum, { key }) => sum + (team[key] ?? 0), 0);
+  const team = parseJson<TeamProportions>(params.team_json, DEFAULT_TEAM);
+  const queueLabels = parseQueueLabels(params.queue_labels_json);
+
+  function updateQueueLabel(q: FsQueueKey, name: string) {
+    setData(d => {
+      if (!d) return d;
+      const labels = parseQueueLabels(d.params.queue_labels_json);
+      const trimmed = name.trim();
+      labels[q] = trimmed || FS_QUEUE_LABELS[q];
+      return { ...d, params: { ...d.params, queue_labels_json: labels } };
+    });
+  }
+
+  const tabSaveHandlers: Record<Tab, () => void> = {
+    customer: saveCustomerTab,
+    problems: saveProblemsTab,
+    solutions: saveSolutionsTab,
+    fs: saveFsTab,
+    assessment: saveAssessmentTab,
+    params: saveParamsTab,
+    scenarios: saveScenariosTab,
+    summary: saveSummaryTab,
+  };
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -1180,6 +1258,35 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
             {t.label}
           </button>
         ))}
+      </div>
+
+      <div className="bg-white border-b border-slate-200 px-4 py-2 shrink-0">
+        <div className="flex items-center gap-3 flex-wrap">
+          <TabSaveBar
+            tabId={tab}
+            onSave={tabSaveHandlers[tab]}
+            savingTab={savingTab}
+            feedback={saveFeedback}
+          />
+          {tab === 'solutions' && (
+            <button
+              type="button"
+              onClick={() => void handleDeriveFs(true)}
+              className="text-sm bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
+            >
+              Сформировать ФС →
+            </button>
+          )}
+          {tab === 'fs' && (
+            <button
+              type="button"
+              onClick={() => void handleDeriveFs(false)}
+              className="text-sm text-blue-600 border border-blue-200 px-3 py-1.5 rounded hover:bg-blue-50"
+            >
+              Обновить из выборов
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-4">
@@ -1240,7 +1347,6 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                 ))}
               </select>
             </div>
-            <TabSaveBar tabId="customer" onSave={saveCustomerTab} savingTab={savingTab} feedback={saveFeedback} />
           </div>
         )}
 
@@ -1280,7 +1386,6 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                 onKeyDown={e => { if (e.key === 'Enter') addCustomProblem(); }} />
               <button onClick={addCustomProblem} className="text-sm bg-slate-100 px-3 py-2 rounded hover:bg-slate-200">+</button>
             </div>
-            <TabSaveBar tabId="problems" onSave={saveProblemsTab} savingTab={savingTab} feedback={saveFeedback} />
           </div>
         )}
 
@@ -1325,30 +1430,25 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                 </div>
               );
             })}
-            <div className="flex flex-wrap items-center gap-3">
-              <button onClick={handleDeriveFs}
-                className="text-sm bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
-                Сформировать ФС →
-              </button>
-            </div>
-            <TabSaveBar tabId="solutions" onSave={saveSolutionsTab} savingTab={savingTab} feedback={saveFeedback} />
           </div>
         )}
 
         {tab === 'fs' && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-xs text-slate-500">
-                Полный каталог ФС. Группы с сопоставлениями развёрнуты; пункты ФС и детали — свёрнуты по умолчанию. На строке группы — сводные Да/Нет по дочерним пунктам. Перетащите «Да» между очередями.
-              </p>
-              <button onClick={handleDeriveFs} className="text-xs text-blue-500 hover:text-blue-700">Обновить из выборов</button>
-            </div>
+            <p className="text-xs text-slate-500">
+              Полный каталог ФС. Клик по заголовку очереди — переименование (сохраняется с «Сохранить»).
+              Группы с сопоставлениями развёрнуты; пункты ФС и детали — свёрнуты по умолчанию.
+            </p>
             {data.fs_items.length === 0 ? (
               <p className="text-sm text-slate-400">Каталог ФС пуст. Запустите импорт: npm run import:briefing-data --workspace=server</p>
             ) : (
-              <FsQueueTable items={data.fs_items} onChange={updateFsItem} />
+              <FsQueueTable
+                items={data.fs_items}
+                onChange={updateFsItem}
+                queueLabels={queueLabels}
+                onQueueLabelChange={updateQueueLabel}
+              />
             )}
-            <TabSaveBar tabId="fs" onSave={saveFsTab} savingTab={savingTab} feedback={saveFeedback} />
           </div>
         )}
 
@@ -1359,123 +1459,110 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
               recalcFlash={assessmentRecalcFlash}
               onChange={handleAssessmentChange}
             />
-            <TabSaveBar tabId="assessment" onSave={saveAssessmentTab} savingTab={savingTab} feedback={saveFeedback} />
           </div>
         )}
 
         {tab === 'params' && (
           <div className="w-full space-y-4">
-            {data.assessment && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <div className="text-xs text-slate-500">
-                      Story Points, технология и ставки по очередям — C20, C21, D20, E20, C33, C32
+            {data.assessment && (() => {
+              const fsSp = computeQueueSpFromFs(data.fs_items ?? []);
+              const unifiedRateExtra = (
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={data.assessment!.unified_rate_enabled}
+                    onChange={e => {
+                      const enabled = e.target.checked;
+                      if (enabled) {
+                        const maxRate = computeAutoUnifiedRate(data.assessment!.queue_calcs);
+                        updateAssessment({
+                          unified_rate_enabled: true,
+                          unified_rate: maxRate,
+                          unified_rate_manual: false,
+                        });
+                      } else {
+                        updateAssessment({ unified_rate_enabled: false });
+                      }
+                    }}
+                  />
+                  Единая ставка по очередям
+                </label>
+              );
+              return (
+                <CollapsibleSection
+                  title="SP, технология и ставки"
+                  subtitle="C20, C21, D20, E20, C33, C32 — по очередям"
+                  headerExtra={unifiedRateExtra}
+                >
+                  {data.assessment!.unified_rate_enabled && (
+                    <div className="mb-3 flex items-end gap-3 flex-wrap">
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Единая ставка, руб/ч</label>
+                        <input
+                          type="number"
+                          min="0"
+                          className={`w-40 text-sm border rounded px-3 py-2 text-right ${
+                            data.assessment!.unified_rate_manual ? 'bg-amber-50 border-amber-300' : ''
+                          }`}
+                          value={
+                            isUnifiedRateAutoMode(data.assessment!)
+                              ? computeAutoUnifiedRate(data.assessment!.queue_calcs)
+                              : data.assessment!.unified_rate
+                          }
+                          onChange={e => {
+                            updateAssessment({
+                              unified_rate: Number(e.target.value),
+                              unified_rate_manual: true,
+                            });
+                          }}
+                        />
+                      </div>
+                      {data.assessment!.unified_rate_manual && (
+                        <button
+                          type="button"
+                          className="text-xs text-blue-600 hover:underline pb-2"
+                          onClick={() => {
+                            const maxRate = computeAutoUnifiedRate(data.assessment!.queue_calcs);
+                            updateAssessment({
+                              unified_rate: maxRate,
+                              unified_rate_manual: false,
+                            });
+                          }}
+                        >
+                          Сбросить к max
+                        </button>
+                      )}
                     </div>
-                    <p className="text-[10px] text-slate-400 mt-0.5">
-                      Технология на каждую очередь — авто из оценки или вручную. Ставка из НСИ по технологии.
-                    </p>
-                  </div>
-                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={data.assessment.unified_rate_enabled}
-                      onChange={e => {
-                        const enabled = e.target.checked;
-                        if (enabled) {
-                          const maxRate = computeAutoUnifiedRate(
-                            data.assessment!.queue_calcs,
-                          );
-                          updateAssessment({
-                            unified_rate_enabled: true,
-                            unified_rate: maxRate,
-                            unified_rate_manual: false,
-                          });
-                        } else {
-                          updateAssessment({ unified_rate_enabled: false });
-                        }
-                      }}
-                    />
-                    Единая ставка по очередям
-                  </label>
-                </div>
-                {data.assessment.unified_rate_enabled && (
-                  <div className="mb-3 flex items-end gap-3 flex-wrap">
-                    <div>
-                      <label className="text-xs text-slate-500 block mb-1">Единая ставка, руб/ч</label>
-                      <input
-                        type="number"
-                        min="0"
-                        className={`w-40 text-sm border rounded px-3 py-2 text-right ${
-                          data.assessment.unified_rate_manual ? 'bg-amber-50 border-amber-300' : ''
-                        }`}
-                        value={
-                          isUnifiedRateAutoMode(data.assessment)
-                            ? computeAutoUnifiedRate(data.assessment.queue_calcs)
-                            : data.assessment.unified_rate
-                        }
-                        onChange={e => {
-                          updateAssessment({
-                            unified_rate: Number(e.target.value),
-                            unified_rate_manual: true,
-                          });
-                        }}
-                      />
-                    </div>
-                    {data.assessment.unified_rate_manual && (
-                      <button
-                        type="button"
-                        className="text-xs text-blue-600 hover:underline pb-2"
-                        onClick={() => {
-                          const maxRate = computeAutoUnifiedRate(
-                            data.assessment!.queue_calcs,
-                          );
-                          updateAssessment({
-                            unified_rate: maxRate,
-                            unified_rate_manual: false,
-                          });
-                        }}
-                      >
-                        Сбросить к max
-                      </button>
-                    )}
-                  </div>
-                )}
-                <table className="w-full text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 text-slate-500">
-                      <th className="p-2 border text-left">Очередь</th>
-                      <th className="p-2 border text-center w-16">Активна</th>
-                      <th className="p-2 border text-right w-24"
-                        title="Функциональный объём — без интеграций и НМД">SP</th>
-                      <th className="p-2 border text-right w-28">SP Интегр.</th>
-                      <th className="p-2 border text-right w-24">SP НМД</th>
-                      <th className="p-2 border text-right w-28"
-                        title="Сценарии нагрузочного тестирования — авто ROUNDUP(C20/5, 0)">
-                        Сцен. НТ
-                      </th>
-                      <th className="p-2 border text-left min-w-[140px]">Технология (C33)</th>
-                      <th className="p-2 border text-right w-24" title="Авто из технологии и НСИ">Ставка (C32)</th>
-                      <th className="p-2 border text-right w-28">Ручная ставка</th>
-                      <th className="p-2 border w-28"></th>
-                    </tr>
-                    <tr className="bg-slate-50 text-slate-400 text-[10px]">
-                      <th className="p-1 border" />
-                      <th className="p-1 border text-center">Яч.</th>
-                      <th className="p-1 border text-center">C20</th>
-                      <th className="p-1 border text-center">C21</th>
-                      <th className="p-1 border text-center">D20</th>
-                      <th className="p-1 border text-center">E20</th>
-                      <th className="p-1 border text-center">по очереди</th>
-                      <th className="p-1 border text-center">₽/ч</th>
-                      <th className="p-1 border text-center">₽/ч</th>
-                      <th className="p-1 border" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      const fsSp = computeQueueSpFromFs(data.fs_items ?? []);
-                      return FS_QUEUE_KEYS.map(q => {
+                  )}
+                  <table className="w-full text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500">
+                        <th className="p-2 border text-left">Очередь</th>
+                        <th className="p-2 border text-center w-16">Активна</th>
+                        <th className="p-2 border text-right w-24" title="Функциональный объём — без интеграций и НМД">SP</th>
+                        <th className="p-2 border text-right w-28">SP Интегр.</th>
+                        <th className="p-2 border text-right w-24">SP НМД</th>
+                        <th className="p-2 border text-right w-28" title="Сценарии нагрузочного тестирования — авто ROUNDUP(C20/5, 0)">Сцен. НТ</th>
+                        <th className="p-2 border text-left min-w-[140px]">Технология (C33)</th>
+                        <th className="p-2 border text-right w-24" title="Авто из технологии и НСИ">Ставка (C32)</th>
+                        <th className="p-2 border text-right w-28">Ручная ставка</th>
+                        <th className="p-2 border w-28" />
+                      </tr>
+                      <tr className="bg-slate-50 text-slate-400 text-[10px]">
+                        <th className="p-1 border" />
+                        <th className="p-1 border text-center">Яч.</th>
+                        <th className="p-1 border text-center">C20</th>
+                        <th className="p-1 border text-center">C21</th>
+                        <th className="p-1 border text-center">D20</th>
+                        <th className="p-1 border text-center">E20</th>
+                        <th className="p-1 border text-center">по очереди</th>
+                        <th className="p-1 border text-center">₽/ч</th>
+                        <th className="p-1 border text-center">₽/ч</th>
+                        <th className="p-1 border" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {FS_QUEUE_KEYS.map(q => {
                         const row = data.assessment!.org_volume.queues[q];
                         const qc = data.assessment!.queue_calcs.find(r => r.queue === q);
                         const functionalPlaceholder = (fsSp.functional_sp[q] || 0) > 0
@@ -1487,70 +1574,50 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                         const nmdPlaceholder = (fsSp.nmd_sp_auto[q] || 0) > 0
                           ? String(fsSp.nmd_sp_auto[q])
                           : String(DEV_TEST_NMD_SP[q]);
-                        const c20Effective = effectiveFunctionalSp(
-                          q, row.functional_sp, fsSp.functional_sp[q],
-                        );
-                        const loadTestPlaceholder = String(
-                          autoLoadTestScenarios(row.active, c20Effective),
-                        );
+                        const c20Effective = effectiveFunctionalSp(q, row.functional_sp, fsSp.functional_sp[q]);
+                        const loadTestPlaceholder = String(autoLoadTestScenarios(row.active, c20Effective));
                         return (
                           <tr key={q}>
-                            <td className="p-2 border font-medium">{FS_QUEUE_LABELS[q]}</td>
+                            <td className="p-2 border font-medium">{queueLabel(queueLabels, q)}</td>
                             <td className="p-2 border text-center">
                               <input type="checkbox" checked={row.active} disabled
                                 className="opacity-60" title="Из ФС (активные очереди)" />
                             </td>
                             <td className="p-2 border text-right" title="SP функционала (C20)">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
+                              <input type="number" min="0" step="1"
                                 className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
                                 value={isQueueSpUnset(row.functional_sp) ? '' : row.functional_sp}
                                 placeholder={functionalPlaceholder}
                                 onChange={e => setOrgSpField(q, 'functional_sp', e.target.value)}
                                 onBlur={e => commitOrgSpField(q, 'functional_sp', e.target.value)}
-                                {...numericInputHandlers}
-                              />
+                                {...numericInputHandlers} />
                             </td>
                             <td className="p-2 border text-right" title="SP интеграций (C21)">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
+                              <input type="number" min="0" step="1"
                                 className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
                                 value={isQueueSpUnset(row.integrations_sp) ? '' : row.integrations_sp}
                                 placeholder={integrationsPlaceholder}
                                 onChange={e => setOrgSpField(q, 'integrations_sp', e.target.value)}
                                 onBlur={e => commitOrgSpField(q, 'integrations_sp', e.target.value)}
-                                {...numericInputHandlers}
-                              />
+                                {...numericInputHandlers} />
                             </td>
                             <td className="p-2 border text-right" title="SP НМД (D20)">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
+                              <input type="number" min="0" step="1"
                                 className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
                                 value={isQueueSpUnset(row.nmd_sp) ? '' : row.nmd_sp}
                                 placeholder={nmdPlaceholder}
                                 onChange={e => setOrgSpField(q, 'nmd_sp', e.target.value)}
                                 onBlur={e => commitOrgSpField(q, 'nmd_sp', e.target.value)}
-                                {...numericInputHandlers}
-                              />
+                                {...numericInputHandlers} />
                             </td>
                             <td className="p-2 border text-right" title="Сценариев нагрузочного тестирования (E20)">
-                              <input
-                                type="number"
-                                min="0"
-                                step="1"
+                              <input type="number" min="0" step="1"
                                 className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
                                 value={isQueueSpUnset(row.load_test_scenarios) ? '' : row.load_test_scenarios}
                                 placeholder={loadTestPlaceholder}
                                 onChange={e => setOrgSpField(q, 'load_test_scenarios', e.target.value)}
                                 onBlur={e => commitOrgSpField(q, 'load_test_scenarios', e.target.value)}
-                                {...numericInputHandlers}
-                              />
+                                {...numericInputHandlers} />
                             </td>
                             {qc ? (
                               <>
@@ -1640,23 +1707,35 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                             )}
                           </tr>
                         );
-                      });
-                    })()}
-                  </tbody>
-                  <tfoot>
-                    <tr>
-                      <td colSpan={10} className="p-2 border text-[10px] text-slate-400">
-                        Три независимых столбца SP: C20 (функционал), C21 (интеграции), D20 (НМД).
-                        Placeholder — подсказка из ФС или тестовое значение; позже заполнение из ФС, редактирование закроем.
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            )}
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td colSpan={10} className="p-2 border text-[10px] text-slate-400">
+                          Три независимых столбца SP: C20 (функционал), C21 (интеграции), D20 (НМД).
+                          Placeholder — подсказка из ФС или тестовое значение.
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </CollapsibleSection>
+              );
+            })()}
             {data.assessment?.phase_calc_params && (
-              <PhaseCalcParamsPanel
-                params={data.assessment.phase_calc_params}
+              <CollapsibleSection
+                title="Параметры расчёта фаз"
+                headerExtra={(
+                  <QueueSwitcher
+                    showLabel
+                    value={phaseQueue}
+                    onChange={setPhaseQueue}
+                    labels={queueLabels}
+                  />
+                )}
+              >
+                <PhaseCalcParamsPanel
+                  bare
+                  params={data.assessment.phase_calc_params}
                 assessment={data.assessment}
                 fsItems={data.fs_items}
                 queue={phaseQueue}
@@ -1681,7 +1760,9 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                 onAssessmentChange={handleAssessmentChange}
                 accuracyPct={params.accuracy ?? 0}
                 onAccuracyChange={v => saveParams({ accuracy: v })}
+                queueLabels={queueLabels}
               />
+              </CollapsibleSection>
             )}
             {data.assessment?.phase_calc_defs && data.assessment.phase_calc && (
               <PhaseCalcTable
@@ -1707,26 +1788,12 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                   risksManual: data.assessment.risks_manual_do,
                 }}
                 accuracyPct={params.accuracy ?? 0}
-                teamFteSum={teamFteSum}
+                defaultTeam={team}
+                queueLabels={queueLabels}
                 onChange={patch => updateAssessment({ phase_calc: patch })}
                 onRisksChange={patch => handleAssessmentChange(patch)}
               />
             )}
-            <div>
-              <div className="text-xs text-slate-500 mb-2">Состав команды (доли FTE, для расчёта длительности)</div>
-              <div className="grid grid-cols-2 gap-2">
-                {TEAM_LABELS.map(({ key, label }) => (
-                  <div key={key}>
-                    <label className="text-[10px] text-slate-400">{label}</label>
-                    <input type="number" step="0.05" min="0" max="1"
-                      className="w-full text-sm border rounded px-2 py-1"
-                      value={team[key]}
-                      onChange={e => saveParams({ team_json: { ...team, [key]: Number(e.target.value) } })} />
-                  </div>
-                ))}
-              </div>
-            </div>
-            <TabSaveBar tabId="params" onSave={saveParamsTab} savingTab={savingTab} feedback={saveFeedback} />
           </div>
         )}
 
@@ -1738,67 +1805,30 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
               assessment={data.assessment}
               fsItems={data.fs_items}
               accuracyPct={params.accuracy ?? 0}
-              teamFteSum={teamFteSum}
+              defaultTeam={team}
               nsi={assessmentNsi ?? undefined}
               snapshots={data.assessment_snapshots ?? []}
               onChange={scenarios => updateAssessment({ assessment_scenarios: scenarios })}
               onSnapshotsChange={snaps => setData(d => d ? { ...d, assessment_snapshots: snaps } : d)}
             />
-            <TabSaveBar tabId="scenarios" onSave={saveScenariosTab} savingTab={savingTab} feedback={saveFeedback} />
           </div>
         )}
 
         {tab === 'summary' && (
           <div className="space-y-4">
-            {calc ? (
-              <>
-                <table className="w-full text-sm border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 text-slate-500 text-xs">
-                      <th className="text-left p-2 border">Очередь</th>
-                      <th className="text-left p-2 border">Фаза</th>
-                      <th className="text-right p-2 border">SP</th>
-                      <th className="text-right p-2 border">Бюджет</th>
-                      <th className="text-right p-2 border">Ставка</th>
-                      <th className="text-right p-2 border">Часы</th>
-                      <th className="text-right p-2 border">Дней</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {calc.by_queue.map(q => (
-                      <tr key={q.queue}>
-                        <td className="p-2 border">{q.queue}</td>
-                        <td className="p-2 border text-slate-500">{q.phase}</td>
-                        <td className="p-2 border text-right">{q.story_points}</td>
-                        <td className="p-2 border text-right">{q.budget.toLocaleString('ru')} ₽</td>
-                        <td className="p-2 border text-right">{q.rate.toLocaleString('ru')} ₽/ч</td>
-                        <td className="p-2 border text-right">{q.hours}</td>
-                        <td className="p-2 border text-right">{q.duration_days}</td>
-                      </tr>
-                    ))}
-                    <tr className="font-semibold bg-blue-50">
-                      <td className="p-2 border" colSpan={2}>Итого</td>
-                      <td className="p-2 border text-right">{calc.totals.story_points}</td>
-                      <td className="p-2 border text-right">{calc.totals.budget.toLocaleString('ru')} ₽</td>
-                      <td className="p-2 border text-right">—</td>
-                      <td className="p-2 border text-right">{calc.totals.hours}</td>
-                      <td className="p-2 border text-right">{calc.totals.duration_days}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                {data.project_id ? (
-                  <p className="text-sm text-green-600">Проект уже создан (ID: {data.project_id})</p>
-                ) : (
-                  <button onClick={handleGenerateProject}
-                    className="text-sm bg-blue-600 text-white px-6 py-2.5 rounded hover:bg-blue-700">
-                    Сформировать калькулятор
-                  </button>
-                )}
-              </>
+            {summaryPhaseDo ? (
+              <SummaryPhaseDoTable data={summaryPhaseDo} queueLabels={queueLabels} />
             ) : (
-              <p className="text-sm text-slate-400">Расчёт...</p>
+              <p className="text-sm text-slate-400">Нет данных для расчёта</p>
             )}
-            <TabSaveBar tabId="summary" onSave={saveSummaryTab} savingTab={savingTab} feedback={saveFeedback} />
+            {data.project_id ? (
+              <p className="text-sm text-green-600">Проект уже создан (ID: {data.project_id})</p>
+            ) : (
+              <button onClick={handleGenerateProject}
+                className="text-sm bg-blue-600 text-white px-6 py-2.5 rounded hover:bg-blue-700">
+                Сформировать калькулятор
+              </button>
+            )}
           </div>
         )}
       </div>

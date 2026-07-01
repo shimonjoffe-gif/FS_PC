@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type {
   PhaseCalcLineDef, PhaseCalcState, FsQueueKey, RisksC51C57, RisksManualKeys,
-  BriefingAssessment, BriefingFsSel,
+  BriefingAssessment, BriefingFsSel, TeamProportions, QueueLabelsMap,
 } from '../types';
 import type { PhaseBaseResult } from '../phaseCalc';
 import { computeAllPhaseBases } from '../phaseCalc';
@@ -19,6 +19,7 @@ import QueueSwitcher from './QueueSwitcher';
 import { yesNoLabel, yesNoClass, YES_NO_BADGE_CLASS } from '../utils/yesNoBadge';
 import { numericInputHandlers } from '../utils/numericInputHandlers';
 import { formatMoneyRub, formatStepNumber, formatGroupedInteger } from '../utils/formatNumber';
+import { TEAM_LABELS, sumTeamFte, effectiveTeamForPhaseLine } from '../teamLabels';
 
 const PLACEHOLDER = '—';
 const OVERRIDE_CLASS = 'bg-amber-50 border-amber-300';
@@ -42,6 +43,8 @@ const BREAKDOWN_COLS = ITogo_BREAKDOWN_LINES.length;
 const ITOGO_TOTAL_COLS = 1;
 const FIXED_COL_COUNT = 3;
 const PROD_COLS = 5;
+const TEAM_ROLE_COLS = TEAM_LABELS.length;
+const TEAM_EXPANDED_COLS = 1 + TEAM_ROLE_COLS;
 
 export type PhaseCalcRiskPatch = {
   risks_ot?: Partial<RisksC51C57>;
@@ -74,12 +77,13 @@ type Props = {
   doSide: SideRisksProps;
   /** Точность оценки C58, % */
   accuracyPct: number;
-  /** Σ FTE команды (Y) для расчёта длительности. */
-  teamFteSum: number;
+  /** Шаблон долей FTE (team_json) — для фаз без переопределения */
+  defaultTeam: TeamProportions;
   onChange: (patch: Partial<PhaseCalcState>) => void;
   onRisksChange: (patch: PhaseCalcRiskPatch) => void;
   activeQueue?: FsQueueKey;
   onActiveQueueChange?: (q: FsQueueKey) => void;
+  queueLabels?: QueueLabelsMap;
 };
 
 function formatSum(n: number | null): string {
@@ -229,6 +233,88 @@ function ProdCells({
   );
 }
 
+function TeamSubHeaders() {
+  return (
+    <>
+      <th className="p-1 border text-right font-semibold text-slate-600 whitespace-nowrap bg-slate-100/80">
+        Итого FTE
+      </th>
+      {TEAM_LABELS.map(({ key, label }) => (
+        <th
+          key={key}
+          className="p-1 border text-right font-normal whitespace-nowrap min-w-[4.5rem]"
+          title={label}
+        >
+          {label}
+        </th>
+      ))}
+    </>
+  );
+}
+
+function TeamCells({
+  expanded,
+  enabled,
+  team,
+  teamFteSum,
+  onTeamRoleChange,
+}: {
+  expanded: boolean;
+  enabled: boolean;
+  team: TeamProportions;
+  teamFteSum: number;
+  onTeamRoleChange?: (key: keyof TeamProportions, value: number) => void;
+}) {
+  if (!enabled) {
+    if (expanded) {
+      return (
+        <>
+          <td className="p-2 border text-right tabular-nums text-slate-400">{PLACEHOLDER}</td>
+          {TEAM_LABELS.map(({ key }) => (
+            <td key={key} className="p-2 border text-right tabular-nums text-slate-400">{PLACEHOLDER}</td>
+          ))}
+        </>
+      );
+    }
+    return (
+      <td className="p-2 border text-right tabular-nums text-slate-400">{PLACEHOLDER}</td>
+    );
+  }
+  if (expanded) {
+    return (
+      <>
+        <td className="p-2 border text-right tabular-nums font-medium bg-slate-50/80">
+          {formatStepValue(teamFteSum)}
+        </td>
+        {TEAM_LABELS.map(({ key, label }) => (
+          <td key={key} className="p-1 border text-right tabular-nums">
+            {onTeamRoleChange ? (
+              <input
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                className="w-full text-right border rounded px-1 py-0.5 tabular-nums text-[11px]"
+                value={team[key]}
+                title={label}
+                onChange={e => onTeamRoleChange(key, Number(e.target.value))}
+                {...numericInputHandlers}
+              />
+            ) : (
+              formatStepValue(team[key])
+            )}
+          </td>
+        ))}
+      </>
+    );
+  }
+  return (
+    <td className="p-2 border text-right tabular-nums font-medium" title="Σ FTE команды">
+      {formatStepValue(teamFteSum)}
+    </td>
+  );
+}
+
 function ProdSubHeaders() {
   return (
     <>
@@ -358,11 +444,12 @@ export default function PhaseCalcTable({
   ot,
   doSide,
   accuracyPct,
-  teamFteSum,
+  defaultTeam,
   onChange,
   onRisksChange,
   activeQueue: activeQueueProp,
   onActiveQueueChange,
+  queueLabels,
 }: Props) {
   const [internalQueue, setInternalQueue] = useState<FsQueueKey>('1');
   const activeQueue = activeQueueProp ?? internalQueue;
@@ -372,6 +459,7 @@ export default function PhaseCalcTable({
   };
   const [prodOtExpanded, setProdOtExpanded] = useState(false);
   const [prodDoExpanded, setProdDoExpanded] = useState(false);
+  const [teamExpanded, setTeamExpanded] = useState(false);
   const [otExpanded, setOtExpanded] = useState(false);
   const [doExpanded, setDoExpanded] = useState(false);
   const [pctDrafts, setPctDrafts] = useState<Partial<Record<RiskSide, Partial<Record<keyof RisksC51C57, string>>>>>({});
@@ -392,11 +480,11 @@ export default function PhaseCalcTable({
       ot.risks,
       doSide.risks,
       accuracyPct,
-      teamFteSum,
+      defaultTeam,
       queueLines,
       baseByLine,
     ),
-    [activeQueue, assessment, fsItems, ot.risks, doSide.risks, accuracyPct, teamFteSum, queueLines, baseByLine],
+    [activeQueue, assessment, fsItems, ot.risks, doSide.risks, accuracyPct, defaultTeam, queueLines, baseByLine],
   );
 
   const explainDef = explainLineId ? defs.find(d => d.id === explainLineId) : null;
@@ -404,12 +492,25 @@ export default function PhaseCalcTable({
 
   const prodOtColSpan = prodOtExpanded ? PROD_COLS : 1;
   const prodDoColSpan = prodDoExpanded ? PROD_COLS : 1;
+  const teamColSpan = teamExpanded ? TEAM_EXPANDED_COLS : 1;
   const otColSpan = otExpanded ? BREAKDOWN_COLS + ITOGO_TOTAL_COLS : 1;
   const doColSpan = doExpanded ? BREAKDOWN_COLS + ITOGO_TOTAL_COLS : 1;
-  const showSubHeader = prodOtExpanded || prodDoExpanded || otExpanded || doExpanded;
+  const showSubHeader = prodOtExpanded || prodDoExpanded || teamExpanded || otExpanded || doExpanded;
   const showPctRow = otExpanded || doExpanded;
   const hasManualOt = hasAnyManualRiskKeys(ot.risksManualKeys, ot.risksManual);
   const hasManualDo = hasAnyManualRiskKeys(doSide.risksManualKeys, doSide.risksManual);
+
+  function setPhaseTeam(lineId: string, next: TeamProportions) {
+    onChange({
+      team_fte: {
+        ...(phaseCalc?.team_fte ?? {}),
+        [activeQueue]: {
+          ...(phaseCalc?.team_fte?.[activeQueue] ?? {}),
+          [lineId]: next,
+        },
+      },
+    });
+  }
 
   function toggleLine(lineId: string) {
     const current = queueLines[lineId] ?? false;
@@ -512,7 +613,7 @@ export default function PhaseCalcTable({
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="text-xs text-slate-500">Расчёт фаз по очереди</div>
-        <QueueSwitcher showLabel value={activeQueue} onChange={setActiveQueue} />
+        <QueueSwitcher showLabel value={activeQueue} onChange={setActiveQueue} labels={queueLabels} />
       </div>
 
       <div className="overflow-x-auto border rounded">
@@ -524,6 +625,16 @@ export default function PhaseCalcTable({
               </th>
               <th className="p-2 border text-right min-w-[9.5rem] w-36 whitespace-nowrap">Базовая стоимость</th>
               <th className="p-2 border text-center w-20">Да/Нет</th>
+              <th className="p-2 border text-center" colSpan={teamColSpan}>
+                <span className="inline-flex items-center gap-1">
+                  {renderExpandButton(
+                    teamExpanded,
+                    () => setTeamExpanded(v => !v),
+                    'Команда — итого FTE и доли по ролям',
+                  )}
+                  Команда
+                </span>
+              </th>
               <th className="p-2 border text-center" colSpan={prodOtColSpan}>
                 <span className="inline-flex items-center gap-1">
                   {renderExpandButton(
@@ -571,6 +682,11 @@ export default function PhaseCalcTable({
                   className="p-1 border sticky left-0 z-20 bg-slate-50/80"
                   colSpan={FIXED_COL_COUNT}
                 />
+                {teamExpanded ? (
+                  <TeamSubHeaders />
+                ) : (
+                  <th className="p-1 border" />
+                )}
                 {prodOtExpanded ? (
                   <ProdSubHeaders />
                 ) : (
@@ -643,6 +759,11 @@ export default function PhaseCalcTable({
                     )}
                   </span>
                 </th>
+                {teamExpanded ? (
+                  <th className="p-1 border" colSpan={TEAM_EXPANDED_COLS} />
+                ) : (
+                  <th className="p-1 border" />
+                )}
                 {prodOtExpanded ? (
                   <th className="p-1 border" colSpan={PROD_COLS} />
                 ) : (
@@ -679,6 +800,8 @@ export default function PhaseCalcTable({
               const prod = prodByLine[def.id];
               const base = baseByLine[def.id];
               const baseImplemented = base?.total != null && Number.isFinite(base.total);
+              const lineTeam = effectiveTeamForPhaseLine(activeQueue, def.id, phaseCalc, defaultTeam);
+              const lineTeamFteSum = sumTeamFte(lineTeam);
 
               return (
                 <tr key={def.id} className={def.is_phase ? '' : 'bg-amber-50/40'}>
@@ -705,6 +828,15 @@ export default function PhaseCalcTable({
                     )}
                   </td>
                   <td className="p-2 border text-center">{renderYesNo(enabled, def.id)}</td>
+                  <TeamCells
+                    expanded={teamExpanded}
+                    enabled={enabled}
+                    team={lineTeam}
+                    teamFteSum={lineTeamFteSum}
+                    onTeamRoleChange={teamExpanded
+                      ? (key, value) => setPhaseTeam(def.id, { ...lineTeam, [key]: value })
+                      : undefined}
+                  />
                   <ProdCells
                     expanded={prodOtExpanded}
                     side={prod?.ot}
@@ -753,7 +885,8 @@ export default function PhaseCalcTable({
         </table>
       </div>
       <p className="text-[10px] text-slate-400">
-        Производственная ОТ: свёрнуто — полная сумма; ▶ — бюджет с рисками, командировочные, произв. ядро, часы, недели. Итого = произв. + резервы.
+        Команда: свёрнуто — Σ FTE на фазу; ▶ — итого и доли по ролям (редактирование в ячейках каждой фазы).
+        Производственная ОТ: свёрнуто — полная сумма; ▶ — бюджет с рисками, командировочные, произв. ядро, часы, недели.
       </p>
       {explainDef && explainResult && explainResult.total != null && (
         <PhaseBaseExplainModal

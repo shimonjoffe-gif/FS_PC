@@ -43,7 +43,7 @@ import {
 } from '../assessmentCalc';
 import { computeTrainingGroups, computeAutoC89FromR81 } from '../phaseCalc';
 import type { TrainingGroupRowCalc, TrainingGroupsCalc } from '../phaseCalc';
-import type { BriefingAssessment, BriefingFsSel } from '../types';
+import type { BriefingAssessment, BriefingFsSel, QueueLabelsMap } from '../types';
 import { numericInputHandlers } from '../utils/numericInputHandlers';
 import { OverridableNumberInput } from './OverridableNumberInput';
 import HeadcountCoeffsPanel from './HeadcountCoeffsPanel';
@@ -89,6 +89,8 @@ type Props = {
   onAssessmentChange: (patch: Record<string, unknown>) => void;
   accuracyPct: number;
   onAccuracyChange: (value: number) => void;
+  bare?: boolean;
+  queueLabels?: QueueLabelsMap;
 };
 
 function ReadonlyCell({ value, title }: { value: number | string; title?: string }) {
@@ -228,6 +230,8 @@ export default function PhaseCalcParamsPanel({
   onAssessmentChange,
   accuracyPct,
   onAccuracyChange,
+  bare = false,
+  queueLabels,
 }: Props) {
   const mergedParams = useMemo(
     () => effectivePhaseCalcParamsForQueue(queue, params),
@@ -386,11 +390,13 @@ export default function PhaseCalcParamsPanel({
   }
 
   return (
-    <div className="border rounded-lg p-3 bg-white space-y-3">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h3 className="text-sm font-semibold text-slate-700">Параметры расчёта фаз</h3>
-        <QueueSwitcher showLabel value={queue} onChange={onQueueChange} />
-      </div>
+    <div className={bare ? 'space-y-3' : 'border rounded-lg p-3 bg-white space-y-3'}>
+      {!bare && (
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <h3 className="text-sm font-semibold text-slate-700">Параметры расчёта фаз</h3>
+          <QueueSwitcher showLabel value={queue} onChange={onQueueChange} labels={queueLabels} />
+        </div>
+      )}
       <p className="text-[10px] text-slate-400">
           <span className={`inline-block w-2 h-2 rounded-sm border ${OVERRIDE_CLASS} align-middle mr-1`} />
           ≠ авто
@@ -619,7 +625,7 @@ export default function PhaseCalcParamsPanel({
       <div>
         <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
           <div className="text-xs font-medium text-slate-600">Обучение</div>
-          <QueueSwitcher showLabel value={queue} onChange={onQueueChange} />
+          <QueueSwitcher showLabel value={queue} onChange={onQueueChange} labels={queueLabels} />
         </div>
         <p className="text-[10px] text-slate-400 mb-1">
           Строка 46 (C46) — в блоке «Параметры подготовки БД». Вид обучения: авто по E (стр. 47/49 — ≤100, стр. 48 — ≤300).

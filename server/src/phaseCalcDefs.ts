@@ -196,8 +196,11 @@ export const PHASE_CALC_LINE_DEFS: PhaseCalcLineDef[] = [
 
 export type PhaseCalcQueuesState = Record<FsQueueKey, Record<string, boolean>>;
 
+export type PhaseCalcTeamFteState = Partial<Record<FsQueueKey, Record<string, Record<string, number>>>>;
+
 export interface PhaseCalcState {
   queues: PhaseCalcQueuesState;
+  team_fte?: PhaseCalcTeamFteState;
 }
 
 export function defaultPhaseCalcQueues(): PhaseCalcQueuesState {
@@ -211,15 +214,28 @@ export function defaultPhaseCalcQueues(): PhaseCalcQueuesState {
 
 export function mergePhaseCalcState(stored: Partial<PhaseCalcState> | null | undefined): PhaseCalcState {
   const defaults = defaultPhaseCalcQueues();
-  if (!stored?.queues) return { queues: defaults };
+  if (!stored?.queues && !stored?.team_fte) return { queues: defaults };
 
   const queues = { ...defaults };
-  for (const q of FS_QUEUE_KEYS) {
-    const storedQueue = stored.queues[q];
-    if (!storedQueue) continue;
-    queues[q] = { ...defaults[q], ...storedQueue };
+  if (stored?.queues) {
+    for (const q of FS_QUEUE_KEYS) {
+      const storedQueue = stored.queues[q];
+      if (!storedQueue) continue;
+      queues[q] = { ...defaults[q], ...storedQueue };
+    }
   }
-  return { queues };
+
+  let team_fte: PhaseCalcState['team_fte'];
+  if (stored?.team_fte) {
+    team_fte = {};
+    for (const q of FS_QUEUE_KEYS) {
+      if (stored.team_fte[q]) {
+        team_fte[q] = { ...stored.team_fte[q] };
+      }
+    }
+  }
+
+  return { queues, ...(team_fte ? { team_fte } : {}) };
 }
 
 export function parsePhaseCalcJson(raw: string | PhaseCalcState | null | undefined): PhaseCalcState {

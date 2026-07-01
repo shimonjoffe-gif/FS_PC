@@ -305,8 +305,18 @@ function getBriefingFull(id: number) {
   const defaults = getDefaultParams();
 
   const params = paramsRow
-    ? { ...paramsRow, accuracy: parseAccuracyPct(paramsRow.accuracy ?? defaults.accuracy) }
-    : { briefing_id: id, ...defaults, phases_json: JSON.stringify(defaults.phases_json), team_json: JSON.stringify(defaults.team_json) };
+    ? {
+      ...paramsRow,
+      accuracy: parseAccuracyPct(paramsRow.accuracy ?? defaults.accuracy),
+      queue_labels_json: paramsRow.queue_labels_json ?? JSON.stringify(defaults.queue_labels_json),
+    }
+    : {
+      briefing_id: id,
+      ...defaults,
+      phases_json: JSON.stringify(defaults.phases_json),
+      team_json: JSON.stringify(defaults.team_json),
+      queue_labels_json: JSON.stringify(defaults.queue_labels_json),
+    };
 
   return {
     ...briefing,
@@ -343,10 +353,11 @@ briefingsRouter.post('/', (req, res) => {
   const id = Number(result.lastInsertRowid);
   const defaults = getDefaultParams();
   db.prepare(`
-    INSERT INTO briefing_params(briefing_id, hourly_rate, accuracy, sp_cost_rub, phases_json, team_json)
-    VALUES (?,?,?,?,?,?)
+    INSERT INTO briefing_params(briefing_id, hourly_rate, accuracy, sp_cost_rub, phases_json, team_json, queue_labels_json)
+    VALUES (?,?,?,?,?,?,?)
   `).run(id, defaults.hourly_rate, defaults.accuracy, defaults.sp_cost_rub,
-    JSON.stringify(defaults.phases_json), JSON.stringify(defaults.team_json));
+    JSON.stringify(defaults.phases_json), JSON.stringify(defaults.team_json),
+    JSON.stringify(defaults.queue_labels_json));
   ensureAssessmentRow(id);
   res.json({ id });
 });
@@ -465,10 +476,10 @@ briefingsRouter.put('/:id/params', (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare(`SELECT * FROM briefing_params WHERE briefing_id=?`).get(id) as {
     hourly_rate: number; accuracy: unknown; sp_cost_rub: number;
-    phases_json: string; team_json: string;
+    phases_json: string; team_json: string; queue_labels_json: string | null;
   } | undefined;
   const defaults = getDefaultParams();
-  const { hourly_rate, accuracy, sp_cost_rub, phases_json, team_json } = req.body;
+  const { hourly_rate, accuracy, sp_cost_rub, phases_json, team_json, queue_labels_json } = req.body;
   const resolved = {
     hourly_rate: hourly_rate ?? existing?.hourly_rate ?? defaults.hourly_rate,
     accuracy: accuracy !== undefined && accuracy !== null
@@ -477,17 +488,22 @@ briefingsRouter.put('/:id/params', (req, res) => {
     sp_cost_rub: sp_cost_rub ?? existing?.sp_cost_rub ?? defaults.sp_cost_rub,
     phases_json: phases_json ?? existing?.phases_json ?? JSON.stringify(defaults.phases_json),
     team_json: team_json ?? existing?.team_json ?? JSON.stringify(defaults.team_json),
+    queue_labels_json: queue_labels_json != null
+      ? (typeof queue_labels_json === 'string' ? queue_labels_json : JSON.stringify(queue_labels_json))
+      : (existing?.queue_labels_json ?? JSON.stringify(defaults.queue_labels_json)),
   };
   db.prepare(`
-    INSERT INTO briefing_params(briefing_id, hourly_rate, accuracy, sp_cost_rub, phases_json, team_json)
-    VALUES (?,?,?,?,?,?)
+    INSERT INTO briefing_params(briefing_id, hourly_rate, accuracy, sp_cost_rub, phases_json, team_json, queue_labels_json)
+    VALUES (?,?,?,?,?,?,?)
     ON CONFLICT(briefing_id) DO UPDATE SET
       hourly_rate=excluded.hourly_rate, accuracy=excluded.accuracy,
-      sp_cost_rub=excluded.sp_cost_rub, phases_json=excluded.phases_json, team_json=excluded.team_json
+      sp_cost_rub=excluded.sp_cost_rub, phases_json=excluded.phases_json, team_json=excluded.team_json,
+      queue_labels_json=excluded.queue_labels_json
   `).run(
     id, resolved.hourly_rate, resolved.accuracy, resolved.sp_cost_rub,
     typeof resolved.phases_json === 'string' ? resolved.phases_json : JSON.stringify(resolved.phases_json),
     typeof resolved.team_json === 'string' ? resolved.team_json : JSON.stringify(resolved.team_json),
+    resolved.queue_labels_json,
   );
   db.prepare(`UPDATE briefings SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
   res.json({ ok: true });
@@ -706,6 +722,14 @@ briefingsRouter.patch('/:id/assessment', (req, res) => {
           ...merged.queues[queue as keyof typeof merged.queues],
           ...lines,
         };
+      }
+    }
+    if (body.phase_calc.team_fte) {
+      merged.team_fte = merged.team_fte ?? {};
+      for (const q of FS_QUEUE_KEYS) {
+        const incoming = body.phase_calc.team_fte[q];
+        if (!incoming || typeof incoming !== 'object') continue;
+        merged.team_fte[q] = { ...(merged.team_fte[q] ?? {}), ...incoming };
       }
     }
     phase_calc_json = JSON.stringify(merged);

@@ -1,14 +1,15 @@
-import type { FsQueueKey } from '../types';
-import { FS_QUEUE_KEYS, FS_QUEUE_LABELS } from '../types';
+import type { FsQueueKey, QueueLabelsMap } from '../types';
+import { FS_QUEUE_KEYS, FS_QUEUE_LABELS, queueLabel } from '../types';
 
 type Props = {
   value: FsQueueKey;
   onChange: (q: FsQueueKey) => void;
   className?: string;
   showLabel?: boolean;
+  labels?: QueueLabelsMap;
 };
 
-export default function QueueSwitcher({ value, onChange, className = '', showLabel = false }: Props) {
+export default function QueueSwitcher({ value, onChange, className = '', showLabel = false, labels }: Props) {
   return (
     <div className={`flex items-center gap-2 ${className}`}>
       {showLabel && (
@@ -26,7 +27,7 @@ export default function QueueSwitcher({ value, onChange, className = '', showLab
               : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
           }`}
         >
-          {FS_QUEUE_LABELS[q]}
+          {queueLabel(labels, q)}
         </button>
       ))}
       </div>

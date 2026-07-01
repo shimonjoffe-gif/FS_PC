@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type {
   AssessmentScenario, AssessmentScenarioSnapshot, BriefingAssessment, BriefingFsSel, FsQueueKey,
+  TeamProportions,
 } from '../types';
 import { FS_QUEUE_KEYS, FS_QUEUE_LABELS } from '../types';
 import type { AssessmentNsiCache } from '../assessmentNsi';
@@ -25,10 +26,9 @@ import {
   setScenarioPhaseEnabled,
   setScenarioQueueTechnology,
   toggleScenarioFsExcluded,
-  type ScenarioComparison,
 } from '../scenarioCalc';
-import { yesNoLabel, yesNoClass, YES_NO_BADGE_CLASS } from '../utils/yesNoBadge';
 import { formatMoneyRub } from '../utils/formatNumber';
+import ScenarioDetailComparisonTable from './ScenarioDetailComparisonTable';
 
 type Props = {
   briefingId: number;
@@ -36,7 +36,7 @@ type Props = {
   assessment: BriefingAssessment;
   fsItems: BriefingFsSel[];
   accuracyPct: number;
-  teamFteSum: number;
+  defaultTeam: TeamProportions;
   nsi?: AssessmentNsiCache;
   snapshots: AssessmentScenarioSnapshot[];
   onChange: (scenarios: AssessmentScenario[]) => void;
@@ -51,71 +51,13 @@ function formatFrozenAt(iso: string): string {
   }
 }
 
-function ComparisonTable({
-  comparison,
-  scenarioLabel,
-  phaseRows,
-  renderDelta,
-}: {
-  comparison: ScenarioComparison;
-  scenarioLabel: string;
-  phaseRows: ReturnType<typeof phaseRowsForComparison>;
-  renderDelta: (base: number, scenario: number) => string;
-}) {
-  return (
-    <table className="w-full text-sm border-collapse">
-      <thead>
-        <tr className="bg-slate-50 text-slate-500 text-xs">
-          <th className="text-left p-2 border">Фаза</th>
-          <th className="text-right p-2 border">База</th>
-          <th className="text-right p-2 border">{scenarioLabel}</th>
-          <th className="text-right p-2 border">Δ</th>
-        </tr>
-      </thead>
-      <tbody>
-        {phaseRows.map(def => {
-          const baseVal = comparison.base.byPhase[def.id] ?? 0;
-          const scVal = comparison.scenario.byPhase[def.id] ?? 0;
-          if (baseVal === 0 && scVal === 0) return null;
-          return (
-            <tr key={def.id}>
-              <td className="p-2 border">{def.label}</td>
-              <td className="p-2 border text-right tabular-nums">
-                {formatMoneyRub(baseVal || null)}
-              </td>
-              <td className="p-2 border text-right tabular-nums">
-                {formatMoneyRub(scVal || null)}
-              </td>
-              <td className="p-2 border text-right text-xs text-slate-600 tabular-nums">
-                {renderDelta(baseVal, scVal)}
-              </td>
-            </tr>
-          );
-        })}
-        <tr className="font-semibold bg-blue-50">
-          <td className="p-2 border">Итого ОТ</td>
-          <td className="p-2 border text-right tabular-nums">
-            {formatMoneyRub(comparison.base.grandTotal)}
-          </td>
-          <td className="p-2 border text-right tabular-nums">
-            {formatMoneyRub(comparison.scenario.grandTotal)}
-          </td>
-          <td className="p-2 border text-right text-xs tabular-nums">
-            {renderDelta(comparison.base.grandTotal, comparison.scenario.grandTotal)}
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  );
-}
-
 export default function AssessmentScenariosTab({
   briefingId,
   briefingUpdatedAt,
   assessment,
   fsItems,
   accuracyPct,
-  teamFteSum,
+  defaultTeam,
   nsi,
   snapshots,
   onChange,
@@ -137,9 +79,9 @@ export default function AssessmentScenariosTab({
   const comparison = useMemo(() => {
     if (!selected) return null;
     return computeScenarioComparison(
-      assessment, fsItems, selected, accuracyPct, teamFteSum, nsi,
+      assessment, fsItems, selected, accuracyPct, defaultTeam, nsi,
     );
-  }, [assessment, fsItems, selected, accuracyPct, teamFteSum, nsi]);
+  }, [assessment, fsItems, selected, accuracyPct, defaultTeam, nsi]);
 
   const activeQueues = useMemo(
     () => getActiveQueueKeys(assessment.org_volume),
@@ -248,7 +190,7 @@ export default function AssessmentScenariosTab({
         fsItems,
         selected,
         accuracyPct,
-        teamFteSum,
+        defaultTeam,
         {
           name: freezeName.trim(),
           sent_to_client: freezeSent,
@@ -364,64 +306,53 @@ export default function AssessmentScenariosTab({
               </div>
             </div>
 
-            <div>
-              <div className="text-xs text-slate-500 mb-2">Включение фаз (отличия от базы)</div>
-              <div className="flex gap-1 mb-2">
-                {FS_QUEUE_KEYS.map(q => (
+            {comparison && (
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="text-xs text-slate-500">
+                      Сравнение ОТ по фазам (live, сумма по активным очередям)
+                    </div>
+                    <div className="flex gap-1">
+                      {FS_QUEUE_KEYS.map(q => (
+                        <button
+                          key={q}
+                          type="button"
+                          onClick={() => setActiveQueue(q)}
+                          className={`text-xs px-2 py-1 rounded border ${
+                            activeQueue === q
+                              ? 'bg-blue-100 border-blue-300 text-blue-800'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          {FS_QUEUE_LABELS[q]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <button
-                    key={q}
                     type="button"
-                    onClick={() => setActiveQueue(q)}
-                    className={`text-xs px-2 py-1 rounded border ${
-                      activeQueue === q
-                        ? 'bg-blue-100 border-blue-300 text-blue-800'
-                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
+                    onClick={openFreezeModal}
+                    className="text-xs px-3 py-1.5 rounded border border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100"
                   >
-                    {FS_QUEUE_LABELS[q]}
+                    Зафиксировать КП
                   </button>
-                ))}
+                </div>
+                <ScenarioDetailComparisonTable
+                  comparison={comparison}
+                  scenarioLabel={selected.name}
+                  phaseRows={phaseRows}
+                  renderDelta={renderDelta}
+                  phaseControl={{
+                    getBaseEnabled: lineId =>
+                      getScenarioPhaseEnabled(assessment, null, activeQueue, lineId),
+                    getScenarioEnabled: lineId =>
+                      getScenarioPhaseEnabled(assessment, selected, activeQueue, lineId),
+                    onToggleScenarioPhase: togglePhase,
+                  }}
+                />
               </div>
-              <div className="border rounded overflow-auto max-h-64">
-                <table className="w-full text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 text-slate-500">
-                      <th className="text-left p-2 border">Фаза</th>
-                      <th className="text-center p-2 border w-20">База</th>
-                      <th className="text-center p-2 border w-24">Сценарий</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(assessment.phase_calc_defs ?? []).map(def => {
-                      const baseEnabled = getScenarioPhaseEnabled(assessment, null, activeQueue, def.id);
-                      const scenarioEnabled = getScenarioPhaseEnabled(assessment, selected, activeQueue, def.id);
-                      const differs = baseEnabled !== scenarioEnabled;
-                      return (
-                        <tr key={def.id} className={def.is_phase ? '' : 'bg-amber-50/40'}>
-                          <td className="p-2 border text-slate-700">{def.label}</td>
-                          <td className="p-2 border text-center">
-                            <span className={`${YES_NO_BADGE_CLASS} ${yesNoClass(baseEnabled)}`}>
-                              {yesNoLabel(baseEnabled)}
-                            </span>
-                          </td>
-                          <td className="p-2 border text-center">
-                            <button
-                              type="button"
-                              className={`${YES_NO_BADGE_CLASS} cursor-pointer ${
-                                differs ? 'ring-2 ring-amber-300 ' : ''
-                              }${yesNoClass(scenarioEnabled)}`}
-                              onClick={() => togglePhase(def.id)}
-                            >
-                              {yesNoLabel(scenarioEnabled)}
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            )}
 
             <div>
               <div className="text-xs text-slate-500 mb-2">
@@ -539,29 +470,6 @@ export default function AssessmentScenariosTab({
               </div>
             </div>
 
-            {comparison && (
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="text-xs text-slate-500">
-                    Сравнение итого ОТ (live, сумма по активным очередям)
-                  </div>
-                  <button
-                    type="button"
-                    onClick={openFreezeModal}
-                    className="text-xs px-3 py-1.5 rounded border border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100"
-                  >
-                    Зафиксировать КП
-                  </button>
-                </div>
-                <ComparisonTable
-                  comparison={comparison}
-                  scenarioLabel={selected.name}
-                  phaseRows={phaseRows}
-                  renderDelta={renderDelta}
-                />
-              </div>
-            )}
-
             <div className="border-t border-slate-200 pt-4">
               <div className="text-xs font-medium text-slate-600 mb-2">Снимки КП</div>
               {snapshots.length === 0 ? (
@@ -610,7 +518,7 @@ export default function AssessmentScenariosTab({
                     Снимок не меняется при правках базы.
                     {viewingSnapshot.extended && ' Расширенная фиксация: полный дамп сохранён.'}
                   </p>
-                  <ComparisonTable
+                  <ScenarioDetailComparisonTable
                     comparison={viewingSnapshot.results.comparison}
                     scenarioLabel={
                       viewingSnapshot.scenario_overrides?.name ?? 'Сценарий'

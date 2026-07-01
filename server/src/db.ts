@@ -361,6 +361,13 @@ export function initDB() {
     db.exec(`ALTER TABLE briefing_fs_sel ADD COLUMN queues_json TEXT DEFAULT '{"1":0,"2":0,"3":0,"4":0}'`);
   }
 
+  const paramsColNames = new Set(
+    (db.prepare(`PRAGMA table_info(briefing_params)`).all() as { name: string }[]).map(c => c.name),
+  );
+  if (!paramsColNames.has('queue_labels_json')) {
+    db.exec(`ALTER TABLE briefing_params ADD COLUMN queue_labels_json TEXT`);
+  }
+
   const assessmentCols = db.prepare(`PRAGMA table_info(briefing_assessment)`).all() as { name: string }[];
   const assessmentColNames = new Set(assessmentCols.map(c => c.name));
   if (!assessmentColNames.has('unified_rate_enabled')) {

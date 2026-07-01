@@ -1683,7 +1683,8 @@ export function applyAssessmentPatch(
 
   if (patch.phase_calc && typeof patch.phase_calc === 'object') {
     const incoming = patch.phase_calc as PhaseCalcState;
-    const prevQueues = assessment.phase_calc?.queues ?? incoming.queues;
+    const prev = assessment.phase_calc;
+    const prevQueues = prev?.queues ?? incoming.queues;
     const queues = { ...prevQueues };
     if (incoming.queues) {
       for (const q of FS_QUEUE_KEYS) {
@@ -1692,7 +1693,16 @@ export function applyAssessmentPatch(
         }
       }
     }
-    next.phase_calc = { queues };
+    let team_fte = prev?.team_fte ? { ...prev.team_fte } : undefined;
+    if (incoming.team_fte) {
+      team_fte = team_fte ?? {};
+      for (const q of FS_QUEUE_KEYS) {
+        if (incoming.team_fte[q]) {
+          team_fte[q] = { ...(team_fte[q] ?? {}), ...incoming.team_fte[q] };
+        }
+      }
+    }
+    next.phase_calc = { queues, ...(team_fte ? { team_fte } : {}) };
   }
 
   if (patch.reset_phase_calc_params) {
