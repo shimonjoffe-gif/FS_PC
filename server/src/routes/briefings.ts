@@ -11,6 +11,7 @@ import {
   SELLER_CRITERIA_DEFS, type SellerCriteria, type OrgVolumeData, type RisksC51C57,
 } from '../assessmentCalc';
 import { parseSellerCriteria, serializeSellerCriteria } from '../sellerCriteria';
+import type { FsNmdValue } from '../fsSpCalc';
 import {
   PHASE_CALC_LINE_DEFS,
   parsePhaseCalcJson,
@@ -444,14 +445,20 @@ briefingsRouter.put('/:id/fs', (req, res) => {
       fs_item_id: number; enabled?: number; queue?: string;
       queues_json?: string | Record<string, number>;
       source?: string; story_points?: number;
+      queue_sp_json?: string | Record<string, number> | null;
+      queue_nmd_json?: string | Record<string, FsNmdValue> | null;
+      queue_comment_json?: string | Record<string, string> | null;
     }[];
   };
   const upsert = db.prepare(`
-    INSERT INTO briefing_fs_sel(briefing_id, fs_item_id, enabled, queue, queues_json, source, story_points)
-    VALUES (?,?,?,?,?,?,?)
+    INSERT INTO briefing_fs_sel(briefing_id, fs_item_id, enabled, queue, queues_json, source, story_points, queue_sp_json, queue_nmd_json, queue_comment_json)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(briefing_id, fs_item_id) DO UPDATE SET
       enabled=excluded.enabled, queue=excluded.queue, queues_json=excluded.queues_json,
-      source=excluded.source, story_points=excluded.story_points
+      source=excluded.source, story_points=excluded.story_points,
+      queue_sp_json=excluded.queue_sp_json,
+      queue_nmd_json=excluded.queue_nmd_json,
+      queue_comment_json=excluded.queue_comment_json
   `);
   const tx = db.transaction(() => {
     for (const item of items ?? []) {
@@ -460,10 +467,26 @@ briefingsRouter.put('/:id/fs', (req, res) => {
       );
       const queue = item.queue ?? primaryQueue(queues);
       const enabled = enabledFromQueues(queues);
+      const queueSpJson = item.queue_sp_json == null
+        ? null
+        : typeof item.queue_sp_json === 'string'
+          ? item.queue_sp_json
+          : JSON.stringify(item.queue_sp_json);
+      const queueNmdJson = item.queue_nmd_json == null
+        ? null
+        : typeof item.queue_nmd_json === 'string'
+          ? item.queue_nmd_json
+          : JSON.stringify(item.queue_nmd_json);
+      const queueCommentJson = item.queue_comment_json == null
+        ? null
+        : typeof item.queue_comment_json === 'string'
+          ? item.queue_comment_json
+          : JSON.stringify(item.queue_comment_json);
       upsert.run(
         id, item.fs_item_id, enabled, queue,
         JSON.stringify(queues),
         item.source ?? 'manual', item.story_points ?? null,
+        queueSpJson, queueNmdJson, queueCommentJson,
       );
     }
   });

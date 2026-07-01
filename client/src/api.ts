@@ -3,7 +3,7 @@ import type {
   Briefing, BriefingFull, BriefingCalcResult, Industry, Segment, MaturityLevel,
   Problem, Solution, Widget, FsCatalogItem, FsPhase, BriefingParams, CatalogLink,
   ProjectType, ProjectTypeRate, HeadcountCoefficient, BriefingAssessment,
-  AssessmentScenarioSnapshot,
+  AssessmentScenarioSnapshot, FsNmdValue,
 } from './types';
 import type { CreateSnapshotPayload } from './scenarioCalc';
 
@@ -104,6 +104,9 @@ export const saveBriefingFs = (id: number, items: {
   fs_item_id: number; enabled?: number; queue?: string;
   queues_json?: string | Record<string, number>;
   source?: string; story_points?: number;
+  queue_sp_json?: Record<string, number> | null;
+  queue_nmd_json?: Record<string, FsNmdValue> | null;
+  queue_comment_json?: Record<string, string> | null;
 }[]) =>
   req<{ ok: boolean }>(`/briefings/${id}/fs`, { method: 'PUT', body: JSON.stringify({ items }) });
 export const saveBriefingParams = (id: number, params: Partial<BriefingParams>) =>

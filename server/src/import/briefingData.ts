@@ -236,8 +236,8 @@ function importFsCatalog(wb: XLSX.WorkBook) {
 
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '' }) as unknown[][];
   const insFs = db.prepare(`
-    INSERT INTO fs_catalog(code, prefix, name, group_name, group_prefix, description, item_type, func_type, parent_id, sort_order, phase, queue, default_queues_json, story_points)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO fs_catalog(code, prefix, name, group_name, group_prefix, description, item_type, func_type, parent_id, sort_order, phase, queue, default_queues_json, story_points, requires_nmd)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
   db.prepare(`DELETE FROM briefing_fs_sel`).run();
   db.prepare(`DELETE FROM fs_industry_blocks`).run();
@@ -270,6 +270,7 @@ function importFsCatalog(wb: XLSX.WorkBook) {
     const q3 = Number(row[20]) || 0;
     const q4 = Number(row[23]) || 0;
     const sp = Number(row[12]) || Number(row[13]) || 0;
+    const requiresNmd = cellStr(row[95]) || null;
     const defaultQueues = JSON.stringify({
       '1': q1 > 0 ? 1 : 0,
       '2': q2 > 0 ? 1 : 0,
@@ -288,14 +289,14 @@ function importFsCatalog(wb: XLSX.WorkBook) {
     if (prefix && name) {
       const result = insFs.run(
         null, prefix, name, currentGroup || null, currentGroupPrefix, null, 'item', funcTypeRaw || null, null, sortOrder++,
-        currentGroup, primaryQueue, defaultQueues, sp,
+        currentGroup, primaryQueue, defaultQueues, sp, requiresNmd,
       );
       lastItemId = Number(result.lastInsertRowid);
       count++;
     } else if (name && lastItemId) {
       insFs.run(
         null, null, name, currentGroup || null, currentGroupPrefix, desc || null, 'detail', null, lastItemId, sortOrder++,
-        currentGroup, primaryQueue, '{}', 0,
+        currentGroup, primaryQueue, '{}', 0, null,
       );
       count++;
     }

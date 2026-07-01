@@ -344,6 +344,7 @@ export function initDB() {
   }
   if (!fsColNames.has('func_type')) db.exec(`ALTER TABLE fs_catalog ADD COLUMN func_type TEXT`);
   if (!fsColNames.has('group_prefix')) db.exec(`ALTER TABLE fs_catalog ADD COLUMN group_prefix TEXT`);
+  if (!fsColNames.has('requires_nmd')) db.exec(`ALTER TABLE fs_catalog ADD COLUMN requires_nmd TEXT`);
   if (!fsColNames.has('prefix')) {
     db.exec(`ALTER TABLE fs_catalog ADD COLUMN prefix TEXT`);
     const backfill = db.prepare(`UPDATE fs_catalog SET prefix=?, code=NULL WHERE id=?`);
@@ -359,6 +360,15 @@ export function initDB() {
   const bfsCols = db.prepare(`PRAGMA table_info(briefing_fs_sel)`).all() as { name: string }[];
   if (!bfsCols.some(c => c.name === 'queues_json')) {
     db.exec(`ALTER TABLE briefing_fs_sel ADD COLUMN queues_json TEXT DEFAULT '{"1":0,"2":0,"3":0,"4":0}'`);
+  }
+  if (!bfsCols.some(c => c.name === 'queue_sp_json')) {
+    db.exec(`ALTER TABLE briefing_fs_sel ADD COLUMN queue_sp_json TEXT`);
+  }
+  if (!bfsCols.some(c => c.name === 'queue_nmd_json')) {
+    db.exec(`ALTER TABLE briefing_fs_sel ADD COLUMN queue_nmd_json TEXT`);
+  }
+  if (!bfsCols.some(c => c.name === 'queue_comment_json')) {
+    db.exec(`ALTER TABLE briefing_fs_sel ADD COLUMN queue_comment_json TEXT`);
   }
 
   const paramsColNames = new Set(

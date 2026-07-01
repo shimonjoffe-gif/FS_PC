@@ -356,7 +356,7 @@ export default function AssessmentScenariosTab({
 
             <div>
               <div className="text-xs text-slate-500 mb-2">
-                Технология по очередям (отличия от базы «Параметры РП»; ФС без изменений)
+                Технология по очередям (отличия от базы «Оценка РП»; ФС без изменений)
               </div>
               <div className="border rounded overflow-auto">
                 <table className="w-full text-xs border-collapse">
@@ -407,7 +407,7 @@ export default function AssessmentScenariosTab({
               </div>
               {assessment.unified_rate_enabled ? (
                 <p className="text-[10px] text-slate-400 mt-1">
-                  Единая ставка включена — C32 одинакова для всех очередей (как на «Параметры РП»).
+                  Единая ставка включена — C32 одинакова для всех очередей (как на «Оценка РП»).
                 </p>
               ) : null}
             </div>

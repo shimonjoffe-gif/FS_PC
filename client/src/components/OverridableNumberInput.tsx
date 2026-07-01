@@ -22,6 +22,8 @@ type Props = {
   grouped?: boolean;
   /** Расчётное поле: небо по умолчанию, янтарь только при ручной правке. */
   calculated?: boolean;
+  /** Компактный режим для ячеек таблицы ФС. */
+  compact?: boolean;
   overrideClass?: string;
   calculatedClass?: string;
   queueSpecificClass?: string;
@@ -40,6 +42,7 @@ export function OverridableNumberInput({
   title,
   grouped = false,
   calculated = false,
+  compact = false,
   overrideClass = 'bg-amber-50 border-amber-300',
   calculatedClass = 'bg-sky-50 border-sky-300',
   queueSpecificClass = 'bg-sky-50 border-sky-300',
@@ -96,13 +99,13 @@ export function OverridableNumberInput({
     : value;
 
   return (
-    <div className="flex items-center justify-end gap-0.5 min-w-0">
+    <div className={`flex items-center justify-end gap-0.5 min-w-0 ${compact ? 'flex-col' : ''}`}>
       <input
         type={grouped ? 'text' : 'number'}
         inputMode={grouped ? 'numeric' : undefined}
         step={grouped ? undefined : step}
         min={grouped ? undefined : 0}
-        className={`${VALUE_INPUT_CLASS} ${inputClass}`}
+        className={`${compact ? 'min-w-[2.75rem] w-full max-w-[3.5rem] text-xs px-1 py-0.5' : VALUE_INPUT_CLASS} text-right border rounded tabular-nums ${inputClass}`}
         value={inputValue}
         title={
           title ?? (

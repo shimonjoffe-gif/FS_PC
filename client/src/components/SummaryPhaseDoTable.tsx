@@ -24,7 +24,7 @@ export default function SummaryPhaseDoTable({ data, queueLabels }: Props) {
   if (rows.length === 0) {
     return (
       <p className="text-sm text-slate-500">
-        Нет данных по фазам. Проверьте включение фаз на вкладке «Параметры РП».
+        Нет данных по фазам. Проверьте включение фаз на вкладке «Оценка РП».
       </p>
     );
   }

@@ -2,10 +2,10 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import type {
   BriefingFull, Industry, Segment, MaturityLevel, Problem, Solution, Widget,
   BriefingFsSel, BriefingParams, TeamProportions,
-  FsQueueKey, FsQueuesMap, BriefingAssessment, QueueLabelsMap,
+  FsQueueKey, FsQueuesMap, BriefingAssessment, QueueLabelsMap, FsNmdValue,
 } from '../types';
 import {
-  FS_QUEUE_KEYS, FS_QUEUE_LABELS, parseQueuesJson, parseQueueLabels, queueLabel,
+  FS_QUEUE_KEYS, FS_QUEUE_LABELS, FS_NMD_VALUES, parseQueuesJson, parseQueueLabels, queueLabel,
   anyQueueEnabled, itemQueues,
 } from '../types';
 import { compareFsByGroupPrefix, compareFsPrefix } from '../utils/fsPrefixSort';
@@ -19,11 +19,25 @@ import {
 import {
   applyAssessmentPatch, recomputeAssessmentDerived, computeAutoUnifiedRate, isUnifiedRateAutoMode,
   computeQueueSpFromFs,
+  catalogSpForItem,
+  catalogNmdLabel,
+  effectiveFsItemSpForQueue,
+  isFsItemSpManualForQueue,
+  patchFsItemQueueSp,
+  resetFsItemQueueSp,
+  autoFsItemNmdValueForQueue,
+  effectiveFsItemNmdValueForQueue,
+  isFsItemNmdManualForQueue,
+  patchFsItemQueueNmd,
+  resetFsItemQueueNmd,
+  effectiveFsItemCommentForQueue,
+  patchFsItemQueueComment,
+  relocateFsItemQueueOverrides,
   applyOrgQueueFieldPatch,
   resetTrainingEField,
   trainingEOrgField,
   type TrainingEField,
-  DEV_TEST_FUNCTIONAL_SP, DEV_TEST_INTEGRATIONS_SP, DEV_TEST_NMD_SP, isQueueSpUnset,
+  isQueueSpUnset,
   effectiveFunctionalSp, autoLoadTestScenarios,
   QUEUE_TECHNOLOGY_OPTIONS, normalizeQueueTechnologyLabel,
 } from '../assessmentCalc';
@@ -57,6 +71,7 @@ import { computeAutoC89FromR81 } from '../phaseCalc';
 import { DEFAULT_TEAM } from '../teamLabels';
 import { yesNoLabel, yesNoClass } from '../utils/yesNoBadge';
 import { numericInputHandlers } from '../utils/numericInputHandlers';
+import { OverridableNumberInput } from './OverridableNumberInput';
 
 type Tab = 'customer' | 'problems' | 'solutions' | 'fs' | 'assessment' | 'params' | 'scenarios' | 'summary';
 
@@ -66,7 +81,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'solutions', label: 'Решения + виджеты' },
   { id: 'fs', label: 'ФС + очереди' },
   { id: 'assessment', label: 'Параметры оценки' },
-  { id: 'params', label: 'Параметры РП' },
+  { id: 'params', label: 'Оценка РП' },
   { id: 'scenarios', label: 'Варианты оценки' },
   { id: 'summary', label: 'Итоги' },
 ];
@@ -81,6 +96,7 @@ function categoryToHeadcount(cat: string): number {
 }
 
 const OVERRIDE_INPUT_CLASS = 'bg-amber-50 border-amber-300';
+const CALCULATED_SP_CLASS = 'bg-sky-50 border-sky-300';
 
 const SAVE_BTN_CLASS =
   'text-sm bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:opacity-50';
@@ -96,6 +112,133 @@ function defaultExpandedGroups(items: BriefingFsSel[]): Set<string> {
 
 function queueTotals(items: BriefingFsSel[]) {
   return computeQueueSpFromFs(items);
+}
+
+const QUEUE_SUBCOLS = 3;
+
+function hasFsItemQueueComment(item: BriefingFsSel, q: FsQueueKey): boolean {
+  return effectiveFsItemCommentForQueue(item, q).trim().length > 0;
+}
+
+function FsQueueCommentModal({
+  item,
+  queueKey,
+  queueLabels,
+  onClose,
+  onSave,
+}: {
+  item: BriefingFsSel;
+  queueKey: FsQueueKey;
+  queueLabels: QueueLabelsMap;
+  onClose: () => void;
+  onSave: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(() => effectiveFsItemCommentForQueue(item, queueKey));
+  const qLabel = queueLabel(queueLabels, queueKey);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div
+        className="relative bg-white rounded-xl shadow-2xl w-full max-w-lg flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-100">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-slate-800">Комментарий — {qLabel}</div>
+            <div className="text-[11px] text-slate-500 mt-0.5 truncate" title={item.name}>
+              {item.prefix ? `${item.prefix} · ` : ''}{item.name}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0"
+            aria-label="Закрыть"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="p-4">
+          <textarea
+            className="w-full min-h-[120px] text-sm border border-slate-200 rounded-lg px-3 py-2 resize-y focus:outline-none focus:ring-2 focus:ring-blue-200"
+            value={draft}
+            placeholder="Комментарий по очереди…"
+            autoFocus
+            onChange={e => setDraft(e.target.value)}
+          />
+        </div>
+        <div className="flex justify-end gap-2 px-4 py-3 border-t border-slate-100">
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 rounded-lg"
+            onClick={onClose}
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            onClick={() => onSave(draft)}
+          >
+            Сохранить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function parseJsonRecord<T extends Record<string, unknown>>(raw: string | T | null | undefined): T | null {
+  if (!raw) return null;
+  if (typeof raw === 'object') return Object.keys(raw).length > 0 ? raw : null;
+  try {
+    const parsed = JSON.parse(raw) as T;
+    return parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeQueueSpForSave(
+  item: BriefingFsSel,
+): Record<string, number> | null {
+  return parseJsonRecord<Record<string, number>>(item.queue_sp_json);
+}
+
+function serializeQueueNmdForSave(item: BriefingFsSel): Record<string, FsNmdValue> | null {
+  const overrides: Partial<Record<FsQueueKey, FsNmdValue>> = {};
+  for (const q of FS_QUEUE_KEYS) {
+    if (isFsItemNmdManualForQueue(item, q)) {
+      overrides[q] = effectiveFsItemNmdValueForQueue(item, q);
+    }
+  }
+  return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function serializeQueueCommentForSave(item: BriefingFsSel): Record<string, string> | null {
+  return parseJsonRecord<Record<string, string>>(item.queue_comment_json);
+}
+
+function briefingFsItemPayload(item: BriefingFsSel, opts?: { forceManual?: boolean }) {
+  const queues = itemQueues(item);
+  return {
+    fs_item_id: item.fs_item_id,
+    enabled: anyQueueEnabled(queues) ? 1 : 0,
+    queue: FS_QUEUE_KEYS.find(k => queues[k] === 1) ?? item.queue ?? '1',
+    queues_json: JSON.stringify(queues),
+    source: opts?.forceManual ? 'manual' : (item.source ?? undefined),
+    queue_sp_json: serializeQueueSpForSave(item),
+    queue_nmd_json: serializeQueueNmdForSave(item),
+    queue_comment_json: serializeQueueCommentForSave(item),
+  };
 }
 
 function groupFsItems(items: BriefingFsSel[]): { group: string; groupPrefix: string | null; items: BriefingFsSel[] }[] {
@@ -209,8 +352,213 @@ function FsQueueTable({
   const [dragPayload, setDragPayload] = useState<QueueDragPayload | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => defaultExpandedGroups(items));
   const [expandedItems, setExpandedItems] = useState<Set<number>>(() => new Set());
+  const [expandedQueues, setExpandedQueues] = useState<Set<FsQueueKey>>(() => new Set());
+  const [showNsiColumns, setShowNsiColumns] = useState(false);
+  const [commentModal, setCommentModal] = useState<{ item: BriefingFsSel; q: FsQueueKey } | null>(null);
   const groups = groupFsItems(items);
   const totals = queueTotals(items);
+
+  function fixedColsBeforeAllQueues(): number {
+    return showNsiColumns ? 6 : 4;
+  }
+
+  function queueSpan(q: FsQueueKey): number {
+    return expandedQueues.has(q) ? QUEUE_SUBCOLS : 1;
+  }
+
+  function colsPerQueueBlock(q: FsQueueKey): number {
+    return queueSpan(q) + 1;
+  }
+
+  function totalQueueTableCols(): number {
+    return FS_QUEUE_KEYS.reduce((sum, q) => sum + colsPerQueueBlock(q), 0);
+  }
+
+  function latestItem(item: BriefingFsSel): BriefingFsSel {
+    return items.find(i => i.fs_item_id === item.fs_item_id) ?? item;
+  }
+
+  function toggleQueueExpand(q: FsQueueKey) {
+    setExpandedQueues(prev => {
+      const next = new Set(prev);
+      if (next.has(q)) next.delete(q);
+      else next.add(q);
+      return next;
+    });
+  }
+
+  function renderQueueYesNoCell(
+    item: BriefingFsSel,
+    queues: FsQueuesMap,
+    q: FsQueueKey,
+    unmatched: boolean,
+    isDropTarget: boolean,
+  ) {
+    const isYes = queues[q] === 1;
+    const row = latestItem(item);
+    const spManual = isFsItemSpManualForQueue(row, q);
+    const nmdManual = isFsItemNmdManualForQueue(row, q);
+    const catalogSp = catalogSpForItem(item);
+    return (
+      <td
+        key={`${item.fs_item_id}-${q}-yes`}
+        className={`p-1 border text-center align-top ${
+          isDropTarget ? 'bg-blue-100 ring-2 ring-inset ring-blue-300' : ''
+        }`}
+        onDragOver={e => {
+          if (dragPayload?.fsItemId === item.fs_item_id) e.preventDefault();
+        }}
+        onDrop={e => handleQueueDrop(e, item, q)}
+      >
+        <div className="inline-flex items-center justify-center gap-0.5 whitespace-nowrap">
+          <button
+            type="button"
+            draggable={isYes}
+            className={`px-2 py-0.5 rounded min-w-[36px] ${
+              yesNoClass(isYes, unmatched && !isYes)
+            } ${isYes ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
+            title={isYes ? 'Перетащите в другую очередь' : 'Клик — переключить Да/Нет'}
+            onDragStart={isYes ? e => startQueueDrag(e, item, q) : undefined}
+            onDragEnd={endQueueDrag}
+            onClick={() => toggleQueue(item, q)}
+          >
+            {yesNoLabel(isYes)}
+          </button>
+          {spManual && (
+            <button
+              type="button"
+              className="text-[10px] text-blue-600 hover:underline leading-none px-0.5 shrink-0"
+              title={`Сбросить SP к НСИ (${catalogSp})`}
+              onClick={e => {
+                e.stopPropagation();
+                onChange(row, resetFsItemQueueSp(row, q));
+              }}
+            >
+              ↺
+            </button>
+          )}
+          {nmdManual && (
+            <button
+              type="button"
+              className="text-[10px] text-blue-600 hover:underline leading-none px-0.5 shrink-0"
+              title={`Сбросить НМД к НСИ (${catalogNmdLabel(row)})`}
+              onClick={e => {
+                e.stopPropagation();
+                onChange(row, resetFsItemQueueNmd(row, q));
+              }}
+            >
+              ↺
+            </button>
+          )}
+        </div>
+      </td>
+    );
+  }
+
+  function renderQueueDetailCells(item: BriefingFsSel, queues: FsQueuesMap, q: FsQueueKey, unmatched: boolean) {
+    const isYes = queues[q] === 1;
+    const isDropTarget = dragPayload?.fsItemId === item.fs_item_id && dragPayload.fromQueue !== q;
+    const cells: React.ReactNode[] = [renderQueueYesNoCell(item, queues, q, unmatched, isDropTarget)];
+
+    if (!expandedQueues.has(q)) return cells;
+
+    const row = latestItem(item);
+    const catalogSp = catalogSpForItem(row);
+    const effectiveSp = effectiveFsItemSpForQueue(row, q);
+    const spManual = isFsItemSpManualForQueue(row, q);
+    const nmdAuto = autoFsItemNmdValueForQueue(row);
+    const nmdEffective = effectiveFsItemNmdValueForQueue(row, q);
+    const nmdManual = isFsItemNmdManualForQueue(row, q);
+    const nmdNsiLabel = catalogNmdLabel(row);
+    const nmdTitle = nmdManual
+      ? `НСИ: ${nmdNsiLabel} · Авто: ${nmdAuto}`
+      : `НСИ: ${nmdNsiLabel}`;
+
+    cells.push(
+      <td key={`${item.fs_item_id}-${q}-sp`} className="p-1 border align-top min-w-[3.5rem]">
+        {isYes ? (
+          <div onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
+            <OverridableNumberInput
+              value={effectiveSp}
+              autoValue={catalogSp}
+              step={1}
+              calculated
+              compact
+              overridden={spManual}
+              overrideClass={OVERRIDE_INPUT_CLASS}
+              calculatedClass={CALCULATED_SP_CLASS}
+              title={`НСИ: ${catalogSp}`}
+              onChange={v => onChange(row, patchFsItemQueueSp(row, q, v))}
+              onResetToAuto={() => onChange(row, resetFsItemQueueSp(row, q))}
+            />
+          </div>
+        ) : (
+          <span className="text-slate-300">—</span>
+        )}
+      </td>,
+      <td key={`${item.fs_item_id}-${q}-nmd`} className="p-1 border text-center align-top min-w-[8rem]">
+        {isYes ? (
+          <div className="flex flex-col items-center gap-0.5">
+            <select
+              className={`text-[10px] border rounded px-0.5 py-0.5 min-w-[8rem] max-w-full ${
+                nmdManual ? OVERRIDE_INPUT_CLASS : CALCULATED_SP_CLASS
+              }`}
+              title={nmdTitle}
+              value={nmdEffective}
+              onChange={e => onChange(row, patchFsItemQueueNmd(row, q, e.target.value as FsNmdValue))}
+            >
+              {FS_NMD_VALUES.map(v => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+            {nmdManual && (
+              <button
+                type="button"
+                className="text-[10px] text-blue-600 hover:underline"
+                title={`Авто: ${nmdAuto}`}
+                onClick={() => onChange(row, resetFsItemQueueNmd(row, q))}
+              >
+                ↺
+              </button>
+            )}
+          </div>
+        ) : (
+          <span className="text-slate-300">—</span>
+        )}
+      </td>,
+    );
+    return cells;
+  }
+
+  function renderQueueCommentCell(item: BriefingFsSel, _queues: FsQueuesMap, q: FsQueueKey) {
+    const row = latestItem(item);
+    const hasComment = hasFsItemQueueComment(row, q);
+    return (
+      <td key={`${item.fs_item_id}-${q}-comment`} className="p-1 border text-center align-middle w-9">
+        <button
+          type="button"
+          onClick={() => setCommentModal({ item: row, q })}
+          className={`w-7 h-7 mx-auto rounded inline-flex items-center justify-center ${
+            hasComment
+              ? 'text-amber-700 bg-amber-100 hover:bg-amber-200 ring-1 ring-amber-300/60'
+              : 'hover:bg-slate-100'
+          }`}
+          title={hasComment ? 'Открыть комментарий' : 'Добавить комментарий'}
+          aria-label={hasComment ? 'Есть комментарий' : 'Добавить комментарий'}
+        >
+          {hasComment && (
+            <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 fill-current" aria-hidden>
+              <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v5A1.5 1.5 0 0 1 12.5 10H9l-2.5 2.5V10H3.5A1.5 1.5 0 0 1 2 8.5v-5Z" />
+            </svg>
+          )}
+        </button>
+      </td>
+    );
+  }
+
+  function renderQueueBlockCells(item: BriefingFsSel, queues: FsQueuesMap, q: FsQueueKey, unmatched: boolean) {
+    return [...renderQueueDetailCells(item, queues, q, unmatched), renderQueueCommentCell(item, queues, q)];
+  }
 
   useEffect(() => {
     setExpandedGroups(prev => {
@@ -241,7 +589,7 @@ function FsQueueTable({
   }
 
   function patchQueues(item: BriefingFsSel, queues: FsQueuesMap) {
-    const primary = FS_QUEUE_KEYS.find(k => queues[k] === 1) ?? '1';
+    const primary = FS_QUEUE_KEYS.find(k => queues[k] === 1) ?? item.queue ?? '1';
     const enabled = anyQueueEnabled(queues) ? 1 : 0;
     const patch: Partial<BriefingFsSel> = {
       queues_json: queues,
@@ -254,15 +602,26 @@ function FsQueueTable({
   }
 
   function toggleQueue(item: BriefingFsSel, q: FsQueueKey) {
-    const queues = parseQueuesJson(item.queues_json);
+    const row = latestItem(item);
+    const queues = { ...itemQueues(row) };
     queues[q] = queues[q] ? 0 : 1;
-    patchQueues(item, queues);
+    patchQueues(row, queues);
   }
 
-  function moveToQueue(item: BriefingFsSel, q: FsQueueKey) {
+  function moveToQueue(item: BriefingFsSel, fromQueue: FsQueueKey, targetQueue: FsQueueKey) {
+    const row = latestItem(item);
+    const relocated = relocateFsItemQueueOverrides(row, fromQueue, targetQueue);
     const queues: FsQueuesMap = { '1': 0, '2': 0, '3': 0, '4': 0 };
-    queues[q] = 1;
-    patchQueues(item, queues);
+    queues[targetQueue] = 1;
+    const patch: Partial<BriefingFsSel> = {
+      ...relocated,
+      queues_json: queues,
+      queue: targetQueue,
+      enabled: 1,
+      source: 'manual',
+    };
+    if (row.matched === false) patch.matched = true;
+    onChange(row, patch);
   }
 
   function startQueueDrag(e: React.DragEvent, item: BriefingFsSel, fromQueue: FsQueueKey) {
@@ -292,28 +651,97 @@ function FsQueueTable({
       setDragPayload(null);
       return;
     }
-    moveToQueue(item, targetQueue);
+    moveToQueue(item, payload.fromQueue, targetQueue);
     setDragPayload(null);
   }
 
   return (
-    <div className="overflow-auto max-h-[calc(100vh-220px)] border border-slate-200 rounded">
-      <table className="w-full text-xs border-collapse min-w-[900px]">
+    <div className="space-y-2">
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => setShowNsiColumns(v => !v)}
+          className="text-xs text-slate-600 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-50"
+        >
+          {showNsiColumns ? 'Скрыть НСИ' : 'Показать НСИ'}
+        </button>
+      </div>
+      <div className="overflow-auto max-h-[calc(100vh-220px)] border border-slate-200 rounded">
+      {commentModal && (
+        <FsQueueCommentModal
+          item={commentModal.item}
+          queueKey={commentModal.q}
+          queueLabels={queueLabels}
+          onClose={() => setCommentModal(null)}
+          onSave={text => {
+            const row = items.find(i => i.fs_item_id === commentModal.item.fs_item_id) ?? commentModal.item;
+            onChange(row, patchFsItemQueueComment(row, commentModal.q, text));
+            setCommentModal(null);
+          }}
+        />
+      )}
+      <table className={`w-full text-xs border-collapse ${showNsiColumns ? 'min-w-[1100px]' : 'min-w-[900px]'}`}>
         <thead className="sticky top-0 z-20">
           <tr className="bg-slate-50 text-slate-600">
-            <th className="text-left p-2 border w-14 bg-slate-50">№</th>
-            <th className="text-left p-2 border min-w-[200px] bg-slate-50">Пункт ФС / Расшифровка</th>
-            <th className="text-left p-2 border w-28 bg-slate-50">Тип функционала</th>
-            <th className="text-left p-2 border min-w-[140px] bg-slate-50">Виджеты</th>
-            <th className="text-center p-2 border w-24 bg-slate-50">Все очереди</th>
-            {FS_QUEUE_KEYS.map(q => (
-              <th key={q} className="text-center p-2 border w-24 bg-slate-50">
-                <EditableQueueHeader
-                  label={queueLabel(queueLabels, q)}
-                  onChange={next => onQueueLabelChange(q, next)}
-                />
-              </th>
-            ))}
+            <th rowSpan={2} className="text-left p-2 border w-14 bg-slate-50">№</th>
+            <th rowSpan={2} className="text-left p-2 border min-w-[200px] bg-slate-50">Пункт ФС / Расшифровка</th>
+            <th rowSpan={2} className="text-left p-2 border w-28 bg-slate-50">Тип функционала</th>
+            {showNsiColumns && (
+              <>
+                <th rowSpan={2} className="text-right p-2 border w-14 bg-slate-50" title="Нормативный SP из НСИ каталога">НСИ</th>
+                <th rowSpan={2} className="text-left p-2 border min-w-[100px] bg-slate-50" title="Требование НМД из НСИ (колонка CR Excel)">НМД НСИ</th>
+              </>
+            )}
+            <th rowSpan={2} className="text-left p-2 border min-w-[140px] bg-slate-50">Виджеты</th>
+            <th rowSpan={2} className="text-center p-2 border w-24 bg-slate-50">Все очереди</th>
+            {FS_QUEUE_KEYS.flatMap(q => [
+              <th key={`${q}-main`} colSpan={queueSpan(q)} className="text-center p-2 border bg-slate-50">
+                <div className="flex items-center justify-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => toggleQueueExpand(q)}
+                    className="text-slate-500 hover:text-slate-800 w-5 h-5 leading-none shrink-0"
+                    title={expandedQueues.has(q) ? 'Свернуть колонки очереди' : 'Развернуть: Да/Нет, SP, НМД'}
+                  >
+                    {expandedQueues.has(q) ? '▼' : '▶'}
+                  </button>
+                  <EditableQueueHeader
+                    label={queueLabel(queueLabels, q)}
+                    onChange={next => onQueueLabelChange(q, next)}
+                  />
+                </div>
+              </th>,
+              <th
+                key={`${q}-cmt`}
+                rowSpan={2}
+                className="text-center p-2 border w-10 bg-slate-50"
+                title={`Комментарий — ${queueLabel(queueLabels, q)}`}
+              >
+                Коммент.
+              </th>,
+            ])}
+          </tr>
+          <tr className="bg-slate-50/80 text-[10px] text-slate-500">
+            {FS_QUEUE_KEYS.flatMap(q => {
+              if (!expandedQueues.has(q)) {
+                return [
+                  <th key={`${q}-yn`} className="p-1 border text-center font-normal">Да/Нет</th>,
+                ];
+              }
+              return [
+                <th key={`${q}-yn`} className="p-1 border text-center font-normal">Да/Нет</th>,
+                <th key={`${q}-sp`} className="p-1 border text-center font-normal">
+                  SP
+                  <div className="font-normal text-[9px] text-slate-400 mt-0.5">
+                    <span className={`inline-block w-2 h-2 rounded-sm border ${CALCULATED_SP_CLASS} align-middle mr-0.5`} />
+                    норма
+                    <span className={`inline-block w-2 h-2 rounded-sm border ${OVERRIDE_INPUT_CLASS} align-middle mx-0.5`} />
+                    правка
+                  </div>
+                </th>,
+                <th key={`${q}-nmd`} className="p-1 border text-center font-normal">НМД</th>,
+              ];
+            })}
           </tr>
         </thead>
         <tbody>
@@ -343,19 +771,38 @@ function FsQueueTable({
                   </span>
                 </td>
                 <td className="p-2 border" />
+                {showNsiColumns && (
+                  <>
+                    <td className="p-2 border" />
+                    <td className="p-2 border" />
+                  </>
+                )}
                 <td className="p-2 border" />
                 <td className="p-2 border text-center">
                   <span className={`inline-block px-2 py-0.5 rounded ${yesNoClass(groupQueues.allOn)}`}>
                     {yesNoLabel(groupQueues.allOn)}
                   </span>
                 </td>
-                {FS_QUEUE_KEYS.map(q => (
-                  <td key={q} className="p-2 border text-center">
-                    <span className={`inline-block px-2 py-0.5 rounded ${yesNoClass(groupQueues.byQueue[q])}`}>
-                      {yesNoLabel(groupQueues.byQueue[q])}
-                    </span>
-                  </td>
-                ))}
+                {FS_QUEUE_KEYS.flatMap(q => {
+                  const mainCells = !expandedQueues.has(q)
+                    ? [
+                        <td key={q} className="p-2 border text-center">
+                          <span className={`inline-block px-2 py-0.5 rounded ${yesNoClass(groupQueues.byQueue[q])}`}>
+                            {yesNoLabel(groupQueues.byQueue[q])}
+                          </span>
+                        </td>,
+                      ]
+                    : [
+                        <td key={`${q}-yn`} className="p-2 border text-center">
+                          <span className={`inline-block px-2 py-0.5 rounded ${yesNoClass(groupQueues.byQueue[q])}`}>
+                            {yesNoLabel(groupQueues.byQueue[q])}
+                          </span>
+                        </td>,
+                        <td key={`${q}-sp`} className="p-2 border" />,
+                        <td key={`${q}-nmd`} className="p-2 border" />,
+                      ];
+                  return [...mainCells, <td key={`${q}-cmt`} className="p-2 border" />];
+                })}
               </tr>
               {isExpanded && groupItems.map(item => {
                 const queues = itemQueues(item);
@@ -392,6 +839,19 @@ function FsQueueTable({
                       <td className="p-2 border text-[11px] text-slate-600 whitespace-nowrap">
                         {item.func_type || '—'}
                       </td>
+                      {showNsiColumns && (
+                        <>
+                          <td className="p-2 border text-right tabular-nums text-slate-700">
+                            {catalogSpForItem(item) > 0 ? catalogSpForItem(item) : '—'}
+                          </td>
+                          <td
+                            className="p-2 border text-[10px] text-slate-600"
+                            title="Требование НМД из НСИ (колонка CR Excel)"
+                          >
+                            {catalogNmdLabel(item)}
+                          </td>
+                        </>
+                      )}
                       <td className="p-2 border text-[10px] text-slate-400">
                         {(item.matched_widgets ?? []).length > 0
                           ? `${item.matched_widgets!.length} выбрано`
@@ -402,42 +862,12 @@ function FsQueueTable({
                           {yesNoLabel(allOn)}
                         </span>
                       </td>
-                      {FS_QUEUE_KEYS.map(q => {
-                        const isYes = queues[q] === 1;
-                        const isDropTarget = dragPayload?.fsItemId === item.fs_item_id
-                          && dragPayload.fromQueue !== q;
-                        return (
-                          <td
-                            key={q}
-                            className={`p-2 border text-center ${
-                              isDropTarget ? 'bg-blue-100 ring-2 ring-inset ring-blue-300' : ''
-                            }`}
-                            onDragOver={e => {
-                              if (dragPayload?.fsItemId === item.fs_item_id) e.preventDefault();
-                            }}
-                            onDrop={e => handleQueueDrop(e, item, q)}
-                          >
-                            <button
-                              type="button"
-                              draggable={isYes}
-                              className={`px-2 py-0.5 rounded min-w-[36px] ${
-                                yesNoClass(isYes, unmatched && !isYes)
-                              } ${isYes ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
-                              title={isYes ? 'Перетащите в другую очередь' : 'Клик — переключить Да/Нет'}
-                              onDragStart={isYes ? e => startQueueDrag(e, item, q) : undefined}
-                              onDragEnd={endQueueDrag}
-                              onClick={() => toggleQueue(item, q)}
-                            >
-                              {yesNoLabel(isYes)}
-                            </button>
-                          </td>
-                        );
-                      })}
+                      {FS_QUEUE_KEYS.flatMap(q => renderQueueBlockCells(item, queues, q, unmatched))}
                     </tr>
                     {isItemExpanded && (item.details ?? []).map((d, i) => (
                       <tr key={`${item.fs_item_id}-d-${i}`} className="text-slate-500">
                         <td className="p-2 border" />
-                        <td className="p-2 border pl-6" colSpan={4 + FS_QUEUE_KEYS.length}>
+                        <td className="p-2 border pl-6" colSpan={fixedColsBeforeAllQueues() + totalQueueTableCols()}>
                           <span className="text-[10px]">↳ {d.name}</span>
                           {d.description && <span className="text-[10px] text-slate-400"> — {d.description}</span>}
                         </td>
@@ -460,6 +890,12 @@ function FsQueueTable({
                         <td className="p-2 border text-[10px] text-slate-400">
                           {item.func_type || '—'}
                         </td>
+                        {showNsiColumns && (
+                          <>
+                            <td className="p-2 border" />
+                            <td className="p-2 border" />
+                          </>
+                        )}
                         <td className="p-2 border">
                           {widgetImageUrl(w.image_path) ? (
                             <WidgetImageThumbnail imagePath={w.image_path} name={w.name} />
@@ -468,9 +904,16 @@ function FsQueueTable({
                           )}
                         </td>
                         <td className="p-2 border" />
-                        {FS_QUEUE_KEYS.map(q => (
-                          <td key={q} className="p-2 border" />
-                        ))}
+                        {FS_QUEUE_KEYS.flatMap(q => {
+                          const mainCells = queueSpan(q) === 1
+                            ? [<td key={q} className="p-2 border" />]
+                            : [
+                                <td key={`${q}-yn`} className="p-2 border" />,
+                                <td key={`${q}-sp`} className="p-2 border" />,
+                                <td key={`${q}-nmd`} className="p-2 border" />,
+                              ];
+                          return [...mainCells, <td key={`${q}-cmt`} className="p-2 border" />];
+                        })}
                       </tr>
                     ))}
                   </React.Fragment>
@@ -482,21 +925,68 @@ function FsQueueTable({
         </tbody>
         <tfoot>
           <tr className="bg-slate-100 font-semibold text-slate-700">
-            <td className="p-2 border" colSpan={4}
+            <td className="p-2 border" colSpan={fixedColsBeforeAllQueues()}
               title="Сумма SP функциональных пунктов (C20), без интеграций и НМД">
               Итого SP функционала (C20)
             </td>
             <td className="p-2 border text-center" title="Сумма C20 по включённым пунктам">
               {totals.all_queues || '—'}
             </td>
-            {FS_QUEUE_KEYS.map(q => (
-              <td key={q} className="p-2 border text-center">
-                {totals.functional_sp[q] || '—'}
-              </td>
-            ))}
+            {FS_QUEUE_KEYS.flatMap(q => {
+              const value = totals.functional_sp[q] || '—';
+              const mainCells = !expandedQueues.has(q)
+                ? [<td key={q} className="p-2 border text-center">{value}</td>]
+                : [
+                    <td key={`${q}-yn`} className="p-2 border" />,
+                    <td key={`${q}-sp`} className="p-2 border text-center">{value}</td>,
+                    <td key={`${q}-nmd`} className="p-2 border" />,
+                  ];
+              return [...mainCells, <td key={`${q}-cmt`} className="p-2 border" />];
+            })}
+          </tr>
+          <tr className="bg-slate-100 font-semibold text-slate-700">
+            <td className="p-2 border" colSpan={fixedColsBeforeAllQueues()}
+              title="Сумма SP пунктов раздела 11 / «ФС интеграции» (C21)">
+              Итого SP интеграций (C21)
+            </td>
+            <td className="p-2 border text-center">
+              {totals.all_integrations || '—'}
+            </td>
+            {FS_QUEUE_KEYS.flatMap(q => {
+              const value = totals.integrations_sp_auto[q] || '—';
+              const mainCells = !expandedQueues.has(q)
+                ? [<td key={q} className="p-2 border text-center">{value}</td>]
+                : [
+                    <td key={`${q}-yn`} className="p-2 border" />,
+                    <td key={`${q}-sp`} className="p-2 border text-center">{value}</td>,
+                    <td key={`${q}-nmd`} className="p-2 border" />,
+                  ];
+              return [...mainCells, <td key={`${q}-cmt`} className="p-2 border" />];
+            })}
+          </tr>
+          <tr className="bg-slate-100 font-semibold text-slate-700">
+            <td className="p-2 border" colSpan={fixedColsBeforeAllQueues()}
+              title="Сумма SP пунктов с требованием НМД (D20)">
+              Итого SP НМД (D20)
+            </td>
+            <td className="p-2 border text-center" title="Сумма D20 по включённым пунктам">
+              {totals.all_nmd || '—'}
+            </td>
+            {FS_QUEUE_KEYS.flatMap(q => {
+              const value = totals.nmd_sp_auto[q] || '—';
+              const mainCells = !expandedQueues.has(q)
+                ? [<td key={q} className="p-2 border text-center">{value}</td>]
+                : [
+                    <td key={`${q}-yn`} className="p-2 border" />,
+                    <td key={`${q}-sp`} className="p-2 border" />,
+                    <td key={`${q}-nmd`} className="p-2 border text-center">{value}</td>,
+                  ];
+              return [...mainCells, <td key={`${q}-cmt`} className="p-2 border" />];
+            })}
           </tr>
         </tfoot>
       </table>
+      </div>
     </div>
   );
 }
@@ -766,17 +1256,7 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
   function saveFsTab() {
     if (!data) return;
     void runTabSave('fs', async () => {
-      await saveBriefingFs(briefingId, data.fs_items.map(i => {
-        const q = itemQueues(i);
-        return {
-          fs_item_id: i.fs_item_id,
-          enabled: anyQueueEnabled(q) ? 1 : 0,
-          queue: i.queue,
-          queues_json: typeof i.queues_json === 'string' ? i.queues_json : JSON.stringify(i.queues_json ?? parseQueuesJson(null)),
-          source: i.source ?? undefined,
-          story_points: i.story_points ?? undefined,
-        };
-      }));
+      await saveBriefingFs(briefingId, data.fs_items.map(briefingFsItemPayload));
       await saveBriefingParams(briefingId, {
         queue_labels_json: parseQueueLabels(data.params.queue_labels_json),
       });
@@ -996,25 +1476,32 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
 
   async function updateFsItem(item: BriefingFsSel, patch: Partial<BriefingFsSel>) {
     if (!data) return;
-    const merged = { ...item, ...patch, source: patch.source ?? item.source ?? 'manual' };
+    const current = data.fs_items.find(i => i.fs_item_id === item.fs_item_id) ?? item;
+    const merged: BriefingFsSel = {
+      ...current,
+      ...patch,
+      source: patch.source ?? current.source ?? 'manual',
+    };
+    if (patch.queues_json !== undefined) {
+      merged.queues_json = typeof patch.queues_json === 'string'
+        ? parseQueuesJson(patch.queues_json)
+        : patch.queues_json;
+    }
     const queues = itemQueues(merged);
     merged.enabled = anyQueueEnabled(queues) ? 1 : 0;
-    const items = data.fs_items.map(i =>
-      i.fs_item_id === item.fs_item_id ? merged : i
-    );
+    merged.queue = FS_QUEUE_KEYS.find(k => queues[k] === 1) ?? current.queue ?? '1';
+    if (current.matched === false) merged.matched = true;
+
+    const items = data.fs_items.map(i => (i.fs_item_id === item.fs_item_id ? merged : i));
+    setAssessmentRecalcFlash(k => k + 1);
     setData({ ...data, fs_items: items });
-    await saveBriefingFs(briefingId, items.map(i => {
-      const q = itemQueues(i);
-      return {
-        fs_item_id: i.fs_item_id,
-        enabled: anyQueueEnabled(q) ? 1 : 0,
-        queue: i.queue,
-        queues_json: typeof i.queues_json === 'string' ? i.queues_json : JSON.stringify(i.queues_json ?? parseQueuesJson(null)),
-        source: i.source ?? undefined,
-        story_points: i.story_points ?? undefined,
-      };
-    }));
-    await load();
+
+    try {
+      await saveBriefingFs(briefingId, [briefingFsItemPayload(merged, { forceManual: true })]);
+    } catch (e) {
+      await load();
+      throw e;
+    }
   }
 
   async function saveParams(params: Partial<BriefingParams>) {
@@ -1565,15 +2052,12 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                       {FS_QUEUE_KEYS.map(q => {
                         const row = data.assessment!.org_volume.queues[q];
                         const qc = data.assessment!.queue_calcs.find(r => r.queue === q);
-                        const functionalPlaceholder = (fsSp.functional_sp[q] || 0) > 0
-                          ? String(fsSp.functional_sp[q])
-                          : String(DEV_TEST_FUNCTIONAL_SP[q]);
-                        const integrationsPlaceholder = (fsSp.integrations_sp_auto[q] || 0) > 0
-                          ? String(fsSp.integrations_sp_auto[q])
-                          : String(DEV_TEST_INTEGRATIONS_SP[q]);
-                        const nmdPlaceholder = (fsSp.nmd_sp_auto[q] || 0) > 0
-                          ? String(fsSp.nmd_sp_auto[q])
-                          : String(DEV_TEST_NMD_SP[q]);
+                        const functionalPlaceholder = fsSp.functional_sp[q] > 0
+                          ? String(fsSp.functional_sp[q]) : '';
+                        const integrationsPlaceholder = fsSp.integrations_sp_auto[q] > 0
+                          ? String(fsSp.integrations_sp_auto[q]) : '';
+                        const nmdPlaceholder = fsSp.nmd_sp_auto[q] > 0
+                          ? String(fsSp.nmd_sp_auto[q]) : '';
                         const c20Effective = effectiveFunctionalSp(q, row.functional_sp, fsSp.functional_sp[q]);
                         const loadTestPlaceholder = String(autoLoadTestScenarios(row.active, c20Effective));
                         return (
@@ -1712,7 +2196,7 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
                     <tfoot>
                       <tr>
                         <td colSpan={10} className="p-2 border text-[10px] text-slate-400">
-                          Три независимых столбца SP: C20 (функционал), C21 (интеграции), D20 (НМД).
+                          C20/C21/D20 заполняются автоматически из ФС; C21 — только раздел 11 («ФС интеграции»). Пустое поле = авто.
                           Placeholder — подсказка из ФС или тестовое значение.
                         </td>
                       </tr>

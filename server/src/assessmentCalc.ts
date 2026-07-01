@@ -1,6 +1,7 @@
 import { db } from './db';
 import { FS_QUEUE_KEYS, FsQueueKey, parseQueuesJson, anyQueueEnabled } from './fsQueues';
 import { loadFsSelections } from './briefingCalc';
+import { computeQueueSpFromFs, autoLoadTestScenarios, catalogRequiresNmd, catalogNmdLabel, nmdSpContribution } from './fsSpCalc';
 import {
   SELLER_CRITERIA_DEFS,
   criteriaFlag,
@@ -105,8 +106,8 @@ function spByFuncType(briefingId: number): Record<string, number> {
     const sp = item.story_points ?? 0;
     const code = FUNC_TYPE_MAP[item.func_type ?? ''] ?? 'CASE';
     totals[code] = (totals[code] ?? 0) + sp;
-    if (item.name?.toLowerCase().includes('нмд') || item.func_type?.includes('НМД')) {
-      totals.NMD += sp;
+    if (catalogRequiresNmd(item)) {
+      totals.NMD += nmdSpContribution(catalogNmdLabel(item), sp);
     }
   }
   return totals;
@@ -326,11 +327,8 @@ export function mergeEffectiveRisks(
   };
 }
 
-function defaultQueueVolume(headcount: number, active: boolean, q: FsQueueKey): QueueOrgVolume {
+function defaultQueueVolume(headcount: number, active: boolean): QueueOrgVolume {
   const users = headcount > 0 ? headcount : 30;
-  // TODO: from FS import — dev defaults for C21/D20 until FS fills these columns
-  const DEV_TEST_INTEGRATIONS_SP: Record<FsQueueKey, number> = { '1': 3, '2': 2, '3': 1, '4': 0 };
-  const DEV_TEST_NMD_SP: Record<FsQueueKey, number> = { '1': 2, '2': 1, '3': 0, '4': 0 };
   return {
     users,
     rp_rpo: null,
@@ -362,12 +360,20 @@ export function computeOrgVolume(briefingId: number, stored: Partial<OrgVolumeDa
   }
   if (activeQueues.size === 0) activeQueues.add('1');
 
+  const fsSp = computeQueueSpFromFs(fsItems);
   const queues = {} as Record<FsQueueKey, QueueOrgVolume>;
   for (const q of FS_QUEUE_KEYS) {
     const active = activeQueues.has(q);
     const storedQ = stored.queues?.[q];
-    const base = defaultQueueVolume(headcount, active, q);
-    queues[q] = storedQ ? { ...base, ...storedQ, active } : base;
+    const base = defaultQueueVolume(headcount, active);
+    const withFsSp: QueueOrgVolume = {
+      ...base,
+      functional_sp: fsSp.functional_sp[q],
+      integrations_sp: fsSp.integrations_sp_auto[q],
+      nmd_sp: fsSp.nmd_sp_auto[q],
+      load_test_scenarios: autoLoadTestScenarios(active, fsSp.functional_sp[q]),
+    };
+    queues[q] = storedQ ? { ...withFsSp, ...storedQ, active } : withFsSp;
   }
 
   const maxUsers = Math.max(headcount, ...FS_QUEUE_KEYS.map(q => queues[q].users));

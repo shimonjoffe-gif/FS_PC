@@ -5,6 +5,7 @@ import {
 } from './fsQueues';
 import { compareFsByGroupThenPrefix } from './fsPrefixSort';
 import { loadBriefingQueueRates, effectiveRateForQueue } from './briefingAssessmentRates';
+import type { FsNmdValue } from './fsSpCalc';
 
 export interface TeamProportions {
   рп: number;
@@ -39,6 +40,11 @@ export interface FsSelection {
   queues_json: string | FsQueuesMap;
   source: string | null;
   story_points: number | null;
+  catalog_story_points?: number;
+  requires_nmd?: string | null;
+  queue_sp_json?: string | Partial<Record<string, number>> | null;
+  queue_nmd_json?: string | Partial<Record<string, FsNmdValue>> | null;
+  queue_comment_json?: string | Partial<Record<string, string>> | null;
   phase: string | null;
   name: string;
   code?: string | null;
@@ -265,7 +271,7 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
 
   const catalogItems = db.prepare(`
     SELECT id as fs_item_id, code, prefix, name, phase, group_name, group_prefix, description, item_type, func_type, sort_order,
-           queue, story_points, default_queues_json
+           queue, story_points, default_queues_json, requires_nmd
     FROM fs_catalog
     WHERE item_type IS NULL OR item_type = 'item'
     ORDER BY sort_order
@@ -273,15 +279,16 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
     fs_item_id: number; code: string | null; prefix: string | null; name: string; phase: string | null;
     group_name: string | null; group_prefix: string | null; description: string | null; item_type: string | null;
     func_type: string | null; sort_order: number; queue: string; story_points: number;
-    default_queues_json: string | null;
+    default_queues_json: string | null; requires_nmd: string | null;
   }[];
 
   const selections = db.prepare(`
-    SELECT fs_item_id, enabled, queue, queues_json, source, story_points
+    SELECT fs_item_id, enabled, queue, queues_json, source, story_points, queue_sp_json, queue_nmd_json, queue_comment_json
     FROM briefing_fs_sel WHERE briefing_id=?
   `).all(briefingId) as {
     fs_item_id: number; enabled: number; queue: string; queues_json: string | null;
     source: string; story_points: number | null;
+    queue_sp_json: string | null; queue_nmd_json: string | null; queue_comment_json: string | null;
   }[];
   const selMap = new Map(selections.map(s => [s.fs_item_id, s]));
 
@@ -322,13 +329,19 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
     let queues_json: FsQueuesMap;
     let source: string | null;
     let story_points: number | null;
+    let queue_sp_json: string | null;
+    let queue_nmd_json: string | null;
+    let queue_comment_json: string | null;
 
     if (sel) {
       queues_json = parseQueuesJson(sel.queues_json);
       enabled = enabledFromQueues(queues_json);
       queue = sel.queue;
       source = sel.source;
-      story_points = sel.story_points ?? fc.story_points;
+      story_points = fc.story_points;
+      queue_sp_json = sel.queue_sp_json ?? null;
+      queue_nmd_json = sel.queue_nmd_json ?? null;
+      queue_comment_json = sel.queue_comment_json ?? null;
     } else if (matched && derived) {
       const derivedQueues: FsQueuesMap = { ...defaultQueues };
       if (!anyQueueEnabled(derivedQueues)) derivedQueues['1'] = 1;
@@ -336,13 +349,19 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
       queue = primaryQueue(derivedQueues);
       queues_json = derivedQueues;
       source = derived.source;
-      story_points = derived.story_points ?? fc.story_points;
+      story_points = fc.story_points;
+      queue_sp_json = null;
+      queue_nmd_json = null;
+      queue_comment_json = null;
     } else {
       enabled = 0;
       queue = fc.queue || '1';
       queues_json = { ...EMPTY_QUEUES };
       source = null;
       story_points = fc.story_points;
+      queue_sp_json = null;
+      queue_nmd_json = null;
+      queue_comment_json = null;
     }
 
     return {
@@ -352,6 +371,10 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
       queues_json,
       source,
       story_points,
+      catalog_story_points: fc.story_points,
+      queue_sp_json,
+      queue_nmd_json,
+      queue_comment_json,
       code: fc.code,
       prefix: fc.prefix,
       name: fc.name,
@@ -362,6 +385,7 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
       item_type: fc.item_type ?? undefined,
       func_type: fc.func_type,
       sort_order: fc.sort_order,
+      requires_nmd: fc.requires_nmd,
       matched,
       details: detailsByParent.get(fc.fs_item_id) ?? [],
       matched_widgets: widgetsByFs.get(fc.fs_item_id) ?? [],

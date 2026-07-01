@@ -178,6 +178,14 @@ export const FS_QUEUE_LABELS: Record<FsQueueKey, string> = {
   '4': 'Развитие',
 };
 
+export const FS_NMD_VALUES = [
+  'Не требуется',
+  'Предоставляется Заказчиком',
+  'Используется типовая',
+  'Требуется разработать',
+] as const;
+export type FsNmdValue = typeof FS_NMD_VALUES[number];
+
 export type QueueLabelsMap = Record<FsQueueKey, string>;
 
 export function defaultQueueLabels(): QueueLabelsMap {
@@ -268,6 +276,16 @@ export interface BriefingFsSel {
   queues_json?: string | FsQueuesMap;
   source: string | null;
   story_points: number | null;
+  /** НСИ каталога (нормативный SP пункта). */
+  catalog_story_points?: number;
+  /** Требование НМД из НСИ каталога (колонка CR Excel). */
+  requires_nmd?: string | null;
+  /** Ручные SP по очередям; отсутствие ключа = норматив из каталога. */
+  queue_sp_json?: string | Partial<Record<FsQueueKey, number>> | null;
+  /** НМД по очередям; отсутствие ключа = авто из пункта ФС. */
+  queue_nmd_json?: string | Partial<Record<FsQueueKey, FsNmdValue>> | null;
+  /** Комментарий по очередям. */
+  queue_comment_json?: string | Partial<Record<FsQueueKey, string>> | null;
   name?: string;
   phase?: string;
   code?: string;
@@ -418,11 +436,11 @@ export interface QueueOrgVolume {
   rg: number;
   /** Excel E7 — РГ в регионах */
   rg_regions: number;
-  /** Excel C20 — SP функционала (независимо от C21/D20; позже из ФС) */
+  /** Excel C20 — SP функционала (авто из ФС или ручной ввод) */
   functional_sp: number;
-  /** Excel C21 — SP интеграций (позже из ФС) */
+  /** Excel C21 — SP интеграций (авто из раздела «ФС интеграции» или ручной ввод) */
   integrations_sp: number;
-  /** Excel D20 — SP с требованием НМД (позже из ФС) */
+  /** Excel D20 — SP с требованием НМД (авто из ФС или ручной ввод) */
   nmd_sp: number;
   /** Excel E20 — сценариев нагрузочного тестирования */
   load_test_scenarios: number;

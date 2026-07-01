@@ -44,120 +44,97 @@ export function headcountToCategory(n: number): HeadcountCategory {
   return '1001+';
 }
 
+import {
+  computeQueueSpFromFs,
+  isFsItemNmd,
+  autoLoadTestScenarios,
+  catalogSpForItem,
+  catalogRequiresNmd,
+  catalogNmdLabel,
+  nmdSpContribution,
+} from './fsSpCalc';
+
+export {
+  computeQueueSpFromFs,
+  isFsItemNmd,
+  isFsItemIntegration,
+  autoLoadTestScenarios,
+  FS_INTEGRATIONS_GROUP,
+  isFsIntegrationsGroup,
+  FS_INTEGRATIONS_GROUP_PREFIX,
+  isFsIntegrationsGroupPrefix,
+  catalogSpForItem,
+  effectiveFsItemSpForQueue,
+  isFsItemSpManualForQueue,
+  patchFsItemQueueSp,
+  resetFsItemQueueSp,
+  parseQueueSpOverrides,
+  catalogRequiresNmd,
+  catalogNmdLabel,
+  normalizeFsNmdValue,
+  nmdSpContribution,
+  nmdValueAddsToD20,
+  autoFsItemNmdValueForQueue,
+  effectiveFsItemNmdValueForQueue,
+  autoFsItemNmdForQueue,
+  effectiveFsItemNmdForQueue,
+  isFsItemNmdManualForQueue,
+  patchFsItemQueueNmd,
+  resetFsItemQueueNmd,
+  relocateFsItemQueueOverrides,
+  effectiveFsItemCommentForQueue,
+  patchFsItemQueueComment,
+} from './fsSpCalc';
+export type { QueueSpTotals } from './fsSpCalc';
+export { FS_NMD_VALUES, type FsNmdValue } from './types';
+
 function spByFuncType(fsItems: BriefingFsSel[]): Record<string, number> {
   const totals: Record<string, number> = { CASE: 0, PROF_MINI: 0, PROF: 0, KORP: 0, NMD: 0 };
   for (const item of fsItems) {
     const queues = itemQueues(item);
     if (!anyQueueEnabled(queues)) continue;
-    const sp = item.story_points ?? 0;
+    const sp = catalogSpForItem(item);
     const code = FUNC_TYPE_MAP[item.func_type ?? ''] ?? 'CASE';
     totals[code] = (totals[code] ?? 0) + sp;
-    if (isFsItemNmd(item)) {
-      totals.NMD += sp;
+    if (catalogRequiresNmd(item)) {
+      totals.NMD += nmdSpContribution(catalogNmdLabel(item), sp);
     }
   }
   return totals;
 }
 
-/** Пункт ФС с требованием НМД (эвристика до появления явного флага в каталоге). */
-export function isFsItemNmd(item: BriefingFsSel): boolean {
-  return item.name?.toLowerCase().includes('нмд') === true
-    || (item.func_type?.includes('НМД') ?? false);
-}
-
-/** Пункт ФС из раздела интеграций (группа/фаза каталога). */
-export function isFsItemIntegration(item: BriefingFsSel): boolean {
-  const hay = `${item.group_name ?? ''} ${item.phase ?? ''}`.toLowerCase();
-  return hay.includes('интегр');
-}
-
-export interface QueueSpTotals {
-  /** Excel C20 — функциональный SP по очереди (без интеграций и НМД) */
-  functional_sp: Record<FsQueueKey, number>;
-  /** Авто-оценка C21 из ФС (сумма SP пунктов интеграций) */
-  integrations_sp_auto: Record<FsQueueKey, number>;
-  /** Авто-оценка D20 из ФС (сумма SP пунктов с НМД) */
-  nmd_sp_auto: Record<FsQueueKey, number>;
-  /** Сумма C20 по всем очередям (уникальные пункты, без интеграций и НМД) */
-  all_queues: number;
-}
-
-export function computeQueueSpFromFs(items: BriefingFsSel[]): QueueSpTotals {
-  const functional_sp = Object.fromEntries(FS_QUEUE_KEYS.map(q => [q, 0])) as Record<FsQueueKey, number>;
-  const integrations_sp_auto = Object.fromEntries(FS_QUEUE_KEYS.map(q => [q, 0])) as Record<FsQueueKey, number>;
-  const nmd_sp_auto = Object.fromEntries(FS_QUEUE_KEYS.map(q => [q, 0])) as Record<FsQueueKey, number>;
-  let all_queues = 0;
-  for (const item of items) {
-    const queues = itemQueues(item);
-    const sp = item.story_points ?? 0;
-    const anyOn = anyQueueEnabled(queues);
-    if (!anyOn) continue;
-    const isNmd = isFsItemNmd(item);
-    const isIntegration = isFsItemIntegration(item);
-    const isFunctional = !isNmd && !isIntegration;
-    if (isFunctional) all_queues += sp;
-    for (const q of FS_QUEUE_KEYS) {
-      if (queues[q] !== 1) continue;
-      if (isFunctional) functional_sp[q] += sp;
-      if (isIntegration) integrations_sp_auto[q] += sp;
-      if (isNmd) nmd_sp_auto[q] += sp;
-    }
-  }
-  return { functional_sp, integrations_sp_auto, nmd_sp_auto, all_queues };
-}
-
-// TODO: from FS import — dev defaults until columns are filled from FS and locked
-export const DEV_TEST_FUNCTIONAL_SP: Record<FsQueueKey, number> = {
-  '1': 16, '2': 12, '3': 8, '4': 0,
-};
-export const DEV_TEST_INTEGRATIONS_SP: Record<FsQueueKey, number> = {
-  '1': 3, '2': 2, '3': 1, '4': 0,
-};
-export const DEV_TEST_NMD_SP: Record<FsQueueKey, number> = {
-  '1': 2, '2': 1, '3': 0, '4': 0,
-};
-
 export function isQueueSpUnset(value: number | null | undefined): boolean {
   return value == null || value === 0;
 }
 
-/** Excel C20 — effective SP функционала (stored, FS auto, or dev default). */
+/** Excel C20 — effective SP функционала (ручной ввод или сумма из ФС). */
 export function effectiveFunctionalSp(
-  q: FsQueueKey,
+  _q: FsQueueKey,
   stored: number | null | undefined,
   fsAuto = 0,
 ): number {
   if (!isQueueSpUnset(stored)) return stored as number;
-  if (fsAuto > 0) return fsAuto;
-  return DEV_TEST_FUNCTIONAL_SP[q];
+  return fsAuto;
 }
 
-/** Excel C21 — effective SP интеграций (stored, FS auto, or dev default). */
+/** Excel C21 — effective SP интеграций (ручной ввод или сумма из ФС). */
 export function effectiveIntegrationsSp(
-  q: FsQueueKey,
+  _q: FsQueueKey,
   stored: number | null | undefined,
   fsAuto = 0,
 ): number {
   if (!isQueueSpUnset(stored)) return stored as number;
-  if (fsAuto > 0) return fsAuto;
-  return DEV_TEST_INTEGRATIONS_SP[q];
+  return fsAuto;
 }
 
-/** Excel D20 — effective SP НМД (stored, FS auto, or dev default). */
+/** Excel D20 — effective SP НМД (ручной ввод или сумма из ФС). */
 export function effectiveNmdSp(
-  q: FsQueueKey,
+  _q: FsQueueKey,
   stored: number | null | undefined,
   nmdAuto = 0,
 ): number {
   if (!isQueueSpUnset(stored)) return stored as number;
-  if (nmdAuto > 0) return nmdAuto;
-  return DEV_TEST_NMD_SP[q];
-}
-
-/** Excel E20 — авто: IF(очередь активна, ROUNDUP(C20/5, 0), 0). */
-export function autoLoadTestScenarios(active: boolean, functionalSp: number): number {
-  if (!active || functionalSp <= 0) return 0;
-  return Math.ceil(functionalSp / 5);
+  return nmdAuto;
 }
 
 /** Excel E20 — effective сценарии (stored или авто от C20). */
@@ -1021,7 +998,7 @@ export function applyOrgQueueFieldPatch(
   return { ...row, rg: value };
 }
 
-function defaultQueueVolume(headcount: number, active: boolean, q: FsQueueKey): QueueOrgVolume {
+function defaultQueueVolume(headcount: number, active: boolean): QueueOrgVolume {
   const users = headcount > 0 ? headcount : 30;
   return {
     users,
@@ -1053,12 +1030,20 @@ export function computeOrgVolume(
   }
   if (activeQueues.size === 0) activeQueues.add('1');
 
+  const fsSp = computeQueueSpFromFs(fsItems);
   const queues = {} as Record<FsQueueKey, QueueOrgVolume>;
   for (const q of FS_QUEUE_KEYS) {
     const active = activeQueues.has(q);
     const storedQ = stored.queues?.[q];
-    const base = defaultQueueVolume(hc, active, q);
-    queues[q] = storedQ ? { ...base, ...storedQ, active } : base;
+    const base = defaultQueueVolume(hc, active);
+    const withFsSp: QueueOrgVolume = {
+      ...base,
+      functional_sp: fsSp.functional_sp[q],
+      integrations_sp: fsSp.integrations_sp_auto[q],
+      nmd_sp: fsSp.nmd_sp_auto[q],
+      load_test_scenarios: autoLoadTestScenarios(active, fsSp.functional_sp[q]),
+    };
+    queues[q] = storedQ ? { ...withFsSp, ...storedQ, active } : withFsSp;
   }
 
   const maxUsers = Math.max(hc, ...FS_QUEUE_KEYS.map(q => queues[q].users));
