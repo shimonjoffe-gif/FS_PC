@@ -57,7 +57,7 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="w-60 min-w-60 bg-white border-r border-slate-200 flex flex-col h-full">
+    <aside className="w-60 min-w-60 shrink-0 self-stretch bg-white border-r border-slate-200 flex flex-col min-h-0 overflow-hidden">
       <button
         onClick={onOpenCatalog}
         className={`flex items-center gap-2 px-4 py-3 border-b border-slate-100 text-sm font-medium transition-colors

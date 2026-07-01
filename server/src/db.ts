@@ -264,7 +264,7 @@ export function initDB() {
     CREATE TABLE IF NOT EXISTS briefing_params (
       briefing_id  INTEGER PRIMARY KEY REFERENCES briefings(id) ON DELETE CASCADE,
       hourly_rate  REAL DEFAULT 1000,
-      accuracy     TEXT DEFAULT 'medium',
+      accuracy     REAL DEFAULT 0,
       sp_cost_rub  REAL DEFAULT 8000,
       phases_json  TEXT,
       team_json    TEXT
@@ -317,9 +317,15 @@ export function initDB() {
       technology  TEXT,
       rate        REAL,
       rate_manual INTEGER DEFAULT 0,
+      technology_manual INTEGER DEFAULT 0,
       PRIMARY KEY (briefing_id, queue)
     );
   `);
+
+  const queueCalcCols = db.prepare(`PRAGMA table_info(briefing_queue_calc)`).all() as { name: string }[];
+  if (!queueCalcCols.some(c => c.name === 'technology_manual')) {
+    db.exec(`ALTER TABLE briefing_queue_calc ADD COLUMN technology_manual INTEGER DEFAULT 0`);
+  }
 
   const widgetCols = db.prepare(`PRAGMA table_info(widgets)`).all() as { name: string }[];
   if (!widgetCols.some(c => c.name === 'image_path')) {
@@ -353,6 +359,76 @@ export function initDB() {
   const bfsCols = db.prepare(`PRAGMA table_info(briefing_fs_sel)`).all() as { name: string }[];
   if (!bfsCols.some(c => c.name === 'queues_json')) {
     db.exec(`ALTER TABLE briefing_fs_sel ADD COLUMN queues_json TEXT DEFAULT '{"1":0,"2":0,"3":0,"4":0}'`);
+  }
+
+  const assessmentCols = db.prepare(`PRAGMA table_info(briefing_assessment)`).all() as { name: string }[];
+  const assessmentColNames = new Set(assessmentCols.map(c => c.name));
+  if (!assessmentColNames.has('unified_rate_enabled')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN unified_rate_enabled INTEGER DEFAULT 0`);
+  }
+  if (!assessmentColNames.has('unified_rate')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN unified_rate REAL`);
+  }
+  if (!assessmentColNames.has('unified_rate_manual')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN unified_rate_manual INTEGER DEFAULT 0`);
+  }
+  if (!assessmentColNames.has('phase_calc_json')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN phase_calc_json TEXT DEFAULT '{}'`);
+  }
+  if (!assessmentColNames.has('phase_calc_params_json')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN phase_calc_params_json TEXT DEFAULT '{}'`);
+  }
+  if (!assessmentColNames.has('risks_manual_keys_json')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN risks_manual_keys_json TEXT DEFAULT '{}'`);
+  }
+  if (!assessmentColNames.has('risks_ot_json')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN risks_ot_json TEXT DEFAULT '{}'`);
+  }
+  if (!assessmentColNames.has('risks_do_json')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN risks_do_json TEXT DEFAULT '{}'`);
+  }
+  if (!assessmentColNames.has('risks_manual_keys_ot_json')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN risks_manual_keys_ot_json TEXT DEFAULT '{}'`);
+  }
+  if (!assessmentColNames.has('risks_manual_keys_do_json')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN risks_manual_keys_do_json TEXT DEFAULT '{}'`);
+  }
+  if (!assessmentColNames.has('risks_manual_ot')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN risks_manual_ot INTEGER DEFAULT 0`);
+  }
+  if (!assessmentColNames.has('risks_manual_do')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN risks_manual_do INTEGER DEFAULT 0`);
+  }
+  if (!assessmentColNames.has('assessment_scenarios_json')) {
+    db.exec(`ALTER TABLE briefing_assessment ADD COLUMN assessment_scenarios_json TEXT DEFAULT '[]'`);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS briefing_assessment_snapshots (
+      id TEXT PRIMARY KEY,
+      briefing_id INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      scenario_id TEXT,
+      name TEXT NOT NULL,
+      frozen_at TEXT NOT NULL,
+      sent_to_client INTEGER DEFAULT 0,
+      extended INTEGER DEFAULT 0,
+      scenario_overrides_json TEXT,
+      results_json TEXT NOT NULL,
+      extended_dump_json TEXT,
+      base_revision TEXT
+    )
+  `);
+
+  const legacyAccuracy = db.prepare(`
+    SELECT briefing_id, accuracy FROM briefing_params
+    WHERE accuracy IN ('low', 'medium', 'high')
+  `).all() as { briefing_id: number; accuracy: string }[];
+  if (legacyAccuracy.length > 0) {
+    const map: Record<string, number> = { low: -15, medium: 0, high: 20 };
+    const update = db.prepare(`UPDATE briefing_params SET accuracy=? WHERE briefing_id=?`);
+    for (const row of legacyAccuracy) {
+      update.run(map[row.accuracy] ?? 0, row.briefing_id);
+    }
   }
 
   seedProjectTypesNsi();

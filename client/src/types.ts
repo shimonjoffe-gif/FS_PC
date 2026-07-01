@@ -1,3 +1,5 @@
+import type { PhaseCalcParams } from './phaseCalcParams';
+
 export interface User {
   id: number;
   name: string;
@@ -282,7 +284,7 @@ export interface PhaseConfig {
 export interface BriefingParams {
   briefing_id?: number;
   hourly_rate: number;
-  accuracy: string;
+  accuracy: number;
   sp_cost_rub: number;
   phases_json: string | PhaseConfig[];
   team_json: string | TeamProportions;
@@ -367,13 +369,43 @@ export interface RisksC51C57 {
   c57_rk: number;
 }
 
+export type RisksManualKeys = Partial<Record<keyof RisksC51C57, boolean>>;
+
+export type RiskSide = 'ot' | 'do';
+
+export interface OrgVolumeBreakdownRow {
+  id: string;
+  /** Регион или название филиала */
+  label: string;
+  /** Пользователи в регионе/филиале (у региона с филиалами = сумма филиалов) */
+  users: number | null;
+  rp_rpo?: number | null;
+  executors?: number | null;
+  rg?: number | null;
+  rg_regions?: number | null;
+  branches?: OrgVolumeBreakdownRow[];
+}
+
 export interface QueueOrgVolume {
   users: number;
   rp_rpo: number | null;
   executors: number | null;
+  /** Excel D7 — РГ в СПб/МСК */
   rg: number;
+  /** Excel E7 — РГ в регионах */
+  rg_regions: number;
+  /** Excel C20 — SP функционала (независимо от C21/D20; позже из ФС) */
+  functional_sp: number;
+  /** Excel C21 — SP интеграций (позже из ФС) */
+  integrations_sp: number;
+  /** Excel D20 — SP с требованием НМД (позже из ФС) */
+  nmd_sp: number;
+  /** Excel E20 — сценариев нагрузочного тестирования */
+  load_test_scenarios: number;
   region: string;
   active: boolean;
+  /** Географическая детализация пользователей; итоги очереди независимы */
+  breakdown?: OrgVolumeBreakdownRow[];
 }
 
 export interface OrgVolumeData {
@@ -392,9 +424,83 @@ export interface HeadcountCoeffs {
 export interface QueueCalcRow {
   queue: string;
   technology: string;
+  auto_technology: string;
+  technology_manual: number;
   rate: number;
   nsi_rate: number;
   rate_manual: number;
+}
+
+export interface PhaseCalcLineDef {
+  id: string;
+  excel_row: number;
+  label: string;
+  is_phase: boolean;
+  default_enabled: boolean;
+  c_formula_stub?: string;
+  hours_formula_stub?: string;
+  days_formula_stub?: string;
+}
+
+export type PhaseCalcQueuesState = Record<FsQueueKey, Record<string, boolean>>;
+
+export interface PhaseCalcState {
+  queues: PhaseCalcQueuesState;
+}
+
+export type { PhaseCalcParams } from './phaseCalcParams';
+
+export interface AssessmentScenario {
+  id: string;
+  name: string;
+  note?: string;
+  created_at: string;
+  updated_at: string;
+  /** Only diffs from base phase_calc.queues */
+  phase_enabled?: Partial<Record<FsQueueKey, Record<string, boolean>>>;
+  /** fs_item_id excluded from scenario (base ФС unchanged). */
+  fs_excluded?: number[];
+  /** Technology / rate overrides per queue (diffs from base queue_calcs). */
+  queue_technology?: Partial<Record<FsQueueKey, ScenarioQueueTechnologyOverride>>;
+}
+
+export interface ScenarioQueueTechnologyOverride {
+  technology: string;
+  /** Manual C32 override; omit to use NSI rate for technology. */
+  rate?: number;
+}
+
+export interface ScenarioSnapshotOtTotals {
+  byPhase: Record<string, number>;
+  grandTotal: number;
+}
+
+export interface ScenarioSnapshotResults {
+  comparison: {
+    base: ScenarioSnapshotOtTotals;
+    scenario: ScenarioSnapshotOtTotals;
+  };
+  sp_functional_all_queues?: number;
+  scenario_sp_functional_all_queues?: number;
+}
+
+export interface AssessmentScenarioSnapshot {
+  id: string;
+  briefing_id: number;
+  scenario_id: string | null;
+  name: string;
+  frozen_at: string;
+  sent_to_client: boolean;
+  extended: boolean;
+  scenario_overrides: AssessmentScenario | null;
+  results: ScenarioSnapshotResults;
+  extended_dump?: {
+    assessment: BriefingAssessment;
+    fs_items: BriefingFsSel[];
+    accuracy_pct: number;
+    team_fte_sum: number;
+  };
+  base_revision?: string;
 }
 
 export interface BriefingAssessment {
@@ -408,6 +514,17 @@ export interface BriefingAssessment {
   project_types: ProjectType[];
   risks: RisksC51C57;
   risks_manual: boolean;
+  risks_manual_keys: RisksManualKeys;
+  /** Stored partial overrides for Итого ОТ (phase calc). */
+  risks_ot: Partial<RisksC51C57>;
+  risks_do: Partial<RisksC51C57>;
+  risks_manual_ot: boolean;
+  risks_manual_do: boolean;
+  risks_manual_keys_ot: RisksManualKeys;
+  risks_manual_keys_do: RisksManualKeys;
+  /** Effective merged risks per side (auto + side overrides). */
+  effective_risks_ot: RisksC51C57;
+  effective_risks_do: RisksC51C57;
   auto_risks: RisksC51C57;
   org_volume: OrgVolumeData;
   org_volume_manual: boolean;
@@ -418,6 +535,13 @@ export interface BriefingAssessment {
   auto_headcount_coeffs: HeadcountCoeffs;
   queue_calcs: QueueCalcRow[];
   nsi_hourly_rate: number;
+  unified_rate_enabled: boolean;
+  unified_rate: number;
+  unified_rate_manual: boolean;
+  phase_calc_defs: PhaseCalcLineDef[];
+  phase_calc: PhaseCalcState;
+  phase_calc_params: PhaseCalcParams;
+  assessment_scenarios?: AssessmentScenario[];
 }
 
 export interface BriefingFull extends Briefing {
@@ -427,6 +551,7 @@ export interface BriefingFull extends Briefing {
   fs_items: BriefingFsSel[];
   params: BriefingParams;
   assessment: BriefingAssessment;
+  assessment_snapshots?: AssessmentScenarioSnapshot[];
 }
 
 export interface QueueSummary {
@@ -434,6 +559,7 @@ export interface QueueSummary {
   phase: string;
   story_points: number;
   budget: number;
+  rate: number;
   hours: number;
   duration_days: number;
 }

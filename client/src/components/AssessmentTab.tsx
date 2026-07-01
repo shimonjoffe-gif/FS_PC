@@ -14,10 +14,26 @@ import {
 } from '../sellerCriteria';
 import {
   applyOrgQueueFieldPatch, applyOrgQueueCascade, buildOrgQueueCascadeConfirmMessage,
+  applyOrgBreakdownCascade, buildOrgBreakdownCascadeConfirmMessage,
+  cascadeBreakdownRegionAdded, cascadeBreakdownBranchAdded,
   type OrgQueueCascadeTrigger,
+  type OrgBreakdownCascadeTrigger,
+  type OrgBreakdownField,
   isOrgVolumeFieldEmpty,
+  effectiveBreakdownField,
+  patchQueueBreakdownRegionField,
+  patchQueueBreakdownBranchField,
+  addQueueBreakdownRegion,
+  removeQueueBreakdownRegion,
+  addQueueBreakdownBranch,
+  removeQueueBreakdownBranch,
+  commitQueueBreakdownRegionField,
+  commitQueueBreakdownBranchField,
   computeRisksTotalC51,
+  isRiskKeyManual,
+  buildManualRiskPatch,
 } from '../assessmentCalc';
+import type { OrgVolumeBreakdownRow } from '../types';
 import { yesNoLabel, yesNoClass, YES_NO_BADGE_CLASS } from '../utils/yesNoBadge';
 import { numericInputHandlers } from '../utils/numericInputHandlers';
 
@@ -164,53 +180,440 @@ export default function AssessmentTab({ assessment, recalcFlash = 0, onChange }:
     onChange({ criteria: { ...a.criteria, contract_params: next } });
   }
 
+  function orgQueueExpandKey(q: FsQueueKey) {
+    return `org-q:${q}`;
+  }
+
+  function orgRegionExpandKey(q: FsQueueKey, regionId: string) {
+    return `org-r:${q}:${regionId}`;
+  }
+
+  function updateOrgQueues(queues: typeof a.org_volume.queues) {
+    onChange({ org_volume: { ...a.org_volume, queues }, org_volume_manual: true });
+  }
+
   function patchOrgQueueRow(
     q: FsQueueKey,
-    field: 'users' | 'rp_rpo' | 'executors' | 'rg' | 'region',
+    field: 'users' | 'rp_rpo' | 'executors' | 'rg',
     value: string | number,
   ): Record<FsQueueKey, typeof a.org_volume.queues[FsQueueKey]> {
     const current = a.org_volume.queues[q];
-    const nextRow = field === 'region'
-      ? { ...current, region: String(value) }
-      : applyOrgQueueFieldPatch(current, field, value);
+    const nextRow = applyOrgQueueFieldPatch(current, field, value);
     return { ...a.org_volume.queues, [q]: nextRow };
   }
 
   function setOrgQueue(
     q: FsQueueKey,
-    field: 'users' | 'rp_rpo' | 'executors' | 'rg' | 'region',
+    field: 'users' | 'rp_rpo' | 'executors' | 'rg',
     value: string | number,
   ) {
-    const queues = patchOrgQueueRow(q, field, value);
-    onChange({ org_volume: { ...a.org_volume, queues }, org_volume_manual: true });
+    updateOrgQueues(patchOrgQueueRow(q, field, value));
   }
 
   function commitOrgQueueField(
     q: FsQueueKey,
-    field: 'users' | 'rp_rpo' | 'executors' | 'rg' | 'region',
+    field: 'users' | 'rp_rpo' | 'executors' | 'rg',
     rawValue: string,
   ) {
-    const trigger: OrgQueueCascadeTrigger = field === 'region' ? 'region' : field;
+    const trigger: OrgQueueCascadeTrigger = field;
     const queues = patchOrgQueueRow(q, field, rawValue);
     const partial = applyOrgQueueCascade(queues, q, false, trigger);
     if (partial.filledTargets.length === 0) {
       if (!partial.changed) return;
-      onChange({ org_volume: { ...a.org_volume, queues: partial.queues }, org_volume_manual: true });
+      updateOrgQueues(partial.queues);
       return;
     }
     const msg = buildOrgQueueCascadeConfirmMessage(q, partial.filledTargets, FS_QUEUE_LABELS);
     if (window.confirm(msg)) {
       const full = applyOrgQueueCascade(queues, q, true, trigger);
       if (!full.changed) return;
-      onChange({ org_volume: { ...a.org_volume, queues: full.queues }, org_volume_manual: true });
+      updateOrgQueues(full.queues);
     } else if (partial.changed) {
-      onChange({ org_volume: { ...a.org_volume, queues: partial.queues }, org_volume_manual: true });
+      updateOrgQueues(partial.queues);
     }
+  }
+
+  function commitBreakdownField(
+    q: FsQueueKey,
+    regionId: string,
+    branchId: string | null,
+    field: OrgBreakdownField | 'label',
+    rawValue: string,
+  ) {
+    const current = a.org_volume.queues[q];
+    const result = branchId
+      ? commitQueueBreakdownBranchField(current, regionId, branchId, field, rawValue)
+      : commitQueueBreakdownRegionField(current, regionId, field, rawValue);
+
+    const queues = { ...a.org_volume.queues, [q]: result.queue };
+    const trigger: OrgBreakdownCascadeTrigger = field === 'label' ? 'label' : field;
+    const partial = applyOrgBreakdownCascade(queues, q, regionId, branchId, false, trigger);
+    if (partial.filledTargets.length === 0) {
+      if (!partial.changed) return;
+      updateOrgQueues(partial.queues);
+      return;
+    }
+
+    const sourceQueue = result.queue;
+    const sourceRegion = (sourceQueue.breakdown ?? []).find(r => r.id === regionId);
+    const rowLabel = branchId
+      ? sourceRegion?.branches?.find(b => b.id === branchId)?.label ?? ''
+      : sourceRegion?.label ?? '';
+    const msg = buildOrgBreakdownCascadeConfirmMessage(
+      q, rowLabel, partial.filledTargets, FS_QUEUE_LABELS,
+    );
+    if (window.confirm(msg)) {
+      const full = applyOrgBreakdownCascade(queues, q, regionId, branchId, true, trigger);
+      if (!full.changed) return;
+      updateOrgQueues(full.queues);
+    } else if (partial.changed) {
+      updateOrgQueues(partial.queues);
+    }
+  }
+
+  function addBreakdownRegionWithCascade(q: FsQueueKey) {
+    const next = addQueueBreakdownRegion(a.org_volume.queues[q]);
+    const regionId = next.breakdown![next.breakdown!.length - 1].id;
+    const queues = { ...a.org_volume.queues, [q]: next };
+    const cascaded = cascadeBreakdownRegionAdded(queues, q, regionId);
+    updateOrgQueues(cascaded.queues);
+    setExpanded(prev => ({ ...prev, [orgQueueExpandKey(q)]: true }));
+  }
+
+  function addBreakdownBranchWithCascade(q: FsQueueKey, regionId: string) {
+    const next = addQueueBreakdownBranch(a.org_volume.queues[q], regionId);
+    const region = next.breakdown?.find(r => r.id === regionId);
+    const branchId = region?.branches?.[region.branches.length - 1]?.id;
+    if (!branchId) {
+      updateOrgQueues({ ...a.org_volume.queues, [q]: next });
+      return;
+    }
+    const queues = { ...a.org_volume.queues, [q]: next };
+    const cascaded = cascadeBreakdownBranchAdded(queues, q, regionId, branchId);
+    updateOrgQueues(cascaded.queues);
+    setExpanded(prev => ({ ...prev, [orgRegionExpandKey(q, regionId)]: true }));
+  }
+
+  function setBreakdownField(
+    q: FsQueueKey,
+    regionId: string,
+    branchId: string | null,
+    field: OrgBreakdownField | 'label',
+    value: string | number,
+  ) {
+    const current = a.org_volume.queues[q];
+    const nextQueue = branchId
+      ? patchQueueBreakdownBranchField(current, regionId, branchId, field, value)
+      : patchQueueBreakdownRegionField(current, regionId, field, value);
+    updateOrgQueues({ ...a.org_volume.queues, [q]: nextQueue });
+  }
+
+  function isOrgFieldOverridden(
+    q: FsQueueKey,
+    field: 'users' | 'rp_rpo' | 'executors' | 'rg',
+  ): boolean {
+    if (!a.org_volume_manual) return false;
+    const row = a.org_volume.queues[q];
+    const auto = a.auto_org_volume?.queues[q];
+    if (!auto) return false;
+    return row[field] !== auto[field];
+  }
+
+  function renderOrgNumericInput(
+    value: number | null | undefined,
+    onChangeValue: (v: string) => void,
+    onBlurValue: (v: string) => void,
+    opts?: { validatable?: boolean; active?: boolean; overridden?: boolean; readOnly?: boolean },
+  ) {
+    const validatable = opts?.validatable ?? false;
+    const active = opts?.active ?? true;
+    const isEmpty = validatable && active && isOrgVolumeFieldEmpty(value);
+    const cls = [
+      'w-full text-right border rounded px-1 py-0.5',
+      isEmpty ? ORG_EMPTY_CLASS : '',
+      opts?.overridden ? OVERRIDE_CLASS : '',
+      opts?.readOnly ? 'bg-slate-100 text-slate-600 cursor-default' : '',
+    ].filter(Boolean).join(' ');
+    if (opts?.readOnly) {
+      return (
+        <span className={`block ${cls} border-transparent`}>
+          {value ?? '—'}
+        </span>
+      );
+    }
+    return (
+      <input
+        type="number"
+        min="0"
+        step="1"
+        className={cls}
+        value={value ?? ''}
+        onChange={e => onChangeValue(e.target.value)}
+        onBlur={e => onBlurValue(e.target.value)}
+        {...numericInputHandlers}
+      />
+    );
+  }
+
+  function renderOrgNumericCell(
+    q: FsQueueKey,
+    field: 'users' | 'rp_rpo' | 'executors' | 'rg',
+    opts?: { validatable?: boolean },
+  ) {
+    const row = a.org_volume.queues[q];
+    return renderOrgNumericInput(
+      row[field],
+      v => setOrgQueue(q, field, v),
+      v => commitOrgQueueField(q, field, v),
+      {
+        validatable: opts?.validatable,
+        active: row.active,
+        overridden: isOrgFieldOverridden(q, field),
+      },
+    );
+  }
+
+  function renderBreakdownNumericCell(
+    q: FsQueueKey,
+    regionId: string,
+    branchId: string | null,
+    field: OrgBreakdownField,
+    value: number | null | undefined,
+    opts?: { validatable?: boolean; readOnly?: boolean },
+  ) {
+    const row = a.org_volume.queues[q];
+    return renderOrgNumericInput(
+      value,
+      v => setBreakdownField(q, regionId, branchId, field, v),
+      v => commitBreakdownField(q, regionId, branchId, field, v),
+      {
+        validatable: opts?.validatable,
+        active: row.active,
+        readOnly: opts?.readOnly,
+      },
+    );
+  }
+
+  function renderBreakdownLabelCell(
+    q: FsQueueKey,
+    regionId: string,
+    branchId: string | null,
+    label: string,
+    indent: number,
+    opts?: { onRemove?: () => void },
+  ) {
+    const pad = indent === 0 ? 'pl-8' : indent === 1 ? 'pl-14' : 'pl-20';
+    return (
+      <td className={`p-2 border text-left ${pad} text-xs text-slate-600`}>
+        <div className="flex items-center gap-1">
+          {opts?.onRemove && (
+            <button
+              type="button"
+              className="text-[10px] text-red-500 hover:underline shrink-0"
+              title="Удалить"
+              onClick={opts.onRemove}
+            >
+              ✕
+            </button>
+          )}
+          <input
+            type="text"
+            className="flex-1 text-xs border rounded px-1 py-0.5"
+            placeholder={branchId ? 'Филиал…' : 'Регион…'}
+            value={label}
+            onChange={e => setBreakdownField(q, regionId, branchId, 'label', e.target.value)}
+            onBlur={e => commitBreakdownField(q, regionId, branchId, 'label', e.target.value)}
+          />
+        </div>
+      </td>
+    );
+  }
+
+  function renderBreakdownFieldCell(
+    q: FsQueueKey,
+    regionId: string,
+    branchId: string | null,
+    field: OrgBreakdownField,
+    row: OrgVolumeBreakdownRow,
+    hasBranches: boolean,
+  ) {
+    const value = hasBranches ? effectiveBreakdownField(row, field) : (row[field] ?? null);
+    return renderBreakdownNumericCell(
+      q, regionId, branchId, field, value,
+      { readOnly: hasBranches },
+    );
+  }
+
+  function renderBreakdownDataRow(
+    q: FsQueueKey,
+    regionId: string,
+    branchId: string | null,
+    row: OrgVolumeBreakdownRow,
+    indent: number,
+    opts: { onRemove?: () => void },
+  ) {
+    return (
+      <tr key={branchId ? `b-${branchId}` : `r-${regionId}`} className="bg-white">
+        {renderBreakdownLabelCell(q, regionId, branchId, row.label, indent, {
+          onRemove: opts.onRemove,
+        })}
+        <td className="p-2 border" />
+        <td className="p-2 border">
+          {renderBreakdownNumericCell(q, regionId, branchId, 'users', row.users)}
+        </td>
+        <td className="p-2 border">
+          {renderBreakdownNumericCell(q, regionId, branchId, 'rp_rpo', row.rp_rpo ?? null)}
+        </td>
+        <td className="p-2 border">
+          {renderBreakdownNumericCell(q, regionId, branchId, 'executors', row.executors ?? null)}
+        </td>
+        <td className="p-2 border">
+          {renderBreakdownNumericCell(q, regionId, branchId, 'rg', row.rg ?? null)}
+        </td>
+      </tr>
+    );
+  }
+
+  function renderOrgRegionRows(q: FsQueueKey, region: OrgVolumeBreakdownRow) {
+    const hasBranches = (region.branches?.length ?? 0) > 0;
+    const regionOpen = expanded[orgRegionExpandKey(q, region.id)] ?? hasBranches;
+
+    return (
+      <React.Fragment key={region.id}>
+        <tr className="bg-white">
+          <td className="p-2 border text-left pl-8 text-xs text-slate-600">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="text-slate-400 hover:text-slate-600 shrink-0"
+                onClick={() => toggleExpand(orgRegionExpandKey(q, region.id))}
+                title="Филиалы"
+              >
+                {regionOpen ? '▼' : '▶'}
+              </button>
+              <button
+                type="button"
+                className="text-[10px] text-red-500 hover:underline shrink-0"
+                title="Удалить регион"
+                onClick={() => {
+                  const next = removeQueueBreakdownRegion(a.org_volume.queues[q], region.id);
+                  updateOrgQueues({ ...a.org_volume.queues, [q]: next });
+                }}
+              >
+                ✕
+              </button>
+              <input
+                type="text"
+                className="flex-1 text-xs border rounded px-1 py-0.5"
+                placeholder="Регион…"
+                value={region.label}
+                onChange={e => setBreakdownField(q, region.id, null, 'label', e.target.value)}
+                onBlur={e => commitBreakdownField(q, region.id, null, 'label', e.target.value)}
+              />
+              <button
+                type="button"
+                className="text-[10px] text-blue-600 hover:underline shrink-0"
+                title="Добавить филиал"
+                onClick={() => addBreakdownBranchWithCascade(q, region.id)}
+              >
+                ++
+              </button>
+            </div>
+          </td>
+          <td className="p-2 border" />
+          <td className="p-2 border">
+            {renderBreakdownFieldCell(q, region.id, null, 'users', region, hasBranches)}
+          </td>
+          <td className="p-2 border">
+            {renderBreakdownFieldCell(q, region.id, null, 'rp_rpo', region, hasBranches)}
+          </td>
+          <td className="p-2 border">
+            {renderBreakdownFieldCell(q, region.id, null, 'executors', region, hasBranches)}
+          </td>
+          <td className="p-2 border">
+            {renderBreakdownFieldCell(q, region.id, null, 'rg', region, hasBranches)}
+          </td>
+        </tr>
+
+        {regionOpen && (region.branches ?? []).map(branch =>
+          renderBreakdownDataRow(q, region.id, branch.id, branch, 1, {
+            onRemove: () => {
+              const next = removeQueueBreakdownBranch(a.org_volume.queues[q], region.id, branch.id);
+              updateOrgQueues({ ...a.org_volume.queues, [q]: next });
+            },
+          }),
+        )}
+      </React.Fragment>
+    );
+  }
+
+  function renderOrgQueueRows(q: FsQueueKey) {
+    const row = a.org_volume.queues[q];
+    const breakdown = row.breakdown ?? [];
+    const hasBreakdown = breakdown.length > 0;
+    const queueOpen = expanded[orgQueueExpandKey(q)] ?? hasBreakdown;
+
+    return (
+      <React.Fragment key={q}>
+        <tr className="bg-slate-50/40">
+          <td className="p-2 border font-medium">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="text-slate-400 hover:text-slate-600 shrink-0"
+                onClick={() => toggleExpand(orgQueueExpandKey(q))}
+                title="Регионы"
+              >
+                {queueOpen ? '▼' : '▶'}
+              </button>
+              <span>{FS_QUEUE_LABELS[q]}</span>
+              <button
+                type="button"
+                className="text-[10px] text-blue-600 hover:underline shrink-0"
+                title="Добавить регион"
+                onClick={() => addBreakdownRegionWithCascade(q)}
+              >
+                +
+              </button>
+            </div>
+          </td>
+          <td className="p-2 border text-center">
+            <input type="checkbox" checked={row.active} disabled
+              className="opacity-60" title="Из ФС (активные очереди)" />
+          </td>
+          <td className="p-2 border">{renderOrgNumericCell(q, 'users')}</td>
+          <td className="p-2 border">{renderOrgNumericCell(q, 'rp_rpo', { validatable: true })}</td>
+          <td className="p-2 border">{renderOrgNumericCell(q, 'executors', { validatable: true })}</td>
+          <td className="p-2 border">{renderOrgNumericCell(q, 'rg')}</td>
+        </tr>
+
+        {queueOpen && hasBreakdown && breakdown.map(region => renderOrgRegionRows(q, region))}
+
+        {queueOpen && hasBreakdown && (
+          <tr className="bg-slate-50/20">
+            <td colSpan={6} className="p-1 border pl-12">
+              <button
+                type="button"
+                className="text-xs text-blue-600 hover:underline"
+                onClick={() => addBreakdownRegionWithCascade(q)}
+              >
+                + Добавить регион
+              </button>
+            </td>
+          </tr>
+        )}
+      </React.Fragment>
+    );
   }
 
   function setRisk(key: keyof RisksC51C57, value: number) {
     if (!MANUAL_RISK_KEYS.has(key)) return;
-    onChange({ risks: { ...a.risks, [key]: value }, risks_manual: true });
+    onChange(buildManualRiskPatch(key, value, {
+      risks: a.risks,
+      auto_risks: a.auto_risks,
+      risks_manual_keys: a.risks_manual_keys ?? {},
+      risks_manual: a.risks_manual,
+    }));
   }
 
   const typeCriteria = a.criteria_defs.filter(d => d.group === 'type');
@@ -465,50 +868,27 @@ export default function AssessmentTab({ assessment, recalcFlash = 0, onChange }:
               <th className="p-2 border text-right">Польз.</th>
               <th className="p-2 border text-right">РП/РПО</th>
               <th className="p-2 border text-right">Исполн.</th>
-              <th className="p-2 border text-right">РГ</th>
-              <th className="p-2 border text-left">Регион</th>
+              <th className="p-2 border text-right">РГ (СПб/МСК)</th>
+            </tr>
+            <tr className="bg-slate-50 text-slate-400 text-[10px]">
+              <th className="p-1 border" />
+              <th className="p-1 border text-center">Яч.</th>
+              <th className="p-1 border text-center">B5</th>
+              <th className="p-1 border text-center">C5</th>
+              <th className="p-1 border text-center">D5</th>
+              <th className="p-1 border text-center">D7</th>
             </tr>
           </thead>
           <tbody>
-            {FS_QUEUE_KEYS.map(q => {
-              const row = a.org_volume.queues[q];
-              return (
-                <tr key={q}>
-                  <td className="p-2 border font-medium">{FS_QUEUE_LABELS[q]}</td>
-                  <td className="p-2 border text-center">
-                    <input type="checkbox" checked={row.active} disabled
-                      className="opacity-60" title="Из ФС (активные очереди)" />
-                  </td>
-                  {(['users', 'rp_rpo', 'executors', 'rg'] as const).map(field => {
-                    const validatable = field === 'rp_rpo' || field === 'executors';
-                    const isEmpty = validatable && row.active && isOrgVolumeFieldEmpty(row[field]);
-                    return (
-                      <td key={field} className="p-2 border">
-                        <input
-                          type="number"
-                          min="0"
-                          step="1"
-                          className={`w-full text-right border rounded px-1 py-0.5 ${isEmpty ? ORG_EMPTY_CLASS : ''}`}
-                          value={row[field] ?? ''}
-                          onChange={e => setOrgQueue(q, field, e.target.value)}
-                          onBlur={e => commitOrgQueueField(q, field, e.target.value)}
-                          {...numericInputHandlers}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td className="p-2 border">
-                    <input type="text"
-                      className="w-full border rounded px-1 py-0.5"
-                      value={row.region}
-                      onChange={e => setOrgQueue(q, 'region', e.target.value)}
-                      onBlur={e => commitOrgQueueField(q, 'region', e.target.value)} />
-                  </td>
-                </tr>
-              );
-            })}
+            {FS_QUEUE_KEYS.map(q => renderOrgQueueRows(q))}
           </tbody>
         </table>
+        <p className="text-[10px] text-slate-400 mt-1">
+          Строка очереди — итоги (Польз., РП/РПО, Исполн., РГ). Название региона — в колонке «Очередь» у дочерних строк.
+          «+» — регион; «++» — филиал внутри региона. При детализации итоги очереди = сумма дочерних строк.
+          При blur значения каскадируются на последующие строки/очереди (с подтверждением, если цель уже заполнена).
+          Жёлтая подсветка — ручное отличие от авто; красная — пустые РП/РПО или Исполн. у активной очереди.
+        </p>
       </section>
 
       <section className={flash ? `rounded-lg ${RECALC_FLASH_CLASS}` : ''}>
@@ -646,7 +1026,7 @@ export default function AssessmentTab({ assessment, recalcFlash = 0, onChange }:
                     <input
                       type="text"
                       inputMode="decimal"
-                      className={`w-full text-right border rounded px-2 py-1 ${a.risks_manual && a.risks[key] !== a.auto_risks[key] ? OVERRIDE_CLASS : ''}`}
+                      className={`w-full text-right border rounded px-2 py-1 ${isRiskKeyManual(key, a.risks_manual_keys ?? {}, a.risks_manual, a.risks) && a.risks[key] !== a.auto_risks[key] ? OVERRIDE_CLASS : ''}`}
                       value={riskDrafts[key] ?? pct(a.risks[key])}
                       onChange={e => {
                         const raw = e.target.value;

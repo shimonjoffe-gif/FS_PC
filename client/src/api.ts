@@ -3,7 +3,9 @@ import type {
   Briefing, BriefingFull, BriefingCalcResult, Industry, Segment, MaturityLevel,
   Problem, Solution, Widget, FsCatalogItem, FsPhase, BriefingParams, CatalogLink,
   ProjectType, ProjectTypeRate, HeadcountCoefficient, BriefingAssessment,
+  AssessmentScenarioSnapshot,
 } from './types';
+import type { CreateSnapshotPayload } from './scenarioCalc';
 
 const BASE = '/api';
 
@@ -109,6 +111,15 @@ export const saveBriefingParams = (id: number, params: Partial<BriefingParams>) 
 export const getBriefingAssessment = (id: number) => req<BriefingAssessment>(`/briefings/${id}/assessment`);
 export const patchBriefingAssessment = (id: number, data: Record<string, unknown>) =>
   req<BriefingAssessment>(`/briefings/${id}/assessment`, { method: 'PATCH', body: JSON.stringify(data) });
+export const getAssessmentSnapshots = (id: number) =>
+  req<AssessmentScenarioSnapshot[]>(`/briefings/${id}/assessment-snapshots`);
+export const createAssessmentSnapshot = (id: number, data: CreateSnapshotPayload) =>
+  req<AssessmentScenarioSnapshot>(`/briefings/${id}/assessment-snapshots`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+export const deleteAssessmentSnapshot = (id: number, snapshotId: string) =>
+  req<{ ok: boolean }>(`/briefings/${id}/assessment-snapshots/${snapshotId}`, { method: 'DELETE' });
 export const deriveBriefingFs = (id: number) =>
   req<{ items: unknown[] }>(`/briefings/${id}/derive-fs`, { method: 'POST' });
 export const calculateBriefing = (id: number) => req<BriefingCalcResult>(`/briefings/${id}/calculate`);

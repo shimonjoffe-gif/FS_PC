@@ -3,6 +3,7 @@ import {
   FS_QUEUE_KEYS, FsQueuesMap, EMPTY_QUEUES, parseQueuesJson, queuesFromLegacy, primaryQueue, anyQueueEnabled, enabledFromQueues,
 } from './fsQueues';
 import { compareFsByGroupThenPrefix } from './fsPrefixSort';
+import { loadBriefingQueueRates, effectiveRateForQueue } from './briefingAssessmentRates';
 
 export interface TeamProportions {
   рп: number;
@@ -22,7 +23,8 @@ export interface PhaseConfig {
 
 export interface BriefingParams {
   hourly_rate: number;
-  accuracy: string;
+  /** Точность оценки C58, % — budget multiplier = 1 + accuracy/100 */
+  accuracy: number;
   sp_cost_rub: number;
   phases_json: PhaseConfig[];
   team_json: TeamProportions;
@@ -134,6 +136,7 @@ export interface QueueSummary {
   phase: string;
   story_points: number;
   budget: number;
+  rate: number;
   hours: number;
   duration_days: number;
 }
@@ -148,9 +151,24 @@ const DEFAULT_TEAM: TeamProportions = {
   архит: 0.15, програм1: 0.2, програм2: 0.1, куратор: 0.05,
 };
 
-const ACCURACY_MULT: Record<string, number> = {
-  low: 0.85, medium: 1.0, high: 1.2,
+const LEGACY_ACCURACY_PCT: Record<string, number> = {
+  low: -15, medium: 0, high: 20,
 };
+
+export function parseAccuracyPct(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string') {
+    const key = raw.trim().toLowerCase();
+    if (key in LEGACY_ACCURACY_PCT) return LEGACY_ACCURACY_PCT[key];
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+export function accuracyMultiplier(accuracyPct: unknown): number {
+  return 1 + parseAccuracyPct(accuracyPct) / 100;
+}
 
 export function getDefaultParams(): BriefingParams {
   const phases = db.prepare(`SELECT id, name, enabled_default FROM fs_phases ORDER BY sort_order`).all() as {
@@ -161,7 +179,7 @@ export function getDefaultParams(): BriefingParams {
 
   return {
     hourly_rate: hourlyRate,
-    accuracy: 'medium',
+    accuracy: 0,
     sp_cost_rub: hourlyRate * hoursPerDay,
     phases_json: phases.map(p => ({ phase_id: p.id, name: p.name, enabled: p.enabled_default === 1 })),
     team_json: { ...DEFAULT_TEAM },
@@ -353,26 +371,22 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
 
 export function calculateBriefing(briefingId: number): BriefingCalcResult {
   const paramsRow = db.prepare(`SELECT * FROM briefing_params WHERE briefing_id=?`).get(briefingId) as {
-    hourly_rate: number; accuracy: string; sp_cost_rub: number;
+    hourly_rate: number; accuracy: unknown; sp_cost_rub: number;
     phases_json: string; team_json: string;
   } | undefined;
 
   const defaults = getDefaultParams();
   const params: BriefingParams = paramsRow ? {
     hourly_rate: paramsRow.hourly_rate ?? defaults.hourly_rate,
-    accuracy: paramsRow.accuracy ?? defaults.accuracy,
+    accuracy: parseAccuracyPct(paramsRow.accuracy ?? defaults.accuracy),
     sp_cost_rub: paramsRow.sp_cost_rub ?? defaults.sp_cost_rub,
     phases_json: paramsRow.phases_json ? JSON.parse(paramsRow.phases_json) : defaults.phases_json,
     team_json: paramsRow.team_json ? JSON.parse(paramsRow.team_json) : defaults.team_json,
   } : defaults;
 
-  const enabledPhases = new Set(
-    params.phases_json.filter(p => p.enabled).map(p => p.name)
-  );
-
   const hoursPerDay = (db.prepare(`SELECT value FROM constants WHERE key='часовВДень'`).get() as { value: number } | undefined)?.value ?? 8;
   const teamFte = Object.values(params.team_json).reduce((s, v) => s + v, 0) || 1;
-  const accuracyMult = ACCURACY_MULT[params.accuracy] ?? 1;
+  const accuracyMult = accuracyMultiplier(params.accuracy);
 
   const items = db.prepare(`
     SELECT bfs.queue, bfs.queues_json, bfs.story_points, bfs.enabled, fc.phase, fc.story_points as catalog_sp
@@ -386,7 +400,6 @@ export function calculateBriefing(briefingId: number): BriefingCalcResult {
 
   const queueMap = new Map<string, { phase: string; sp: number }>();
   for (const item of items) {
-    if (item.phase && enabledPhases.size > 0 && !enabledPhases.has(item.phase)) continue;
     const sp = item.story_points ?? item.catalog_sp ?? 0;
     const queues = item.queues_json
       ? parseQueuesJson(item.queues_json)
@@ -400,15 +413,18 @@ export function calculateBriefing(briefingId: number): BriefingCalcResult {
     }
   }
 
+  const queueRates = loadBriefingQueueRates(briefingId);
+
   const by_queue: QueueSummary[] = [];
   let totalSp = 0, totalBudget = 0, totalHours = 0, maxDuration = 0;
 
   for (const [queue, data] of [...queueMap.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ru'))) {
     const sp = data.sp;
     const budget = Math.round(sp * params.sp_cost_rub * accuracyMult);
-    const hours = Math.round(budget / params.hourly_rate);
+    const rate = effectiveRateForQueue(queue, queueRates);
+    const hours = rate > 0 ? Math.round(budget / rate) : 0;
     const duration_days = Math.ceil(hours / (teamFte * hoursPerDay));
-    by_queue.push({ queue, phase: data.phase, story_points: sp, budget, hours, duration_days });
+    by_queue.push({ queue, phase: data.phase, story_points: sp, budget, rate, hours, duration_days });
     totalSp += sp;
     totalBudget += budget;
     totalHours += hours;

@@ -31,13 +31,30 @@ export interface RisksC51C57 {
   c57_rk: number;
 }
 
+export interface OrgVolumeBreakdownRow {
+  id: string;
+  label: string;
+  users: number | null;
+  rp_rpo?: number | null;
+  executors?: number | null;
+  rg?: number | null;
+  rg_regions?: number | null;
+  branches?: OrgVolumeBreakdownRow[];
+}
+
 export interface QueueOrgVolume {
   users: number;
   rp_rpo: number | null;
   executors: number | null;
   rg: number;
+  rg_regions: number;
+  functional_sp: number;
+  integrations_sp: number;
+  nmd_sp: number;
+  load_test_scenarios: number;
   region: string;
   active: boolean;
+  breakdown?: OrgVolumeBreakdownRow[];
 }
 
 export interface OrgVolumeData {
@@ -166,7 +183,7 @@ export function computeRisks(criteria: SellerCriteria, ctx: ComputeRisksContext 
     }
   }
 
-  const c53 = Math.max(c52 + c54, c56 + c57);
+  const c53 = computeCompanyFundC53(c52, c54, c57, c56);
 
   return { c52_rpo: c52, c53_company_fund: c53, c54_contract_rpo: c54, c55_contract_fund: c55, c56_sales_comp: c56, c57_rk: c57 };
 }
@@ -181,19 +198,124 @@ export function computeRisksTotalC51(risks: RisksC51C57): number {
     + risks.c57_rk;
 }
 
+export type RisksManualKeys = Partial<Record<keyof RisksC51C57, boolean>>;
+
+export const LEGACY_MANUAL_RISK_KEYS: (keyof RisksC51C57)[] = [
+  'c52_rpo', 'c56_sales_comp', 'c57_rk',
+];
+
+export const C53_DRIVER_KEYS: (keyof RisksC51C57)[] = [
+  'c52_rpo', 'c54_contract_rpo', 'c56_sales_comp', 'c57_rk',
+];
+
+export function computeCompanyFundC53(
+  rpoReserve: number,
+  rpoRisks: number,
+  companyReserve: number,
+  salesComp: number,
+): number {
+  return Math.max(rpoReserve + rpoRisks, companyReserve + salesComp);
+}
+
+export function isRiskKeyManual(
+  key: keyof RisksC51C57,
+  manualKeys: RisksManualKeys,
+  legacyManual: boolean,
+  storedRisks: Partial<RisksC51C57>,
+): boolean {
+  if (manualKeys[key]) return true;
+  if (legacyManual && LEGACY_MANUAL_RISK_KEYS.includes(key) && storedRisks[key] != null) return true;
+  return false;
+}
+
+export function hasAnyManualRiskKeys(
+  manualKeys: RisksManualKeys,
+  legacyManual: boolean,
+): boolean {
+  if (legacyManual) return true;
+  return Object.values(manualKeys).some(Boolean);
+}
+
+export function migrateLegacyRisksToSides(
+  legacyRisks: Partial<RisksC51C57>,
+  legacyManualKeys: RisksManualKeys,
+  legacyManual: boolean,
+  storedOt: Partial<RisksC51C57>,
+  storedDo: Partial<RisksC51C57>,
+  manualKeysOt: RisksManualKeys,
+  manualKeysDo: RisksManualKeys,
+  manualOt: boolean,
+  manualDo: boolean,
+): {
+  storedOt: Partial<RisksC51C57>;
+  storedDo: Partial<RisksC51C57>;
+  manualKeysOt: RisksManualKeys;
+  manualKeysDo: RisksManualKeys;
+  manualOt: boolean;
+  manualDo: boolean;
+} {
+  const legacyHasData =
+    Object.keys(legacyRisks).length > 0
+    || legacyManual
+    || Object.values(legacyManualKeys).some(Boolean);
+
+  let ot = storedOt;
+  let doSide = storedDo;
+  let mkOt = manualKeysOt;
+  let mkDo = manualKeysDo;
+  let mOt = manualOt;
+  let mDo = manualDo;
+
+  if (Object.keys(ot).length === 0 && Object.keys(doSide).length === 0 && legacyHasData) {
+    ot = { ...legacyRisks };
+    doSide = { ...legacyRisks };
+  }
+  if (
+    Object.keys(mkOt).length === 0
+    && Object.keys(mkDo).length === 0
+    && legacyHasData
+  ) {
+    mkOt = { ...legacyManualKeys };
+    mkDo = { ...legacyManualKeys };
+  }
+  if (!mOt && !mDo && legacyManual) {
+    mOt = true;
+    mDo = true;
+  }
+
+  return {
+    storedOt: ot,
+    storedDo: doSide,
+    manualKeysOt: mkOt,
+    manualKeysDo: mkDo,
+    manualOt: mOt || hasAnyManualRiskKeys(mkOt, false),
+    manualDo: mDo || hasAnyManualRiskKeys(mkDo, false),
+  };
+}
+
 export function mergeEffectiveRisks(
   autoRisks: RisksC51C57,
   storedRisks: Partial<RisksC51C57>,
-  risksManual: boolean,
+  manualKeys: RisksManualKeys,
+  legacyManual = false,
 ): RisksC51C57 {
-  const c52 = risksManual && storedRisks.c52_rpo != null ? storedRisks.c52_rpo : autoRisks.c52_rpo;
-  const c56 = risksManual && storedRisks.c56_sales_comp != null
-    ? storedRisks.c56_sales_comp
-    : autoRisks.c56_sales_comp;
-  const c57 = risksManual && storedRisks.c57_rk != null ? storedRisks.c57_rk : autoRisks.c57_rk;
-  const c54 = autoRisks.c54_contract_rpo;
-  const c55 = autoRisks.c55_contract_fund;
-  const c53 = Math.max(c52 + c54, c56 + c57);
+  const pick = (key: keyof RisksC51C57): number => {
+    if (isRiskKeyManual(key, manualKeys, legacyManual, storedRisks) && storedRisks[key] != null) {
+      return storedRisks[key] as number;
+    }
+    return autoRisks[key];
+  };
+
+  const c52 = pick('c52_rpo');
+  const c54 = pick('c54_contract_rpo');
+  const c55 = pick('c55_contract_fund');
+  const c56 = pick('c56_sales_comp');
+  const c57 = pick('c57_rk');
+  const c53 = isRiskKeyManual('c53_company_fund', manualKeys, legacyManual, storedRisks)
+    && storedRisks.c53_company_fund != null
+    ? storedRisks.c53_company_fund
+    : computeCompanyFundC53(c52, c54, c57, c56);
+
   return {
     c52_rpo: c52,
     c53_company_fund: c53,
@@ -204,13 +326,21 @@ export function mergeEffectiveRisks(
   };
 }
 
-function defaultQueueVolume(headcount: number, active: boolean): QueueOrgVolume {
+function defaultQueueVolume(headcount: number, active: boolean, q: FsQueueKey): QueueOrgVolume {
   const users = headcount > 0 ? headcount : 30;
+  // TODO: from FS import — dev defaults for C21/D20 until FS fills these columns
+  const DEV_TEST_INTEGRATIONS_SP: Record<FsQueueKey, number> = { '1': 3, '2': 2, '3': 1, '4': 0 };
+  const DEV_TEST_NMD_SP: Record<FsQueueKey, number> = { '1': 2, '2': 1, '3': 0, '4': 0 };
   return {
     users,
     rp_rpo: null,
     executors: null,
     rg: Math.max(1, Math.ceil(users * 0.05)),
+    rg_regions: 0,
+    functional_sp: 0,
+    integrations_sp: 0,
+    nmd_sp: 0,
+    load_test_scenarios: 0,
     region: 'СПб/МСК',
     active,
   };
@@ -236,7 +366,7 @@ export function computeOrgVolume(briefingId: number, stored: Partial<OrgVolumeDa
   for (const q of FS_QUEUE_KEYS) {
     const active = activeQueues.has(q);
     const storedQ = stored.queues?.[q];
-    const base = defaultQueueVolume(headcount, active);
+    const base = defaultQueueVolume(headcount, active, q);
     queues[q] = storedQ ? { ...base, ...storedQ, active } : base;
   }
 
@@ -280,14 +410,77 @@ export function getHeadcountCoeffs(typeId: number | null, category: string): Hea
   return { c62: row.category, c63: row.c63, c64: row.c64, c67: row.c67, c68: row.c68 };
 }
 
+export interface QueueRateRow {
+  queue: string;
+  rate: number;
+  nsi_rate: number;
+}
+
+export function getQueueRateValue(qc: Pick<QueueRateRow, 'rate' | 'nsi_rate'>): number {
+  return qc.rate ?? qc.nsi_rate;
+}
+
+export function computeMaxQueueRate(
+  queueCalcs: QueueRateRow[],
+  activeQueues?: Iterable<string>,
+): number {
+  let rows = queueCalcs;
+  if (activeQueues) {
+    const active = new Set(activeQueues);
+    const filtered = queueCalcs.filter(q => active.has(q.queue));
+    if (filtered.length > 0) rows = filtered;
+  }
+  if (rows.length === 0) return 0;
+  return Math.max(...rows.map(getQueueRateValue));
+}
+
+export function computeAutoUnifiedRate(queueCalcs: QueueRateRow[]): number {
+  return computeMaxQueueRate(queueCalcs);
+}
+
+export function getEffectiveQueueRate(
+  qc: Pick<QueueRateRow, 'rate' | 'nsi_rate'>,
+  unifiedEnabled: boolean,
+  unifiedRate: number | null | undefined,
+): number {
+  if (unifiedEnabled && unifiedRate != null) return unifiedRate;
+  return getQueueRateValue(qc);
+}
+
 export function technologyForType(typeCode: string | null): string {
   switch (typeCode) {
     case 'KORP': return 'КОРП-проект';
     case 'PROF': return 'ПРОФ-проект';
     case 'PROF_MINI': return 'Проф/мини';
-    case 'BZ': return 'БЗ';
+    case 'BZ': return 'Быстрый запуск';
     default: return 'Кейс-проект';
   }
+}
+
+function normalizeQueueTechnologyLabel(label: string): string {
+  if (label === 'БЗ') return 'Быстрый запуск';
+  return label;
+}
+
+export function typeCodeForTechnologyLabel(label: string): string {
+  switch (normalizeQueueTechnologyLabel(label)) {
+    case 'КОРП-проект': return 'KORP';
+    case 'ПРОФ-проект': return 'PROF';
+    case 'Проф/мини': return 'PROF_MINI';
+    case 'Быстрый запуск': return 'BZ';
+    default: return 'CASE';
+  }
+}
+
+export function getHourlyRateForTechnologyLabel(technology: string): number {
+  const code = typeCodeForTechnologyLabel(technology);
+  const row = db.prepare(`
+    SELECT ptr.hourly_rate FROM project_types pt
+    JOIN project_type_rates ptr ON ptr.project_type_id = pt.id
+    WHERE pt.code = ? AND pt.is_active = 1
+    ORDER BY ptr.valid_from DESC LIMIT 1
+  `).get(code) as { hourly_rate: number } | undefined;
+  return row?.hourly_rate ?? 5000;
 }
 
 export function seedProjectTypesNsi() {
