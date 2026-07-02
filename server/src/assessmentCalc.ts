@@ -3,6 +3,14 @@ import { FS_QUEUE_KEYS, FsQueueKey, parseQueuesJson, anyQueueEnabled } from './f
 import { loadFsSelections } from './briefingCalc';
 import { computeQueueSpFromFs, autoLoadTestScenarios, catalogRequiresNmd, catalogNmdLabel, nmdSpContribution } from './fsSpCalc';
 import {
+  funcTypeToCode,
+  computeAutoTechnologyForQueue,
+  highestFuncTypeCodeInQueue,
+  technologyLabelForTypeCode,
+  typeCodeForTechnologyLabel,
+  normalizeTechnologyLabel,
+} from './fsFuncType';
+import {
   SELLER_CRITERIA_DEFS,
   criteriaFlag,
   computeCriteriaSpAuto,
@@ -80,15 +88,18 @@ export interface ProjectTypeRow {
   base_type_id: number | null;
 }
 
-const FUNC_TYPE_MAP: Record<string, string> = {
-  'Кейс-проект': 'CASE',
-  'Проф/мини': 'PROF_MINI',
-  'ПРОФ-проект': 'PROF',
-  'КОРП-проект': 'KORP',
-  'Базовый': 'CASE',
-  'Проф': 'PROF_MINI',
-  'Экспертный': 'PROF',
-};
+export function computeQueueAutoTechnologies(
+  briefingId: number,
+  projectTypeCode: string | null | undefined,
+): Record<FsQueueKey, string> {
+  const items = loadFsSelections(briefingId);
+  const result = {} as Record<FsQueueKey, string>;
+  for (const q of FS_QUEUE_KEYS) {
+    const highest = highestFuncTypeCodeInQueue(items, q);
+    result[q] = computeAutoTechnologyForQueue(highest, projectTypeCode);
+  }
+  return result;
+}
 
 export function headcountToCategory(n: number): HeadcountCategory {
   if (n <= 200) return 'до 200';
@@ -104,7 +115,7 @@ function spByFuncType(briefingId: number): Record<string, number> {
     const queues = parseQueuesJson(item.queues_json);
     if (!anyQueueEnabled(queues)) continue;
     const sp = item.story_points ?? 0;
-    const code = FUNC_TYPE_MAP[item.func_type ?? ''] ?? 'CASE';
+    const code = funcTypeToCode(item.func_type);
     totals[code] = (totals[code] ?? 0) + sp;
     if (catalogRequiresNmd(item)) {
       totals.NMD += nmdSpContribution(catalogNmdLabel(item), sp);
@@ -454,29 +465,10 @@ export function getEffectiveQueueRate(
 }
 
 export function technologyForType(typeCode: string | null): string {
-  switch (typeCode) {
-    case 'KORP': return 'КОРП-проект';
-    case 'PROF': return 'ПРОФ-проект';
-    case 'PROF_MINI': return 'Проф/мини';
-    case 'BZ': return 'Быстрый запуск';
-    default: return 'Кейс-проект';
-  }
+  return technologyLabelForTypeCode(typeCode);
 }
 
-function normalizeQueueTechnologyLabel(label: string): string {
-  if (label === 'БЗ') return 'Быстрый запуск';
-  return label;
-}
-
-export function typeCodeForTechnologyLabel(label: string): string {
-  switch (normalizeQueueTechnologyLabel(label)) {
-    case 'КОРП-проект': return 'KORP';
-    case 'ПРОФ-проект': return 'PROF';
-    case 'Проф/мини': return 'PROF_MINI';
-    case 'Быстрый запуск': return 'BZ';
-    default: return 'CASE';
-  }
-}
+export { typeCodeForTechnologyLabel, normalizeTechnologyLabel as normalizeQueueTechnologyLabel } from './fsFuncType';
 
 export function getHourlyRateForTechnologyLabel(technology: string): number {
   const code = typeCodeForTechnologyLabel(technology);

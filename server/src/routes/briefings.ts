@@ -1,17 +1,20 @@
 import { Router } from 'express';
 import { db } from '../db';
 import { deriveFsFromSelections, calculateBriefing, getDefaultParams, loadFsSelections, parseAccuracyPct } from '../briefingCalc';
-import { parseQueuesJson, primaryQueue, enabledFromQueues } from '../fsQueues';
+import { ensureBriefingFsSnapshot, replaceBriefingFsCustomLines, recordFsCatalogUsage, listPublishedCatalogItemsMissingFromBriefing, addPublishedCatalogItemsToBriefing } from '../briefingFsSnapshot';
+import { parseQueuesJson, primaryQueue, enabledFromQueues, anyQueueEnabled } from '../fsQueues';
 import { FS_QUEUE_KEYS } from '../fsQueues';
 import {
   computeAutoProjectType, computeRisks, mergeEffectiveRisks, computeOrgVolume,
-  getHourlyRateForType, getHeadcountCoeffs, technologyForType, getHourlyRateForTechnologyLabel,
+  getHourlyRateForType, getHeadcountCoeffs, getHourlyRateForTechnologyLabel,
   computeCriteriaSpAuto, computeAutoUnifiedRate, migrateLegacyRisksToSides,
+  computeQueueAutoTechnologies,
   hasAnyManualRiskKeys,
   SELLER_CRITERIA_DEFS, type SellerCriteria, type OrgVolumeData, type RisksC51C57,
 } from '../assessmentCalc';
 import { parseSellerCriteria, serializeSellerCriteria } from '../sellerCriteria';
 import type { FsNmdValue } from '../fsSpCalc';
+import { replaceBriefingFsCustomerItems } from '../fsCustomerItems';
 import {
   PHASE_CALC_LINE_DEFS,
   parsePhaseCalcJson,
@@ -147,7 +150,7 @@ function loadAssessment(briefingId: number) {
     ? { ...autoCoeffs, ...storedCoeffs, c62: category }
     : { ...autoCoeffs, c62: category };
 
-  const autoTechnology = technologyForType(autoType?.code ?? typeRow?.code ?? null);
+  const queueAutoTech = computeQueueAutoTechnologies(briefingId, autoType?.code ?? typeRow?.code ?? null);
 
   const queueCalcs = FS_QUEUE_KEYS.map(q => {
     const stored = db.prepare(`
@@ -160,9 +163,10 @@ function loadAssessment(briefingId: number) {
     } | undefined;
 
     const techManual = stored?.technology_manual === 1;
+    const autoTech = queueAutoTech[q];
     const rawTechnology = techManual && stored?.technology
       ? stored.technology
-      : autoTechnology;
+      : autoTech;
     const technology = rawTechnology === 'БЗ' ? 'Быстрый запуск' : rawTechnology;
     const autoRate = getHourlyRateForTechnologyLabel(technology);
     const rate = stored?.rate_manual && stored.rate != null ? stored.rate : autoRate;
@@ -170,7 +174,7 @@ function loadAssessment(briefingId: number) {
     return {
       queue: q,
       technology,
-      auto_technology: autoTechnology,
+      auto_technology: autoTech,
       technology_manual: stored?.technology_manual ?? 0,
       rate,
       nsi_rate: autoRate,
@@ -360,6 +364,7 @@ briefingsRouter.post('/', (req, res) => {
     JSON.stringify(defaults.phases_json), JSON.stringify(defaults.team_json),
     JSON.stringify(defaults.queue_labels_json));
   ensureAssessmentRow(id);
+  ensureBriefingFsSnapshot(id);
   res.json({ id });
 });
 
@@ -440,7 +445,7 @@ briefingsRouter.put('/:id/widgets', (req, res) => {
 
 briefingsRouter.put('/:id/fs', (req, res) => {
   const id = Number(req.params.id);
-  const { items } = req.body as {
+  const { items, custom_lines, customer_items } = req.body as {
     items: {
       fs_item_id: number; enabled?: number; queue?: string;
       queues_json?: string | Record<string, number>;
@@ -448,20 +453,68 @@ briefingsRouter.put('/:id/fs', (req, res) => {
       queue_sp_json?: string | Record<string, number> | null;
       queue_nmd_json?: string | Record<string, FsNmdValue> | null;
       queue_comment_json?: string | Record<string, string> | null;
+      customer_name?: string | null;
+      customer_description?: string | null;
+      inactive_for_customer?: boolean | number;
+      detail_lines?: {
+        catalog_detail_id?: number | null;
+        source: 'nsi' | 'customer';
+        name: string;
+        description?: string | null;
+        inactive?: boolean;
+        nsi_name?: string | null;
+        nsi_description?: string | null;
+        sort_order?: number;
+      }[];
+    }[];
+    custom_lines?: {
+      parent_fs_item_id: number | null;
+      name: string;
+      description?: string | null;
+      sort_order?: number;
+    }[];
+    customer_items?: {
+      id?: number;
+      group_prefix: string;
+      name: string;
+      description?: string | null;
+      func_type: string;
+      story_points?: number;
+      queues_json?: string | Record<string, number>;
+      queue_sp_json?: string | Record<string, number> | null;
+      queue_nmd_json?: string | Record<string, FsNmdValue> | null;
+      queue_comment_json?: string | Record<string, string> | null;
+      sort_order?: number;
+      detail_lines?: {
+        name: string;
+        description?: string | null;
+        inactive?: boolean;
+        sort_order?: number;
+      }[];
+      inactive_for_customer?: boolean | number;
     }[];
   };
   const upsert = db.prepare(`
-    INSERT INTO briefing_fs_sel(briefing_id, fs_item_id, enabled, queue, queues_json, source, story_points, queue_sp_json, queue_nmd_json, queue_comment_json)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO briefing_fs_sel(
+      briefing_id, fs_item_id, enabled, queue, queues_json, source, story_points,
+      queue_sp_json, queue_nmd_json, queue_comment_json,
+      customer_name, customer_description, inactive_for_customer, detail_lines_json
+    )
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(briefing_id, fs_item_id) DO UPDATE SET
       enabled=excluded.enabled, queue=excluded.queue, queues_json=excluded.queues_json,
       source=excluded.source, story_points=excluded.story_points,
       queue_sp_json=excluded.queue_sp_json,
       queue_nmd_json=excluded.queue_nmd_json,
-      queue_comment_json=excluded.queue_comment_json
+      queue_comment_json=excluded.queue_comment_json,
+      customer_name=excluded.customer_name,
+      customer_description=excluded.customer_description,
+      inactive_for_customer=excluded.inactive_for_customer,
+      detail_lines_json=excluded.detail_lines_json
   `);
   const tx = db.transaction(() => {
     for (const item of items ?? []) {
+      if (item.fs_item_id <= 0) continue;
       const queues = parseQueuesJson(
         typeof item.queues_json === 'string' ? item.queues_json : JSON.stringify(item.queues_json ?? null),
       );
@@ -482,17 +535,84 @@ briefingsRouter.put('/:id/fs', (req, res) => {
         : typeof item.queue_comment_json === 'string'
           ? item.queue_comment_json
           : JSON.stringify(item.queue_comment_json);
+      const inactive = item.inactive_for_customer === true || item.inactive_for_customer === 1 ? 1 : 0;
+      const detailLinesJson = item.detail_lines == null
+        ? null
+        : JSON.stringify(
+          item.detail_lines
+            .filter(l => l.name?.trim())
+            .map((l, i) => ({
+              catalog_detail_id: l.catalog_detail_id ?? null,
+              source: l.source === 'customer' ? 'customer' : 'nsi',
+              name: l.name.trim(),
+              description: l.description?.trim() || null,
+              inactive: Boolean(l.inactive),
+              nsi_name: l.nsi_name ?? null,
+              nsi_description: l.nsi_description ?? null,
+              sort_order: l.sort_order ?? i,
+            })),
+        );
       upsert.run(
         id, item.fs_item_id, enabled, queue,
         JSON.stringify(queues),
         item.source ?? 'manual', item.story_points ?? null,
         queueSpJson, queueNmdJson, queueCommentJson,
+        item.customer_name?.trim() || null,
+        item.customer_description?.trim() || null,
+        inactive,
+        detailLinesJson,
       );
+
+      if (anyQueueEnabled(queues)) {
+        const snap = db.prepare(`
+          SELECT snap_prefix, snap_name, snap_description, snap_func_type, snap_story_points, snap_requires_nmd
+          FROM briefing_fs_sel WHERE briefing_id=? AND fs_item_id=?
+        `).get(id, item.fs_item_id) as {
+          snap_prefix: string | null; snap_name: string | null; snap_description: string | null;
+          snap_func_type: string | null; snap_story_points: number | null; snap_requires_nmd: string | null;
+        } | undefined;
+        if (snap) {
+          recordFsCatalogUsage(id, item.fs_item_id, {
+            catalog_prefix: snap.snap_prefix,
+            catalog_name: snap.snap_name,
+            catalog_description: snap.snap_description,
+            func_type: snap.snap_func_type,
+            story_points: snap.snap_story_points,
+            requires_nmd: snap.snap_requires_nmd,
+          });
+        }
+      }
+    }
+    if (custom_lines) {
+      replaceBriefingFsCustomLines(id, custom_lines);
+    }
+    if (customer_items) {
+      replaceBriefingFsCustomerItems(id, customer_items);
     }
   });
   tx();
   db.prepare(`UPDATE briefings SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
   res.json({ ok: true });
+});
+
+briefingsRouter.get('/:id/fs/available-catalog-items', (req, res) => {
+  const id = Number(req.params.id);
+  const briefing = db.prepare(`SELECT id FROM briefings WHERE id=?`).get(id);
+  if (!briefing) return res.status(404).json({ error: 'not found' });
+  ensureBriefingFsSnapshot(id);
+  res.json(listPublishedCatalogItemsMissingFromBriefing(id));
+});
+
+briefingsRouter.post('/:id/fs/add-catalog-items', (req, res) => {
+  const id = Number(req.params.id);
+  const briefing = db.prepare(`SELECT id FROM briefings WHERE id=?`).get(id);
+  if (!briefing) return res.status(404).json({ error: 'not found' });
+  const { fs_item_ids } = req.body as { fs_item_ids?: number[] };
+  const ids = (fs_item_ids ?? []).map(Number).filter(n => n > 0);
+  if (ids.length === 0) return res.status(400).json({ error: 'fs_item_ids required' });
+  const added = addPublishedCatalogItemsToBriefing(id, ids);
+  db.prepare(`UPDATE briefings SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
+  res.json({ ok: true, added, fs_items: loadFsSelections(id) });
 });
 
 briefingsRouter.put('/:id/params', (req, res) => {

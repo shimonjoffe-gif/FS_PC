@@ -55,3 +55,12 @@ export function compareFsByGroupThenPrefix(a: FsPrefixItem, b: FsPrefixItem): nu
   if (groupCmp !== 0) return groupCmp;
   return compareFsPrefix(a, b);
 }
+
+/** Нетиповые пункты ФС (шаблоны 1С:____ / Др. вендор), начиная с 11.13. */
+const NON_TYPICAL_FS_MIN_PREFIX = '11.13';
+
+export function isNonTypicalFsPrefix(prefix: string | null | undefined): boolean {
+  const normalized = normalizeFsPrefix(prefix);
+  if (!normalized?.startsWith('11.')) return false;
+  return compareFsPrefix({ prefix: normalized }, { prefix: NON_TYPICAL_FS_MIN_PREFIX }) >= 0;
+}

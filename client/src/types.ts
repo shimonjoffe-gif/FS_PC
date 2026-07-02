@@ -129,16 +129,115 @@ export interface Problem {
   industry_id: number | null;
   segment_id: number | null;
   maturity_id: number | null;
-  industry_name?: string;
-  segment_name?: string;
-  maturity_name?: string;
+  industry_name?: string | null;
+  segment_name?: string | null;
+  maturity_name?: string | null;
+  parent_id?: number | null;
+  sort_order?: number;
+  lcm_code?: string | null;
+  catalog_code?: string | null;
+  used_in_hypotheses?: string[];
+  hypothesis_codes?: Record<string, string>;
+}
+
+export interface ProblemSolutionUsage {
+  id: number;
+  name: string;
+  lcm_code?: string | null;
+  catalog_code?: string | null;
+  sort_order: number;
+}
+
+export interface ProblemHypothesisUsage {
+  hypothesis_id: number;
+  hypothesis_name: string;
+  code?: string | null;
+  solutions: ProblemSolutionUsage[];
+}
+
+export interface ProblemDetail extends Problem {
+  hypothesis_usages: ProblemHypothesisUsage[];
 }
 
 export interface Solution {
   id: number;
   name: string;
-  description?: string;
-  hypothesis?: string;
+  description?: string | null;
+  hypothesis?: string | null;
+  parent_id?: number | null;
+  sort_order?: number;
+  lcm_code?: string | null;
+  catalog_code?: string | null;
+  hypothesis_code?: string | null;
+  fs_mapped?: boolean;
+  used_in_hypotheses?: string[];
+  hypothesis_codes?: Record<string, string>;
+}
+
+export interface SolutionHypothesisUsage {
+  hypothesis_id: number;
+  hypothesis_name: string;
+  code?: string | null;
+  problems: {
+    id: number;
+    name: string;
+    lcm_code?: string | null;
+    sort_order: number;
+  }[];
+}
+
+export interface SolutionDetail extends Solution {
+  hypothesis_usages: SolutionHypothesisUsage[];
+}
+
+export interface HypothesisListItem {
+  id: number;
+  name: string;
+  target_audience: string | null;
+  maturity_id: number | null;
+  maturity_name: string | null;
+  problem_count: number;
+  activity_type_count: number;
+  updated_at: string;
+}
+
+export interface ActivityType {
+  id: number;
+  name: string;
+}
+
+export interface HypothesisProblemRow {
+  id: number;
+  name: string;
+  industry_name?: string | null;
+  segment_name?: string | null;
+  maturity_name?: string | null;
+  parent_id?: number | null;
+  sort_order: number;
+  lcm_code?: string | null;
+  depth?: number;
+  solutions: { id: number; name: string; description?: string | null; parent_id?: number | null; sort_order?: number; lcm_code?: string | null; catalog_code?: string | null; hypothesis_code?: string | null }[];
+}
+
+export interface HypothesisDetail {
+  id: number;
+  name: string;
+  target_audience: string | null;
+  maturity_id: number | null;
+  maturity_name: string | null;
+  activity_types: ActivityType[];
+  problems: HypothesisProblemRow[];
+}
+
+export interface HypothesisProblemDraft {
+  problem_id?: number;
+  name: string;
+  parent_id?: number | null;
+  depth?: number;
+  lcm_code?: string | null;
+  sort_order?: number;
+  solution_ids: number[];
+  new_solution_name: string;
 }
 
 export interface Widget {
@@ -147,6 +246,19 @@ export interface Widget {
   description: string;
   type: string;
   image_path?: string | null;
+}
+
+export interface FsCatalogGroup {
+  id: number;
+  group_prefix: string;
+  group_name: string;
+  sort_order: number;
+  published?: number;
+}
+
+export interface FsCatalogItemsResponse {
+  groups: FsCatalogGroup[];
+  items: FsCatalogItem[];
 }
 
 export interface FsCatalogItem {
@@ -165,7 +277,10 @@ export interface FsCatalogItem {
   queue: string;
   default_queues_json?: string;
   story_points: number;
+  requires_nmd?: string | null;
   base_work_id: string | null;
+  details?: { name: string; description: string | null }[];
+  published?: number;
 }
 
 export const FS_QUEUE_KEYS = ['1', '2', '3', '4'] as const;
@@ -185,6 +300,14 @@ export const FS_NMD_VALUES = [
   'Требуется разработать',
 ] as const;
 export type FsNmdValue = typeof FS_NMD_VALUES[number];
+
+export const FS_FUNC_TYPE_VALUES = [
+  'Базовый',
+  'Проф-мини',
+  'ПРОФ',
+  'Экспертный',
+] as const;
+export type FsFuncTypeValue = typeof FS_FUNC_TYPE_VALUES[number];
 
 export type QueueLabelsMap = Record<FsQueueKey, string>;
 
@@ -299,6 +422,36 @@ export interface BriefingFsSel {
   matched_widgets?: { id: number; name: string; description?: string | null; image_path?: string | null }[];
   details?: { name: string; description: string | null }[];
   matched?: boolean;
+  /** Расшифровка из снимка НСИ. */
+  catalog_description?: string | null;
+  customer_name?: string | null;
+  customer_description?: string | null;
+  inactive_for_customer?: boolean;
+  custom_lines?: BriefingFsCustomLine[];
+  detail_lines?: BriefingFsDetailLine[];
+  /** Пункт ФС заказчика (разделы 10/11), не из НСИ. */
+  is_customer_item?: boolean;
+  customer_item_id?: number;
+}
+
+export interface BriefingFsDetailLine {
+  catalog_detail_id?: number | null;
+  source: 'nsi' | 'customer';
+  name: string;
+  description: string | null;
+  inactive: boolean;
+  nsi_name?: string | null;
+  nsi_description?: string | null;
+  sort_order: number;
+}
+
+export interface BriefingFsCustomLine {
+  id?: number;
+  briefing_id?: number;
+  parent_fs_item_id: number | null;
+  name: string;
+  description?: string | null;
+  sort_order?: number;
 }
 
 export function itemQueues(item: BriefingFsSel): FsQueuesMap {

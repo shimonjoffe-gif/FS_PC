@@ -158,6 +158,33 @@ export function initDB() {
       PRIMARY KEY (problem_id, solution_id)
     );
 
+    CREATE TABLE IF NOT EXISTS hypotheses (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      name            TEXT NOT NULL,
+      target_audience TEXT,
+      maturity_id     INTEGER REFERENCES maturity_levels(id),
+      created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at      TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS activity_types (
+      id   INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE
+    );
+
+    CREATE TABLE IF NOT EXISTS hypothesis_activity_types (
+      hypothesis_id    INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+      activity_type_id INTEGER NOT NULL REFERENCES activity_types(id) ON DELETE CASCADE,
+      PRIMARY KEY (hypothesis_id, activity_type_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS hypothesis_problems (
+      hypothesis_id INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+      problem_id    INTEGER NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+      sort_order    INTEGER DEFAULT 0,
+      PRIMARY KEY (hypothesis_id, problem_id)
+    );
+
     CREATE TABLE IF NOT EXISTS widgets (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       name        TEXT NOT NULL,
@@ -187,7 +214,8 @@ export function initDB() {
       queue        TEXT DEFAULT '1',
       default_queues_json TEXT DEFAULT '{"1":0,"2":0,"3":0,"4":0}',
       story_points REAL DEFAULT 0,
-      base_work_id TEXT REFERENCES base_works(id)
+      base_work_id TEXT REFERENCES base_works(id),
+      published INTEGER DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS fs_phases (
@@ -345,6 +373,14 @@ export function initDB() {
   if (!fsColNames.has('func_type')) db.exec(`ALTER TABLE fs_catalog ADD COLUMN func_type TEXT`);
   if (!fsColNames.has('group_prefix')) db.exec(`ALTER TABLE fs_catalog ADD COLUMN group_prefix TEXT`);
   if (!fsColNames.has('requires_nmd')) db.exec(`ALTER TABLE fs_catalog ADD COLUMN requires_nmd TEXT`);
+  if (!fsColNames.has('published')) {
+    db.exec(`ALTER TABLE fs_catalog ADD COLUMN published INTEGER DEFAULT 0`);
+    db.exec(`UPDATE fs_catalog SET published=1`);
+  }
+  if (!fsColNames.has('is_deleted')) {
+    db.exec(`ALTER TABLE fs_catalog ADD COLUMN is_deleted INTEGER DEFAULT 0`);
+  }
+
   if (!fsColNames.has('prefix')) {
     db.exec(`ALTER TABLE fs_catalog ADD COLUMN prefix TEXT`);
     const backfill = db.prepare(`UPDATE fs_catalog SET prefix=?, code=NULL WHERE id=?`);
@@ -370,6 +406,141 @@ export function initDB() {
   if (!bfsCols.some(c => c.name === 'queue_comment_json')) {
     db.exec(`ALTER TABLE briefing_fs_sel ADD COLUMN queue_comment_json TEXT`);
   }
+  const bfsColNames = new Set(bfsCols.map(c => c.name));
+  const bfsMigrations: [string, string][] = [
+    ['snap_prefix', 'TEXT'],
+    ['snap_name', 'TEXT'],
+    ['snap_description', 'TEXT'],
+    ['snap_func_type', 'TEXT'],
+    ['snap_story_points', 'REAL'],
+    ['snap_requires_nmd', 'TEXT'],
+    ['customer_name', 'TEXT'],
+    ['customer_description', 'TEXT'],
+    ['inactive_for_customer', 'INTEGER DEFAULT 0'],
+    ['snap_details_json', 'TEXT'],
+    ['detail_lines_json', 'TEXT'],
+  ];
+  for (const [col, ddl] of bfsMigrations) {
+    if (!bfsColNames.has(col)) db.exec(`ALTER TABLE briefing_fs_sel ADD COLUMN ${col} ${ddl}`);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS briefing_fs_snapshot (
+      briefing_id INTEGER PRIMARY KEY REFERENCES briefings(id) ON DELETE CASCADE,
+      snapshotted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      catalog_items_count INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS briefing_fs_custom (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      briefing_id INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      parent_fs_item_id INTEGER REFERENCES fs_catalog(id),
+      name TEXT NOT NULL,
+      description TEXT,
+      sort_order INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS briefing_fs_catalog_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      briefing_id INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      fs_item_id INTEGER NOT NULL REFERENCES fs_catalog(id),
+      catalog_prefix TEXT,
+      catalog_name TEXT,
+      catalog_description TEXT,
+      func_type TEXT,
+      story_points REAL,
+      requires_nmd TEXT,
+      recorded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(briefing_id, fs_item_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS briefing_fs_customer_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      briefing_id INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      group_prefix TEXT NOT NULL,
+      display_prefix TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      func_type TEXT NOT NULL,
+      story_points REAL NOT NULL,
+      queues_json TEXT DEFAULT '{"1":0,"2":0,"3":0,"4":0}',
+      queue_sp_json TEXT,
+      queue_nmd_json TEXT,
+      queue_comment_json TEXT,
+      sort_order INTEGER DEFAULT 0,
+      detail_lines_json TEXT,
+      inactive_for_customer INTEGER DEFAULT 0
+    );
+  `);
+
+  const customerFsCols = db.prepare(`PRAGMA table_info(briefing_fs_customer_items)`).all() as { name: string }[];
+  const customerFsColNames = new Set(customerFsCols.map(c => c.name));
+  if (!customerFsColNames.has('detail_lines_json')) {
+    db.exec(`ALTER TABLE briefing_fs_customer_items ADD COLUMN detail_lines_json TEXT`);
+  }
+  if (!customerFsColNames.has('inactive_for_customer')) {
+    db.exec(`ALTER TABLE briefing_fs_customer_items ADD COLUMN inactive_for_customer INTEGER DEFAULT 0`);
+  }
+
+  const hypCols = new Set(
+    (db.prepare(`PRAGMA table_info(hypotheses)`).all() as { name: string }[]).map(c => c.name),
+  );
+  if (!hypCols.has('maturity_id')) {
+    db.exec(`ALTER TABLE hypotheses ADD COLUMN maturity_id INTEGER REFERENCES maturity_levels(id)`);
+  }
+
+  const problemCols = new Set(
+    (db.prepare(`PRAGMA table_info(problems)`).all() as { name: string }[]).map(c => c.name),
+  );
+  if (!problemCols.has('parent_id')) {
+    db.exec(`ALTER TABLE problems ADD COLUMN parent_id INTEGER REFERENCES problems(id)`);
+  }
+  if (!problemCols.has('sort_order')) {
+    db.exec(`ALTER TABLE problems ADD COLUMN sort_order INTEGER DEFAULT 0`);
+  }
+  if (!problemCols.has('lcm_code')) {
+    db.exec(`ALTER TABLE problems ADD COLUMN lcm_code TEXT`);
+  }
+  if (!problemCols.has('catalog_code')) {
+    db.exec(`ALTER TABLE problems ADD COLUMN catalog_code TEXT`);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS problem_hypothesis_codes (
+      problem_id     INTEGER NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+      hypothesis_id  INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+      code           TEXT NOT NULL,
+      PRIMARY KEY (problem_id, hypothesis_id)
+    )
+  `);
+
+  const solutionCols = new Set(
+    (db.prepare(`PRAGMA table_info(solutions)`).all() as { name: string }[]).map(c => c.name),
+  );
+  if (!solutionCols.has('parent_id')) {
+    db.exec(`ALTER TABLE solutions ADD COLUMN parent_id INTEGER REFERENCES solutions(id)`);
+  }
+  if (!solutionCols.has('sort_order')) {
+    db.exec(`ALTER TABLE solutions ADD COLUMN sort_order INTEGER DEFAULT 0`);
+  }
+  if (!solutionCols.has('lcm_code')) {
+    db.exec(`ALTER TABLE solutions ADD COLUMN lcm_code TEXT`);
+  }
+  if (!solutionCols.has('catalog_code')) {
+    db.exec(`ALTER TABLE solutions ADD COLUMN catalog_code TEXT`);
+  }
+  if (!solutionCols.has('fs_mapped')) {
+    db.exec(`ALTER TABLE solutions ADD COLUMN fs_mapped INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS solution_hypothesis_codes (
+      solution_id    INTEGER NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
+      hypothesis_id  INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+      code           TEXT NOT NULL,
+      PRIMARY KEY (solution_id, hypothesis_id)
+    )
+  `);
 
   const paramsColNames = new Set(
     (db.prepare(`PRAGMA table_info(briefing_params)`).all() as { name: string }[]).map(c => c.name),
@@ -447,6 +618,9 @@ export function initDB() {
       update.run(map[row.accuracy] ?? 0, row.briefing_id);
     }
   }
+
+  const { backfillFsCatalogGroups } = require('./fsCatalogReorder') as typeof import('./fsCatalogReorder');
+  backfillFsCatalogGroups();
 
   seedProjectTypesNsi();
 }

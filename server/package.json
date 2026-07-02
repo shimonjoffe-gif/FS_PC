@@ -4,7 +4,18 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "import:briefing-data": "tsx src/import/briefingData.ts"
+    "import:briefing-data": "tsx src/import/briefingData.ts",
+    "import:hypotheses": "tsx src/scripts/importHypothesesFromCa.ts",
+    "import:lcm": "tsx src/scripts/importLcmFromFiles.ts",
+    "clear:solutions": "tsx src/scripts/clearSolutionsCatalog.ts",
+    "dedupe:solutions": "tsx src/scripts/deduplicateSolutions.ts",
+    "recompute:solution-codes": "tsx src/scripts/recomputeSolutionCodes.ts",
+    "recompute:problem-codes": "tsx src/scripts/recomputeProblemCodes.ts",
+    "prune:unlinked-problems": "tsx src/scripts/pruneUnlinkedProblems.ts",
+    "backfill:fs-details": "tsx src/scripts/backfillFsDetails.ts",
+    "backfill:detail-lines": "tsx src/scripts/backfillDetailLines.ts",
+    "backfill:func-type": "tsx src/scripts/backfillFuncTypeFromExcel.ts",
+    "remove:non-typical-fs": "tsx src/scripts/removeNonTypicalFsItems.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",

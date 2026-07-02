@@ -6,6 +6,15 @@ import {
 import { compareFsByGroupThenPrefix } from './fsPrefixSort';
 import { loadBriefingQueueRates, effectiveRateForQueue } from './briefingAssessmentRates';
 import type { FsNmdValue } from './fsSpCalc';
+import {
+  ensureBriefingFsSnapshot, hasBriefingFsSnapshot, loadBriefingFsCustomLines, type FsCustomLine, type BriefingFsDetailLine,
+  resolveFsDetails, detailsToDescription, resolveDetailLines,
+} from './briefingFsSnapshot';
+import {
+  loadBriefingFsCustomerItems,
+  customerItemsToFsSelections,
+  computeCustomerQueueSp,
+} from './fsCustomerItems';
 
 export interface TeamProportions {
   рп: number;
@@ -58,6 +67,15 @@ export interface FsSelection {
   matched_widgets?: { id: number; name: string; description?: string | null; image_path?: string | null }[];
   details?: { name: string; description: string | null }[];
   matched?: boolean;
+  /** Расшифровка из снимка НСИ на момент оценки. */
+  catalog_description?: string | null;
+  customer_name?: string | null;
+  customer_description?: string | null;
+  inactive_for_customer?: boolean;
+  custom_lines?: FsCustomLine[];
+  detail_lines?: BriefingFsDetailLine[];
+  is_customer_item?: boolean;
+  customer_item_id?: number;
 }
 
 type DerivedFsMeta = { source: string; story_points: number | null; widget_ids: Set<number> };
@@ -80,7 +98,7 @@ function buildDerivedFsMap(briefingId: number): Map<number, DerivedFsMeta> {
     const fromSolutions = db.prepare(`
       SELECT sfm.fs_item_id, fc.story_points
       FROM solution_fs_map sfm
-      JOIN fs_catalog fc ON fc.id = sfm.fs_item_id
+      JOIN fs_catalog fc ON fc.id = sfm.fs_item_id AND fc.published = 1 AND COALESCE(fc.is_deleted, 0) = 0
       WHERE sfm.solution_id IN (${placeholders}) AND (fc.item_type IS NULL OR fc.item_type = 'item')
     `).all(...solIds) as { fs_item_id: number; story_points: number }[];
     for (const r of fromSolutions) {
@@ -101,7 +119,7 @@ function buildDerivedFsMap(briefingId: number): Map<number, DerivedFsMeta> {
     const fromWidgets = db.prepare(`
       SELECT wfm.widget_id, wfm.fs_item_id, fc.story_points
       FROM widget_fs_map wfm
-      JOIN fs_catalog fc ON fc.id = wfm.fs_item_id
+      JOIN fs_catalog fc ON fc.id = wfm.fs_item_id AND fc.published = 1 AND COALESCE(fc.is_deleted, 0) = 0
       WHERE wfm.widget_id IN (${placeholders}) AND (fc.item_type IS NULL OR fc.item_type = 'item')
     `).all(...wIds) as { widget_id: number; fs_item_id: number; story_points: number }[];
     for (const r of fromWidgets) {
@@ -125,7 +143,7 @@ function buildDerivedFsMap(briefingId: number): Map<number, DerivedFsMeta> {
       const blocks = db.prepare(`
         SELECT fib.fs_item_id, fc.story_points
         FROM fs_industry_blocks fib
-        JOIN fs_catalog fc ON fc.id = fib.fs_item_id
+        JOIN fs_catalog fc ON fc.id = fib.fs_item_id AND fc.published = 1 AND COALESCE(fc.is_deleted, 0) = 0
         WHERE fib.industry_profile=?
       `).all(matchedProfile) as { fs_item_id: number; story_points: number }[];
       for (const r of blocks) {
@@ -219,8 +237,16 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
       story_points=COALESCE(briefing_fs_sel.story_points, excluded.story_points)
   `);
 
+  const briefingItemIds = hasBriefingFsSnapshot(briefingId)
+    ? new Set(
+      (db.prepare(`SELECT fs_item_id FROM briefing_fs_sel WHERE briefing_id=?`).all(briefingId) as { fs_item_id: number }[])
+        .map(r => r.fs_item_id),
+    )
+    : null;
+
   const tx = db.transaction(() => {
     for (const [fsId, meta] of fsMap) {
+      if (briefingItemIds && !briefingItemIds.has(fsId)) continue;
       const ex = existingMap.get(fsId);
       const catalog = db.prepare(`
         SELECT queue, story_points, default_queues_json FROM fs_catalog WHERE id=?
@@ -249,16 +275,18 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
       );
     }
     const derivedIds = [...fsMap.keys()];
-    if (derivedIds.length > 0) {
-      const ph = derivedIds.map(() => '?').join(',');
-      db.prepare(`
-        DELETE FROM briefing_fs_sel
-        WHERE briefing_id=? AND source != 'manual' AND fs_item_id NOT IN (${ph})
-      `).run(briefingId, ...derivedIds);
-    } else {
-      db.prepare(`
-        DELETE FROM briefing_fs_sel WHERE briefing_id=? AND source != 'manual'
-      `).run(briefingId);
+    if (!hasBriefingFsSnapshot(briefingId)) {
+      if (derivedIds.length > 0) {
+        const ph = derivedIds.map(() => '?').join(',');
+        db.prepare(`
+          DELETE FROM briefing_fs_sel
+          WHERE briefing_id=? AND source != 'manual' AND fs_item_id NOT IN (${ph})
+        `).run(briefingId, ...derivedIds);
+      } else {
+        db.prepare(`
+          DELETE FROM briefing_fs_sel WHERE briefing_id=? AND source != 'manual'
+        `).run(briefingId);
+      }
     }
   });
   tx();
@@ -267,15 +295,18 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
 }
 
 export function loadFsSelections(briefingId: number): FsSelection[] {
+  ensureBriefingFsSnapshot(briefingId);
   const derivedMap = buildDerivedFsMap(briefingId);
 
   const catalogItems = db.prepare(`
-    SELECT id as fs_item_id, code, prefix, name, phase, group_name, group_prefix, description, item_type, func_type, sort_order,
-           queue, story_points, default_queues_json, requires_nmd
-    FROM fs_catalog
-    WHERE item_type IS NULL OR item_type = 'item'
-    ORDER BY sort_order
-  `).all() as {
+    SELECT fc.id as fs_item_id, fc.code, fc.prefix, fc.name, fc.phase, fc.group_name, fc.group_prefix, fc.description, fc.item_type, fc.func_type, fc.sort_order,
+           fc.queue, fc.story_points, fc.default_queues_json, fc.requires_nmd
+    FROM briefing_fs_sel bfs
+    JOIN fs_catalog fc ON fc.id = bfs.fs_item_id
+    WHERE bfs.briefing_id = ?
+      AND (fc.item_type IS NULL OR fc.item_type = 'item')
+    ORDER BY fc.sort_order, fc.id
+  `).all(briefingId) as {
     fs_item_id: number; code: string | null; prefix: string | null; name: string; phase: string | null;
     group_name: string | null; group_prefix: string | null; description: string | null; item_type: string | null;
     func_type: string | null; sort_order: number; queue: string; story_points: number;
@@ -283,25 +314,29 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
   }[];
 
   const selections = db.prepare(`
-    SELECT fs_item_id, enabled, queue, queues_json, source, story_points, queue_sp_json, queue_nmd_json, queue_comment_json
+    SELECT fs_item_id, enabled, queue, queues_json, source, story_points, queue_sp_json, queue_nmd_json, queue_comment_json,
+           snap_prefix, snap_name, snap_description, snap_details_json, snap_func_type, snap_story_points, snap_requires_nmd,
+           customer_name, customer_description, inactive_for_customer, detail_lines_json
     FROM briefing_fs_sel WHERE briefing_id=?
   `).all(briefingId) as {
     fs_item_id: number; enabled: number; queue: string; queues_json: string | null;
     source: string; story_points: number | null;
     queue_sp_json: string | null; queue_nmd_json: string | null; queue_comment_json: string | null;
+    snap_prefix: string | null; snap_name: string | null; snap_description: string | null;
+    snap_details_json: string | null;
+    snap_func_type: string | null; snap_story_points: number | null; snap_requires_nmd: string | null;
+    customer_name: string | null; customer_description: string | null; inactive_for_customer: number | null;
+    detail_lines_json: string | null;
   }[];
   const selMap = new Map(selections.map(s => [s.fs_item_id, s]));
 
-  const details = db.prepare(`
-    SELECT parent_id, name, description FROM fs_catalog
-    WHERE item_type='detail' AND parent_id IS NOT NULL
-    ORDER BY sort_order
-  `).all() as { parent_id: number; name: string; description: string | null }[];
-  const detailsByParent = new Map<number, { name: string; description: string | null }[]>();
-  for (const d of details) {
-    const list = detailsByParent.get(d.parent_id) ?? [];
-    list.push({ name: d.name, description: d.description });
-    detailsByParent.set(d.parent_id, list);
+  const customLines = loadBriefingFsCustomLines(briefingId);
+  const customByParent = new Map<number | null, FsCustomLine[]>();
+  for (const line of customLines) {
+    const key = line.parent_fs_item_id;
+    const list = customByParent.get(key) ?? [];
+    list.push(line);
+    customByParent.set(key, list);
   }
 
   const widgetLinks = db.prepare(`
@@ -364,33 +399,58 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
       queue_comment_json = null;
     }
 
+    const snapSp = sel?.snap_story_points ?? fc.story_points;
+    const snapNmd = sel?.snap_requires_nmd ?? fc.requires_nmd;
+    const snapFunc = sel?.snap_func_type ?? fc.func_type;
+    const displayName = sel?.snap_name || fc.name;
+    const itemDetails = resolveFsDetails(sel?.snap_details_json, fc.fs_item_id);
+    const catalogDescription = sel?.snap_description?.trim()
+      || detailsToDescription(itemDetails, fc.description)
+      || null;
+    const itemCustomLines = customByParent.get(fc.fs_item_id) ?? [];
+    const detailLines = resolveDetailLines(
+      sel?.detail_lines_json,
+      sel?.snap_details_json,
+      fc.fs_item_id,
+      itemCustomLines,
+    );
+
     return {
       fs_item_id: fc.fs_item_id,
       enabled,
       queue,
       queues_json,
       source,
-      story_points,
-      catalog_story_points: fc.story_points,
+      story_points: snapSp,
+      catalog_story_points: snapSp,
       queue_sp_json,
       queue_nmd_json,
       queue_comment_json,
       code: fc.code,
-      prefix: fc.prefix,
-      name: fc.name,
+      prefix: sel?.snap_prefix ?? fc.prefix,
+      name: displayName,
       phase: fc.phase,
       group_name: fc.group_name,
       group_prefix: fc.group_prefix,
-      description: fc.description,
+      description: catalogDescription,
+      catalog_description: catalogDescription,
+      customer_name: sel?.customer_name ?? null,
+      customer_description: sel?.customer_description ?? null,
+      inactive_for_customer: (sel?.inactive_for_customer ?? 0) === 1,
       item_type: fc.item_type ?? undefined,
-      func_type: fc.func_type,
+      func_type: snapFunc,
       sort_order: fc.sort_order,
-      requires_nmd: fc.requires_nmd,
+      requires_nmd: snapNmd,
       matched,
-      details: detailsByParent.get(fc.fs_item_id) ?? [],
+      details: itemDetails,
       matched_widgets: widgetsByFs.get(fc.fs_item_id) ?? [],
+      custom_lines: itemCustomLines,
+      detail_lines: detailLines,
     };
   });
+
+  const customerRows = loadBriefingFsCustomerItems(briefingId);
+  result.push(...customerItemsToFsSelections(customerRows) as typeof result);
 
   result.sort(compareFsByGroupThenPrefix);
   return result;
@@ -438,6 +498,13 @@ export function calculateBriefing(briefingId: number): BriefingCalcResult {
       cur.sp += sp;
       queueMap.set(qKey, cur);
     }
+  }
+
+  const customerSp = computeCustomerQueueSp(briefingId);
+  for (const [qKey, sp] of customerSp) {
+    const cur = queueMap.get(qKey) ?? { phase: '', sp: 0 };
+    cur.sp += sp;
+    queueMap.set(qKey, cur);
   }
 
   const queueRates = loadBriefingQueueRates(briefingId);

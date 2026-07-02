@@ -1,23 +1,39 @@
 import React, { useEffect, useState } from 'react';
-import type { Widget, Solution, Problem, FsCatalogItem, CatalogLink, ProjectType, ProjectTypeRate, HeadcountCoefficient } from '../types';
+import type { Widget, Solution, Problem, FsCatalogItem, FsCatalogGroup, CatalogLink, ProjectType, ProjectTypeRate, HeadcountCoefficient, HypothesisListItem, HypothesisProblemDraft, ActivityType } from '../types';
 import {
   getWidgets, createWidget, updateWidget, deleteWidget,
-  getSolutions, getProblems, getFsCatalog,
-  getProblemSolutionLinks, addProblemSolutionLink, removeProblemSolutionLink,
+  getSolutions, getProblems, getProblem, createProblemCatalog, saveProblem, deleteProblem, deleteProblemsByHypothesis, getMaturityLevels, getActivityTypes, getFsCatalog, getFsCatalogItems, createFsCatalogItem, patchFsCatalogItem, saveFsCatalogDetails, getFsCatalogUsage, publishFsCatalogItem,
+  createFsCatalogGroup, copyFsCatalogItem, copyFsCatalogGroup, reorderFsCatalog, moveFsCatalogItemToGroup,
+  deleteFsCatalogItem, deleteFsCatalogGroup,
+  getHypotheses, getHypothesis, createHypothesis, saveHypothesis, deleteHypothesis,
+  getSolution, createSolutionCatalog, saveSolution, deleteSolution, deleteSolutionsByHypothesis,
+  getSolutionFsLinks, saveSolutionFsLinks,
   getSolutionWidgetLinks, addSolutionWidgetLink, removeSolutionWidgetLink,
-  getSolutionFsLinks, addSolutionFsLink, removeSolutionFsLink,
   getWidgetFsLinks, addWidgetFsLink, removeWidgetFsLink,
   getProjectTypes, createProjectType, updateProjectType, deleteProjectType,
   getProjectTypeRates, addProjectTypeRate, getProjectTypeCoefficients, saveProjectTypeCoefficients,
 } from '../api';
+import FsNsiTable from './FsNsiTable';
+import HypothesesNsi from './HypothesesNsi';
+import ProblemsNsi from './ProblemsNsi';
+import SolutionsNsi from './SolutionsNsi';
 
-type LinkTab = 'widgets' | 'problem-solution' | 'solution-widget' | 'solution-fs' | 'widget-fs' | 'project-types';
+type FsCatalogUsageRow = {
+  briefing_name: string;
+  project_id: number | null;
+  catalog_description: string | null;
+  recorded_at: string;
+};
+
+type LinkTab = 'widgets' | 'nsi-fs' | 'hypotheses' | 'problems' | 'solutions' | 'solution-widget' | 'widget-fs' | 'project-types';
 
 const LINK_TABS: { id: LinkTab; label: string }[] = [
   { id: 'widgets', label: 'Виджеты' },
-  { id: 'problem-solution', label: 'Проблема → Решение' },
+  { id: 'nsi-fs', label: 'НСИ → ФС' },
+  { id: 'hypotheses', label: 'Гипотезы' },
+  { id: 'problems', label: 'Проблематики' },
+  { id: 'solutions', label: 'Решения' },
   { id: 'solution-widget', label: 'Решение → Виджет' },
-  { id: 'solution-fs', label: 'Решение → ФС' },
   { id: 'widget-fs', label: 'Виджет → ФС' },
   { id: 'project-types', label: 'Типы проекта' },
 ];
@@ -28,9 +44,10 @@ export default function CatalogLinks() {
   const [solutions, setSolutions] = useState<Solution[]>([]);
   const [problems, setProblems] = useState<Problem[]>([]);
   const [fsCatalog, setFsCatalog] = useState<FsCatalogItem[]>([]);
-  const [psLinks, setPsLinks] = useState<CatalogLink[]>([]);
+  const [hypotheses, setHypotheses] = useState<HypothesisListItem[]>([]);
+  const [activityTypes, setActivityTypes] = useState<ActivityType[]>([]);
+  const [maturityLevels, setMaturityLevels] = useState<import('../types').MaturityLevel[]>([]);
   const [swLinks, setSwLinks] = useState<CatalogLink[]>([]);
-  const [sfLinks, setSfLinks] = useState<CatalogLink[]>([]);
   const [wfLinks, setWfLinks] = useState<CatalogLink[]>([]);
   const [projectTypes, setProjectTypes] = useState<ProjectType[]>([]);
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
@@ -40,13 +57,120 @@ export default function CatalogLinks() {
 
   const [newWidget, setNewWidget] = useState({ name: '', description: '', type: 'dashboard' });
   const [addLink, setAddLink] = useState<Record<string, string>>({});
+  const [fsNsiGroups, setFsNsiGroups] = useState<FsCatalogGroup[]>([]);
+  const [fsNsiItems, setFsNsiItems] = useState<FsCatalogItem[]>([]);
+  const [usageModal, setUsageModal] = useState<{ id: number; name: string } | null>(null);
+  const [usageRows, setUsageRows] = useState<FsCatalogUsageRow[]>([]);
+  const [usageLoading, setUsageLoading] = useState(false);
+
+  async function reloadFsNsi() {
+    const data = await getFsCatalogItems();
+    setFsNsiGroups(data.groups);
+    setFsNsiItems(data.items);
+  }
+
+  async function openUsage(item: FsCatalogItem) {
+    setUsageModal({ id: item.id, name: item.name });
+    setUsageLoading(true);
+    try {
+      setUsageRows(await getFsCatalogUsage(item.id));
+    } finally {
+      setUsageLoading(false);
+    }
+  }
+
+  async function patchFsNsiField(
+    id: number,
+    patch: Partial<Pick<FsCatalogItem, 'func_type' | 'story_points' | 'requires_nmd'>>,
+  ) {
+    await patchFsCatalogItem(id, patch);
+    await reloadFsNsi();
+  }
+
+  async function saveFsNsiCard(
+    id: number,
+    patch: { prefix: string | null; name: string; details: { name: string; description: string | null }[] },
+  ) {
+    await patchFsCatalogItem(id, { prefix: patch.prefix, name: patch.name });
+    await saveFsCatalogDetails(id, patch.details);
+    await reloadFsNsi();
+  }
+
+  async function createFsNsiCard(
+    groupPrefix: string,
+    groupName: string,
+    patch: { prefix: string | null; name: string; details: { name: string; description: string | null }[] },
+  ) {
+    await createFsCatalogItem({
+      group_prefix: groupPrefix,
+      group_name: groupName,
+      name: patch.name,
+      prefix: patch.prefix,
+      details: patch.details,
+    });
+    await reloadFsNsi();
+  }
+
+  async function publishFsNsiItem(id: number) {
+    await publishFsCatalogItem(id);
+    await reloadFsNsi();
+  }
+
+  async function createFsNsiGroup(name: string) {
+    await createFsCatalogGroup(name);
+    await reloadFsNsi();
+  }
+
+  async function copyFsNsiItem(id: number) {
+    await copyFsCatalogItem(id);
+    await reloadFsNsi();
+  }
+
+  async function copyFsNsiGroup(groupKey: string | number) {
+    await copyFsCatalogGroup(groupKey);
+    await reloadFsNsi();
+  }
+
+  async function reorderFsNsi(groups: {
+    groupKey: string | number;
+    sort_order: number;
+    items?: { id: number; sort_order: number }[];
+  }[]) {
+    await reorderFsCatalog(groups);
+    await reloadFsNsi();
+  }
+
+  async function moveFsNsiItem(
+    itemId: number,
+    target: { target_group_id?: number; target_group_prefix?: string },
+  ) {
+    await moveFsCatalogItemToGroup(itemId, target);
+    await reloadFsNsi();
+  }
+
+  async function deleteFsNsiItem(id: number, name: string) {
+    if (!confirm(`Удалить пункт «${name}»?\n\nПункт скроется из НСИ. В существующих брифингах сохранится снимок.`)) return;
+    await deleteFsCatalogItem(id);
+    await reloadFsNsi();
+  }
+
+  async function deleteFsNsiGroup(group: FsCatalogGroup, itemCount: number) {
+    const msg = itemCount > 0
+      ? `Удалить группу «${group.group_name}» и все её пункты (${itemCount})?\n\nДанные скроются из НСИ. В существующих брифингах сохранятся снимки.`
+      : `Удалить группу «${group.group_name}»?\n\nГруппа скроется из НСИ.`;
+    if (!confirm(msg)) return;
+    await deleteFsCatalogGroup(group.id);
+    await reloadFsNsi();
+  }
 
   async function reload() {
     const [w, s, p, f] = await Promise.all([getWidgets(), getSolutions(), getProblems(), getFsCatalog()]);
     setWidgets(w); setSolutions(s); setProblems(p); setFsCatalog(f);
-    setPsLinks(await getProblemSolutionLinks());
+    await reloadFsNsi();
+    setHypotheses(await getHypotheses());
+    setActivityTypes(await getActivityTypes());
+    setMaturityLevels(await getMaturityLevels());
     setSwLinks(await getSolutionWidgetLinks());
-    setSfLinks(await getSolutionFsLinks());
     setWfLinks(await getWidgetFsLinks());
     const pts = await getProjectTypes();
     setProjectTypes(pts);
@@ -75,7 +199,7 @@ export default function CatalogLinks() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="bg-white border-b border-slate-200 px-4 py-2">
         <h2 className="text-sm font-semibold text-slate-700">Админка справочников предоценки</h2>
-        <p className="text-[10px] text-slate-400">Связи problem→solution, solution→widget, solution→ФС, widget→ФС</p>
+        <p className="text-[10px] text-slate-400">Связи problem→solution, solution→widget, widget→ФС · сопоставление solution→ФС в карточке решения</p>
       </div>
 
       <div className="bg-white border-b border-slate-200 px-4 flex gap-0 shrink-0 overflow-x-auto">
@@ -89,6 +213,72 @@ export default function CatalogLinks() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
+        {linkTab === 'nsi-fs' && (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500">
+              Справочник пунктов ФС для новых оценок. Изменения не затрагивают уже созданные брифинги (снимок НСИ).
+            </p>
+            {usageModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setUsageModal(null)}>
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-start justify-between px-4 py-3 border-b border-slate-100 gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-800">Использование в проектах</div>
+                      <div className="text-xs text-slate-500 truncate">{usageModal.name}</div>
+                    </div>
+                    <button type="button" onClick={() => setUsageModal(null)} className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0">✕</button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 text-xs">
+                    {usageLoading ? (
+                      <p className="text-slate-400">Загрузка…</p>
+                    ) : usageRows.length === 0 ? (
+                      <p className="text-slate-400">Пункт ещё не использовался в брифингах</p>
+                    ) : (
+                      <table className="w-full border-collapse">
+                        <thead>
+                          <tr className="bg-slate-50">
+                            <th className="p-2 border text-left">Брифинг</th>
+                            <th className="p-2 border text-left">Проект</th>
+                            <th className="p-2 border text-left">Дата</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {usageRows.map((row, i) => (
+                            <tr key={i}>
+                              <td className="p-2 border">{row.briefing_name}</td>
+                              <td className="p-2 border">{row.project_id ?? '—'}</td>
+                              <td className="p-2 border whitespace-nowrap">{row.recorded_at?.slice(0, 10) ?? '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {fsNsiGroups.length === 0 && fsNsiItems.length === 0 && (
+              <p className="text-sm text-slate-400">Справочник ФС пуст — выполните импорт xlsx или создайте группу</p>
+            )}
+            <FsNsiTable
+              groups={fsNsiGroups}
+              items={fsNsiItems}
+              onPatchField={patchFsNsiField}
+              onSaveCard={saveFsNsiCard}
+              onCreateCard={createFsNsiCard}
+              onOpenUsage={openUsage}
+              onPublish={publishFsNsiItem}
+              onCreateGroup={createFsNsiGroup}
+              onCopyItem={copyFsNsiItem}
+              onCopyGroup={copyFsNsiGroup}
+              onReorder={reorderFsNsi}
+              onMoveItemToGroup={moveFsNsiItem}
+              onDeleteItem={deleteFsNsiItem}
+              onDeleteGroup={deleteFsNsiGroup}
+            />
+          </div>
+        )}
+
         {linkTab === 'widgets' && (
           <div className="space-y-4">
             <div className="flex gap-2 items-end">
@@ -145,18 +335,115 @@ export default function CatalogLinks() {
           </div>
         )}
 
-        {linkTab === 'problem-solution' && (
-          <LinkEditor
-            links={psLinks}
-            fields={[
-              { key: 'problem_id', label: 'Проблема', options: problems.map(p => ({ id: p.id, name: p.name })) },
-              { key: 'solution_id', label: 'Решение', options: solutions.map(s => ({ id: s.id, name: s.name })) },
-            ]}
-            display={(l) => `${l.problem_name} → ${l.solution_name}`}
-            onAdd={async (v) => { await addProblemSolutionLink(Number(v.problem_id), Number(v.solution_id)); reload(); }}
-            onRemove={async (l) => { await removeProblemSolutionLink(l.problem_id!, l.solution_id!); reload(); }}
-            addLink={addLink} setAddLink={setAddLink} tabKey="ps"
+        {linkTab === 'hypotheses' && (
+          <HypothesesNsi
+            items={hypotheses}
+            allProblems={problems}
+            allSolutions={solutions}
+            maturityLevels={maturityLevels}
+            activityTypes={activityTypes}
+            onCreate={async name => {
+              const created = await createHypothesis({ name });
+              await reload();
+              return created;
+            }}
+            onOpen={id => getHypothesis(id)}
+            onSave={async (id, data) => {
+              await saveHypothesis(id, {
+                name: data.name,
+                target_audience: data.target_audience,
+                maturity_id: data.maturity_id,
+                activity_type_ids: data.activity_type_ids,
+                problems: data.problems.map((p: HypothesisProblemDraft) => ({
+                  problem_id: p.problem_id,
+                  name: p.problem_id ? undefined : p.name,
+                  solution_ids: p.solution_ids,
+                })),
+              });
+              await reload();
+            }}
+            onDelete={async (id, name) => {
+              if (!confirm(`Удалить гипотезу «${name}»?`)) return;
+              await deleteHypothesis(id);
+              await reload();
+            }}
+            onSolutionCreated={sol => setSolutions(prev => {
+              if (prev.some(s => s.id === sol.id)) return prev;
+              return [...prev, sol].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+            })}
+            onActivityTypeCreated={at => setActivityTypes(prev => {
+              if (prev.some(a => a.id === at.id)) return prev;
+              return [...prev, at].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+            })}
           />
+        )}
+
+        {linkTab === 'problems' && (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500">
+              Глобальный справочник проблематик: иерархия, поиск и фильтр по гипотезе. Бейджи — в каких гипотезах участвует.
+            </p>
+            <ProblemsNsi
+              items={problems}
+              hypothesisOptions={hypotheses.map(h => h.name).sort((a, b) => a.localeCompare(b, 'ru'))}
+              onOpen={id => getProblem(id)}
+              onCreate={async data => {
+                const created = await createProblemCatalog(data);
+                await reload();
+                return created;
+              }}
+              onSave={async (id, data) => {
+                const updated = await saveProblem(id, data);
+                await reload();
+                return updated;
+              }}
+              onDelete={async id => {
+                await deleteProblem(id);
+                await reload();
+              }}
+              onDeleteExclusiveForHypothesis={async name => {
+                const result = await deleteProblemsByHypothesis(name);
+                await reload();
+                return result;
+              }}
+            />
+          </div>
+        )}
+
+        {linkTab === 'solutions' && (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500">
+              Глобальный справочник решений. Откройте решение — слева гипотезы и проблематики, справа сопоставление с пунктами ФС (да/нет).
+            </p>
+            <SolutionsNsi
+              items={solutions}
+              hypothesisOptions={hypotheses.map(h => h.name).sort((a, b) => a.localeCompare(b, 'ru'))}
+              fsGroups={fsNsiGroups}
+              fsItems={fsNsiItems}
+              onLoadFsLinks={async id => (await getSolutionFsLinks(id)).fs_item_ids}
+              onSaveFsLinks={async (id, ids) => (await saveSolutionFsLinks(id, ids)).fs_item_ids}
+              onOpen={id => getSolution(id)}
+              onCreate={async data => {
+                const created = await createSolutionCatalog(data);
+                await reload();
+                return created;
+              }}
+              onSave={async (id, data) => {
+                const updated = await saveSolution(id, data);
+                await reload();
+                return updated;
+              }}
+              onDelete={async id => {
+                await deleteSolution(id);
+                await reload();
+              }}
+              onDeleteExclusiveForHypothesis={async name => {
+                const result = await deleteSolutionsByHypothesis(name);
+                await reload();
+                return result;
+              }}
+            />
+          </div>
         )}
 
         {linkTab === 'solution-widget' && (
@@ -170,20 +457,6 @@ export default function CatalogLinks() {
             onAdd={async (v) => { await addSolutionWidgetLink(Number(v.solution_id), Number(v.widget_id)); reload(); }}
             onRemove={async (l) => { await removeSolutionWidgetLink(l.solution_id!, l.widget_id!); reload(); }}
             addLink={addLink} setAddLink={setAddLink} tabKey="sw"
-          />
-        )}
-
-        {linkTab === 'solution-fs' && (
-          <LinkEditor
-            links={sfLinks}
-            fields={[
-              { key: 'solution_id', label: 'Решение', options: solutions.map(s => ({ id: s.id, name: s.name })) },
-              { key: 'fs_item_id', label: 'ФС', options: fsCatalog.map(f => ({ id: f.id, name: f.name })) },
-            ]}
-            display={(l) => `${l.solution_name} → ${l.fs_name}`}
-            onAdd={async (v) => { await addSolutionFsLink(Number(v.solution_id), Number(v.fs_item_id)); reload(); }}
-            onRemove={async (l) => { await removeSolutionFsLink(l.solution_id!, l.fs_item_id!); reload(); }}
-            addLink={addLink} setAddLink={setAddLink} tabKey="sf"
           />
         )}
 

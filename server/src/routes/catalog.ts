@@ -1,6 +1,24 @@
 import { Router } from 'express';
 import { db } from '../db';
 import { compareFsByGroupThenPrefix } from '../fsPrefixSort';
+import { createFsCatalogItem, loadFsCatalogItemById, publishFsCatalogItem } from '../fsCatalogNsi';
+import { FS_CATALOG_ACTIVE_SQL } from '../fsCatalogActive';
+import { softDeleteFsCatalogGroup, softDeleteFsCatalogItem } from '../fsCatalogDelete';
+import {
+  createHypothesis, createSolution, deleteHypothesis,
+  listHypotheses, loadHypothesisById, saveHypothesis,
+} from '../hypotheses';
+import { createActivityType, listActivityTypes } from '../activityTypes';
+import {
+  applyFsCatalogReorder,
+  copyFsCatalogGroup,
+  copyFsCatalogItem,
+  createFsCatalogGroup,
+  loadFsCatalogGroups,
+  moveFsCatalogItemToGroup,
+} from '../fsCatalogReorder';
+import { listSolutionsCatalog, loadSolutionById, createSolutionCatalog, updateSolution, deleteSolution, deleteSolutionsExclusiveToHypothesis, deduplicateSolutions, getSolutionFsItemIds, syncSolutionFsLinks } from '../solutions';
+import { listProblemsCatalog, loadProblemById, createProblemCatalog, updateProblem, deleteProblem, deleteProblemsExclusiveToHypothesis, createProblem } from '../problems';
 
 export const catalogRouter = Router();
 
@@ -27,18 +45,50 @@ catalogRouter.get('/maturity-levels', (_req, res) => {
 
 catalogRouter.get('/problems', (req, res) => {
   const { industry_id, segment_id, maturity_id } = req.query;
-  let sql = `SELECT p.*, i.name as industry_name, s.name as segment_name, m.name as maturity_name
-    FROM problems p
-    LEFT JOIN industries i ON i.id = p.industry_id
-    LEFT JOIN segments s ON s.id = p.segment_id
-    LEFT JOIN maturity_levels m ON m.id = p.maturity_id
-    WHERE 1=1`;
-  const params: unknown[] = [];
-  if (industry_id) { sql += ` AND (p.industry_id=? OR p.industry_id IS NULL)`; params.push(industry_id); }
-  if (segment_id) { sql += ` AND (p.segment_id=? OR p.segment_id IS NULL)`; params.push(segment_id); }
-  if (maturity_id) { sql += ` AND (p.maturity_id=? OR p.maturity_id IS NULL)`; params.push(maturity_id); }
-  sql += ` ORDER BY p.name`;
-  res.json(db.prepare(sql).all(...params));
+  const filters: { industry_id?: number; segment_id?: number; maturity_id?: number } = {};
+  if (industry_id) filters.industry_id = Number(industry_id);
+  if (segment_id) filters.segment_id = Number(segment_id);
+  if (maturity_id) filters.maturity_id = Number(maturity_id);
+  res.json(listProblemsCatalog(filters));
+});
+
+catalogRouter.delete('/problems/by-hypothesis/:name', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const result = deleteProblemsExclusiveToHypothesis(name);
+  res.json({ ok: true, ...result });
+});
+
+catalogRouter.get('/problems/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const item = loadProblemById(id);
+  if (!item) return res.status(404).json({ error: 'not found' });
+  res.json(item);
+});
+
+catalogRouter.patch('/problems/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as {
+    name?: string;
+    parent_id?: number | null;
+    lcm_code?: string | null;
+    industry_id?: number | null;
+    segment_id?: number | null;
+    maturity_id?: number | null;
+  };
+  try {
+    const item = updateProblem(id, body);
+    if (!item) return res.status(404).json({ error: 'not found' });
+    res.json(item);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'update failed' });
+  }
+});
+
+catalogRouter.delete('/problems/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const ok = deleteProblem(id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 });
 
 catalogRouter.get('/solutions', (req, res) => {
@@ -55,7 +105,66 @@ catalogRouter.get('/solutions', (req, res) => {
     `).all(...ids));
     return;
   }
-  res.json(db.prepare(`SELECT * FROM solutions ORDER BY name`).all());
+  res.json(listSolutionsCatalog());
+});
+
+catalogRouter.delete('/solutions/by-hypothesis/:name', (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const result = deleteSolutionsExclusiveToHypothesis(name);
+  res.json({ ok: true, ...result });
+});
+
+catalogRouter.get('/solutions/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const item = loadSolutionById(id);
+  if (!item) return res.status(404).json({ error: 'not found' });
+  res.json(item);
+});
+
+catalogRouter.patch('/solutions/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as {
+    name?: string;
+    description?: string | null;
+    hypothesis?: string | null;
+    parent_id?: number | null;
+    lcm_code?: string | null;
+    fs_mapped?: boolean;
+  };
+  try {
+    const item = updateSolution(id, body);
+    if (!item) return res.status(404).json({ error: 'not found' });
+    res.json(item);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'update failed' });
+  }
+});
+
+catalogRouter.delete('/solutions/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const ok = deleteSolution(id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+catalogRouter.get('/solutions/:id/fs-links', (req, res) => {
+  const id = Number(req.params.id);
+  const solution = db.prepare(`SELECT id FROM solutions WHERE id=?`).get(id);
+  if (!solution) return res.status(404).json({ error: 'not found' });
+  res.json({ fs_item_ids: getSolutionFsItemIds(id) });
+});
+
+catalogRouter.put('/solutions/:id/fs-links', (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as { fs_item_ids?: number[] };
+  try {
+    const fs_item_ids = syncSolutionFsLinks(id, body.fs_item_ids ?? []);
+    res.json({ fs_item_ids });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'update failed';
+    if (msg === 'not found') return res.status(404).json({ error: msg });
+    res.status(400).json({ error: msg });
+  }
 });
 
 catalogRouter.get('/widgets', (_req, res) => {
@@ -72,9 +181,253 @@ catalogRouter.get('/widgets-by-solution/:solutionId', (req, res) => {
 });
 
 catalogRouter.get('/fs-catalog', (_req, res) => {
-  const items = db.prepare(`SELECT * FROM fs_catalog`).all();
-  items.sort(compareFsByGroupThenPrefix);
+  const items = db.prepare(`
+    SELECT * FROM fs_catalog
+    WHERE (item_type IS NULL OR item_type = 'item' OR item_type = 'detail')
+      AND ${FS_CATALOG_ACTIVE_SQL}
+  `).all();
+  items.sort(compareFsByGroupThenPrefix as (a: typeof items[0], b: typeof items[0]) => number);
   res.json(items);
+});
+
+catalogRouter.get('/fs-catalog/items', (_req, res) => {
+  const groups = loadFsCatalogGroups();
+
+  const items = db.prepare(`
+    SELECT id, prefix, name, description, func_type, story_points, requires_nmd, group_name, group_prefix, sort_order, published
+    FROM fs_catalog
+    WHERE (item_type IS NULL OR item_type = 'item') AND ${FS_CATALOG_ACTIVE_SQL}
+    ORDER BY sort_order, id
+  `).all() as { id: number; prefix: string | null; name: string; description: string | null;
+    func_type: string | null; story_points: number; requires_nmd: string | null;
+    group_name: string | null; group_prefix: string | null; sort_order: number; published: number }[];
+
+  const details = db.prepare(`
+    SELECT parent_id, name, description FROM fs_catalog
+    WHERE item_type='detail' AND parent_id IS NOT NULL AND ${FS_CATALOG_ACTIVE_SQL}
+    ORDER BY sort_order, id
+  `).all() as { parent_id: number; name: string; description: string | null }[];
+
+  const detailsByParent = new Map<number, { name: string; description: string | null }[]>();
+  for (const d of details) {
+    const list = detailsByParent.get(d.parent_id) ?? [];
+    list.push({ name: d.name, description: d.description });
+    detailsByParent.set(d.parent_id, list);
+  }
+
+  res.json({
+    groups,
+    items: items.map(item => ({
+      ...item,
+      details: detailsByParent.get(item.id) ?? [],
+    })),
+  });
+});
+
+catalogRouter.post('/fs-catalog/groups', (req, res) => {
+  const { name } = req.body as { name?: string };
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+  try {
+    const group = createFsCatalogGroup(name.trim());
+    res.status(201).json(group);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
+});
+
+catalogRouter.post('/fs-catalog/groups/:groupKey/copy', (req, res) => {
+  const groupKey = /^\d+$/.test(req.params.groupKey) ? Number(req.params.groupKey) : req.params.groupKey;
+  try {
+    const group = copyFsCatalogGroup(groupKey);
+    res.status(201).json(group);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'copy failed';
+    res.status(msg === 'group not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+catalogRouter.put('/fs-catalog/reorder', (req, res) => {
+  const { groups } = req.body as {
+    groups?: { groupKey: string | number; sort_order: number; items?: { id: number; sort_order: number }[] }[];
+  };
+  if (!Array.isArray(groups) || groups.length === 0) {
+    return res.status(400).json({ error: 'groups array is required' });
+  }
+  try {
+    applyFsCatalogReorder(groups);
+    res.json({ ok: true, groups: loadFsCatalogGroups() });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'reorder failed' });
+  }
+});
+
+catalogRouter.patch('/fs-catalog/:id/group', (req, res) => {
+  const id = Number(req.params.id);
+  const { target_group_prefix, target_group_id } = req.body as {
+    target_group_prefix?: string;
+    target_group_id?: number;
+  };
+  if (!target_group_prefix?.trim() && target_group_id == null) {
+    return res.status(400).json({ error: 'target_group_prefix or target_group_id is required' });
+  }
+  try {
+    moveFsCatalogItemToGroup(id, { target_group_prefix, target_group_id });
+    const item = loadFsCatalogItemById(id);
+    if (!item) return res.status(404).json({ error: 'not found' });
+    res.json(item);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'move failed';
+    res.status(msg.includes('not found') ? 404 : 400).json({ error: msg });
+  }
+});
+
+catalogRouter.post('/fs-catalog/:id/copy', (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const { id: newId } = copyFsCatalogItem(id);
+    const item = loadFsCatalogItemById(newId);
+    if (!item) return res.status(500).json({ error: 'copy failed' });
+    res.status(201).json(item);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'copy failed';
+    res.status(msg === 'not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+catalogRouter.delete('/fs-catalog/groups/:groupKey', (req, res) => {
+  const groupKey = /^\d+$/.test(req.params.groupKey) ? Number(req.params.groupKey) : req.params.groupKey;
+  const ok = softDeleteFsCatalogGroup(groupKey);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true, groups: loadFsCatalogGroups() });
+});
+
+catalogRouter.delete('/fs-catalog/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const ok = softDeleteFsCatalogItem(id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+catalogRouter.post('/fs-catalog/items', (req, res) => {
+  const body = req.body as {
+    group_prefix: string;
+    group_name: string;
+    name: string;
+    prefix?: string | null;
+    func_type?: string | null;
+    story_points?: number;
+    requires_nmd?: string | null;
+    description?: string | null;
+    details?: { name: string; description?: string | null }[];
+  };
+
+  if (!body.group_prefix?.trim() || !body.group_name?.trim() || !body.name?.trim()) {
+    return res.status(400).json({ error: 'group_prefix, group_name and name are required' });
+  }
+
+  try {
+    const { id } = createFsCatalogItem(body);
+    const item = loadFsCatalogItemById(id);
+    if (!item) return res.status(500).json({ error: 'create failed' });
+    res.status(201).json(item);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
+});
+
+catalogRouter.patch('/fs-catalog/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare(`SELECT id FROM fs_catalog WHERE id=? AND ${FS_CATALOG_ACTIVE_SQL}`).get(id);
+  if (!row) return res.status(404).json({ error: 'not found' });
+
+  const {
+    prefix, name, description, func_type, story_points, requires_nmd,
+  } = req.body as {
+    prefix?: string | null;
+    name?: string;
+    description?: string | null;
+    func_type?: string | null;
+    story_points?: number;
+    requires_nmd?: string | null;
+  };
+
+  db.prepare(`
+    UPDATE fs_catalog SET
+      prefix=COALESCE(?, prefix),
+      name=COALESCE(?, name),
+      description=COALESCE(?, description),
+      func_type=COALESCE(?, func_type),
+      story_points=COALESCE(?, story_points),
+      requires_nmd=COALESCE(?, requires_nmd)
+    WHERE id=?
+  `).run(
+    prefix !== undefined ? prefix : null,
+    name ?? null,
+    description !== undefined ? description : null,
+    func_type !== undefined ? func_type : null,
+    story_points ?? null,
+    requires_nmd !== undefined ? requires_nmd : null,
+    id,
+  );
+  res.json({ ok: true });
+});
+
+catalogRouter.post('/fs-catalog/:id/publish', (req, res) => {
+  const id = Number(req.params.id);
+  const ok = publishFsCatalogItem(id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  const item = loadFsCatalogItemById(id);
+  res.json(item);
+});
+
+catalogRouter.put('/fs-catalog/:id/details', (req, res) => {
+  const id = Number(req.params.id);
+  const parent = db.prepare(`
+    SELECT id, phase, queue FROM fs_catalog
+    WHERE id=? AND (item_type IS NULL OR item_type='item')
+  `).get(id) as { id: number; phase: string | null; queue: string } | undefined;
+  if (!parent) return res.status(404).json({ error: 'not found' });
+
+  const { details } = req.body as {
+    details?: { name: string; description?: string | null }[];
+  };
+  const lines = (details ?? []).filter(d => d.name?.trim());
+
+  const del = db.prepare(`DELETE FROM fs_catalog WHERE parent_id=? AND item_type='detail'`);
+  const ins = db.prepare(`
+    INSERT INTO fs_catalog(name, description, item_type, parent_id, sort_order, phase, queue, story_points, default_queues_json)
+    VALUES (?,?,?,?,?,?,?,0,'{"1":0,"2":0,"3":0,"4":0}')
+  `);
+
+  const tx = db.transaction(() => {
+    del.run(id);
+    let order = 0;
+    for (const line of lines) {
+      ins.run(
+        line.name.trim(),
+        line.description?.trim() || null,
+        'detail',
+        id,
+        order++,
+        parent.phase ?? '',
+        parent.queue ?? '1',
+      );
+    }
+  });
+  tx();
+  res.json({ ok: true });
+});
+
+catalogRouter.get('/fs-catalog/:id/usage', (req, res) => {
+  const id = Number(req.params.id);
+  const rows = db.prepare(`
+    SELECT u.*, b.name as briefing_name, b.project_id, b.created_at as briefing_created_at
+    FROM briefing_fs_catalog_usage u
+    JOIN briefings b ON b.id = u.briefing_id
+    WHERE u.fs_item_id=?
+    ORDER BY u.recorded_at DESC
+  `).all(id);
+  res.json(rows);
 });
 
 catalogRouter.get('/fs-phases', (_req, res) => {
@@ -104,6 +457,134 @@ catalogRouter.patch('/widgets/:id', (req, res) => {
 catalogRouter.delete('/widgets/:id', (req, res) => {
   db.prepare(`DELETE FROM widgets WHERE id=?`).run(req.params.id);
   res.json({ ok: true });
+});
+
+catalogRouter.get('/hypotheses', (_req, res) => {
+  res.json(listHypotheses());
+});
+
+catalogRouter.post('/hypotheses', (req, res) => {
+  const { name, target_audience, maturity_id, activity_type_ids } = req.body as {
+    name?: string;
+    target_audience?: string;
+    maturity_id?: number | null;
+    activity_type_ids?: number[];
+  };
+  try {
+    res.status(201).json(createHypothesis(name ?? '', target_audience, maturity_id, activity_type_ids));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
+});
+
+catalogRouter.get('/hypotheses/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const item = loadHypothesisById(id);
+  if (!item) return res.status(404).json({ error: 'not found' });
+  res.json(item);
+});
+
+catalogRouter.put('/hypotheses/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as {
+    name?: string;
+    target_audience?: string | null;
+    maturity_id?: number | null;
+    activity_type_ids?: number[];
+    problems?: {
+      problem_id?: number;
+      name?: string;
+      solution_ids?: number[];
+      new_solutions?: { name: string }[];
+    }[];
+  };
+  try {
+    res.json(saveHypothesis(id, {
+      name: body.name ?? '',
+      target_audience: body.target_audience,
+      maturity_id: body.maturity_id,
+      activity_type_ids: body.activity_type_ids,
+      problems: body.problems,
+    }));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'save failed';
+    res.status(msg === 'not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+catalogRouter.delete('/hypotheses/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const ok = deleteHypothesis(id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+catalogRouter.post('/problems', (req, res) => {
+  const body = req.body as {
+    name?: string;
+    parent_id?: number | null;
+    lcm_code?: string | null;
+    industry_id?: number | null;
+    segment_id?: number | null;
+    maturity_id?: number | null;
+  };
+  try {
+    if (body.parent_id !== undefined || body.lcm_code !== undefined
+      || body.industry_id !== undefined || body.segment_id !== undefined || body.maturity_id !== undefined) {
+      res.status(201).json(createProblemCatalog({
+        name: body.name ?? '',
+        parent_id: body.parent_id,
+        lcm_code: body.lcm_code,
+        industry_id: body.industry_id,
+        segment_id: body.segment_id,
+        maturity_id: body.maturity_id,
+      }));
+      return;
+    }
+    res.status(201).json(createProblem(body.name ?? ''));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
+});
+
+catalogRouter.post('/solutions', (req, res) => {
+  const body = req.body as {
+    name?: string;
+    description?: string | null;
+    hypothesis?: string | null;
+    parent_id?: number | null;
+    lcm_code?: string | null;
+    fs_mapped?: boolean;
+  };
+  try {
+    if (body.hypothesis !== undefined || body.parent_id !== undefined || body.description !== undefined || body.lcm_code !== undefined || body.fs_mapped !== undefined) {
+      res.status(201).json(createSolutionCatalog({
+        name: body.name ?? '',
+        description: body.description,
+        hypothesis: body.hypothesis,
+        parent_id: body.parent_id,
+        lcm_code: body.lcm_code,
+        fs_mapped: body.fs_mapped,
+      }));
+      return;
+    }
+    res.status(201).json(createSolution(body.name ?? ''));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
+});
+
+catalogRouter.get('/activity-types', (_req, res) => {
+  res.json(listActivityTypes());
+});
+
+catalogRouter.post('/activity-types', (req, res) => {
+  const { name } = req.body as { name?: string };
+  try {
+    res.status(201).json(createActivityType(name ?? ''));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
 });
 
 catalogRouter.get('/links/problem-solution', (_req, res) => {

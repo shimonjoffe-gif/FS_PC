@@ -1,9 +1,9 @@
 import type {
   User, Project, ProjectRow, WorkReference, RefAuthor, BaseWork, Constants, HistoryEntry, RefType,
   Briefing, BriefingFull, BriefingCalcResult, Industry, Segment, MaturityLevel,
-  Problem, Solution, Widget, FsCatalogItem, FsPhase, BriefingParams, CatalogLink,
+  Problem, ProblemDetail, Solution, SolutionDetail, Widget, FsCatalogItem, FsCatalogGroup, FsCatalogItemsResponse, FsPhase, BriefingParams, CatalogLink,
   ProjectType, ProjectTypeRate, HeadcountCoefficient, BriefingAssessment,
-  AssessmentScenarioSnapshot, FsNmdValue,
+  AssessmentScenarioSnapshot, FsNmdValue, HypothesisListItem, HypothesisDetail, ActivityType,
 } from './types';
 import type { CreateSnapshotPayload } from './scenarioCalc';
 
@@ -100,15 +100,57 @@ export const saveBriefingSolutions = (id: number, solution_ids: number[]) =>
   req<{ ok: boolean }>(`/briefings/${id}/solutions`, { method: 'PUT', body: JSON.stringify({ solution_ids }) });
 export const saveBriefingWidgets = (id: number, selections: { solution_id: number; widget_id: number }[]) =>
   req<{ ok: boolean }>(`/briefings/${id}/widgets`, { method: 'PUT', body: JSON.stringify({ selections }) });
-export const saveBriefingFs = (id: number, items: {
-  fs_item_id: number; enabled?: number; queue?: string;
-  queues_json?: string | Record<string, number>;
-  source?: string; story_points?: number;
-  queue_sp_json?: Record<string, number> | null;
-  queue_nmd_json?: Record<string, FsNmdValue> | null;
-  queue_comment_json?: Record<string, string> | null;
-}[]) =>
-  req<{ ok: boolean }>(`/briefings/${id}/fs`, { method: 'PUT', body: JSON.stringify({ items }) });
+export const saveBriefingFs = (
+  id: number,
+  payload: {
+    items: {
+      fs_item_id: number; enabled?: number; queue?: string;
+      queues_json?: string | Record<string, number>;
+      source?: string; story_points?: number;
+      queue_sp_json?: Record<string, number> | null;
+      queue_nmd_json?: Record<string, FsNmdValue> | null;
+      queue_comment_json?: Record<string, string> | null;
+      customer_name?: string | null;
+      customer_description?: string | null;
+      inactive_for_customer?: boolean;
+      detail_lines?: {
+        catalog_detail_id?: number | null;
+        source: 'nsi' | 'customer';
+        name: string;
+        description?: string | null;
+        inactive?: boolean;
+        nsi_name?: string | null;
+        nsi_description?: string | null;
+        sort_order?: number;
+      }[];
+    }[];
+    customer_items?: {
+      id?: number;
+      group_prefix: string;
+      name: string;
+      description?: string | null;
+      func_type: string;
+      story_points?: number;
+      queues_json?: string | Record<string, number>;
+      queue_sp_json?: Record<string, number> | null;
+      queue_nmd_json?: Record<string, FsNmdValue> | null;
+      queue_comment_json?: Record<string, string> | null;
+      sort_order?: number;
+      detail_lines?: {
+        catalog_detail_id?: number | null;
+        source: 'nsi' | 'customer';
+        name: string;
+        description?: string | null;
+        inactive?: boolean;
+        nsi_name?: string | null;
+        nsi_description?: string | null;
+        sort_order?: number;
+      }[];
+      inactive_for_customer?: boolean;
+    }[];
+  },
+) =>
+  req<{ ok: boolean }>(`/briefings/${id}/fs`, { method: 'PUT', body: JSON.stringify(payload) });
 export const saveBriefingParams = (id: number, params: Partial<BriefingParams>) =>
   req<{ ok: boolean }>(`/briefings/${id}/params`, { method: 'PUT', body: JSON.stringify(params) });
 export const getBriefingAssessment = (id: number) => req<BriefingAssessment>(`/briefings/${id}/assessment`);
@@ -125,6 +167,13 @@ export const deleteAssessmentSnapshot = (id: number, snapshotId: string) =>
   req<{ ok: boolean }>(`/briefings/${id}/assessment-snapshots/${snapshotId}`, { method: 'DELETE' });
 export const deriveBriefingFs = (id: number) =>
   req<{ items: unknown[] }>(`/briefings/${id}/derive-fs`, { method: 'POST' });
+export const getBriefingAvailableFsCatalogItems = (id: number) =>
+  req<FsCatalogItem[]>(`/briefings/${id}/fs/available-catalog-items`);
+export const addBriefingFsCatalogItems = (id: number, fs_item_ids: number[]) =>
+  req<{ ok: boolean; added: number; fs_items: BriefingFull['fs_items'] }>(
+    `/briefings/${id}/fs/add-catalog-items`,
+    { method: 'POST', body: JSON.stringify({ fs_item_ids }) },
+  );
 export const calculateBriefing = (id: number) => req<BriefingCalcResult>(`/briefings/${id}/calculate`);
 export const generateProjectFromBriefing = (id: number, data: { name?: string; created_by?: number }) =>
   req<{ project_id: number }>(`/briefings/${id}/generate-project`, { method: 'POST', body: JSON.stringify(data) });
@@ -141,13 +190,147 @@ export const getProblems = (filters?: { industry_id?: number; segment_id?: numbe
   if (filters?.maturity_id) p.set('maturity_id', String(filters.maturity_id));
   return req<Problem[]>(`/catalog/problems?${p}`);
 };
+export const getProblem = (id: number) => req<ProblemDetail>(`/catalog/problems/${id}`);
+export const createProblemCatalog = (data: {
+  name: string;
+  parent_id?: number | null;
+  lcm_code?: string | null;
+  industry_id?: number | null;
+  segment_id?: number | null;
+  maturity_id?: number | null;
+}) => req<ProblemDetail>('/catalog/problems', { method: 'POST', body: JSON.stringify(data) });
+export const saveProblem = (id: number, data: {
+  name?: string;
+  parent_id?: number | null;
+  lcm_code?: string | null;
+  industry_id?: number | null;
+  segment_id?: number | null;
+  maturity_id?: number | null;
+}) => req<ProblemDetail>(`/catalog/problems/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const deleteProblem = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/problems/${id}`, { method: 'DELETE' });
+export const deleteProblemsByHypothesis = (hypothesisKey: string) =>
+  req<{ ok: boolean; deleted: number; skipped_shared: number }>(`/catalog/problems/by-hypothesis/${encodeURIComponent(hypothesisKey)}`, { method: 'DELETE' });
 export const getSolutions = (problemIds?: number[]) => {
   const p = problemIds?.length ? `?problem_ids=${problemIds.join(',')}` : '';
   return req<Solution[]>(`/catalog/solutions${p}`);
 };
+export const getSolution = (id: number) => req<SolutionDetail>(`/catalog/solutions/${id}`);
+export const createSolutionCatalog = (data: {
+  name: string;
+  description?: string | null;
+  hypothesis?: string | null;
+  parent_id?: number | null;
+  lcm_code?: string | null;
+  fs_mapped?: boolean;
+}) => req<SolutionDetail>('/catalog/solutions', { method: 'POST', body: JSON.stringify(data) });
+export const saveSolution = (id: number, data: {
+  name?: string;
+  description?: string | null;
+  hypothesis?: string | null;
+  parent_id?: number | null;
+  lcm_code?: string | null;
+  fs_mapped?: boolean;
+}) => req<SolutionDetail>(`/catalog/solutions/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const deleteSolution = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/solutions/${id}`, { method: 'DELETE' });
+export const deleteSolutionsByHypothesis = (hypothesisKey: string) =>
+  req<{ ok: boolean; deleted: number; skipped_shared: number }>(`/catalog/solutions/by-hypothesis/${encodeURIComponent(hypothesisKey)}`, { method: 'DELETE' });
+export const getSolutionFsLinks = (solutionId: number) =>
+  req<{ fs_item_ids: number[] }>(`/catalog/solutions/${solutionId}/fs-links`);
+export const saveSolutionFsLinks = (solutionId: number, fs_item_ids: number[]) =>
+  req<{ fs_item_ids: number[] }>(`/catalog/solutions/${solutionId}/fs-links`, {
+    method: 'PUT',
+    body: JSON.stringify({ fs_item_ids }),
+  });
+export const createProblem = (name: string) =>
+  req<{ id: number; name: string }>('/catalog/problems', { method: 'POST', body: JSON.stringify({ name }) });
+export const createSolution = (name: string) =>
+  req<{ id: number; name: string }>('/catalog/solutions', { method: 'POST', body: JSON.stringify({ name }) });
+export const getHypotheses = () => req<HypothesisListItem[]>('/catalog/hypotheses');
+export const getHypothesis = (id: number) => req<HypothesisDetail>(`/catalog/hypotheses/${id}`);
+export const createHypothesis = (data: {
+  name: string;
+  target_audience?: string;
+  maturity_id?: number | null;
+  activity_type_ids?: number[];
+}) =>
+  req<HypothesisDetail>('/catalog/hypotheses', { method: 'POST', body: JSON.stringify(data) });
+export const saveHypothesis = (id: number, data: {
+  name: string;
+  target_audience?: string | null;
+  maturity_id?: number | null;
+  activity_type_ids?: number[];
+  problems?: {
+    problem_id?: number;
+    name?: string;
+    solution_ids?: number[];
+    new_solutions?: { name: string }[];
+  }[];
+}) => req<HypothesisDetail>(`/catalog/hypotheses/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const deleteHypothesis = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/hypotheses/${id}`, { method: 'DELETE' });
+export const getActivityTypes = () => req<ActivityType[]>('/catalog/activity-types');
+export const createActivityType = (name: string) =>
+  req<ActivityType>('/catalog/activity-types', { method: 'POST', body: JSON.stringify({ name }) });
 export const getWidgets = () => req<Widget[]>('/catalog/widgets');
 export const getWidgetsBySolution = (solutionId: number) => req<Widget[]>(`/catalog/widgets-by-solution/${solutionId}`);
 export const getFsCatalog = () => req<FsCatalogItem[]>('/catalog/fs-catalog');
+export const getFsCatalogItems = () => req<FsCatalogItemsResponse>('/catalog/fs-catalog/items');
+export const createFsCatalogGroup = (name: string) =>
+  req<FsCatalogGroup>('/catalog/fs-catalog/groups', { method: 'POST', body: JSON.stringify({ name }) });
+export const copyFsCatalogItem = (id: number) =>
+  req<FsCatalogItem>(`/catalog/fs-catalog/${id}/copy`, { method: 'POST' });
+export const copyFsCatalogGroup = (groupKey: string | number) =>
+  req<FsCatalogGroup>(`/catalog/fs-catalog/groups/${groupKey}/copy`, { method: 'POST' });
+export const reorderFsCatalog = (groups: {
+  groupKey: string | number;
+  sort_order: number;
+  items?: { id: number; sort_order: number }[];
+}[]) =>
+  req<{ ok: boolean; groups: FsCatalogGroup[] }>('/catalog/fs-catalog/reorder', {
+    method: 'PUT',
+    body: JSON.stringify({ groups }),
+  });
+export const moveFsCatalogItemToGroup = (
+  id: number,
+  target: { target_group_prefix?: string; target_group_id?: number },
+) =>
+  req<FsCatalogItem>(`/catalog/fs-catalog/${id}/group`, {
+    method: 'PATCH',
+    body: JSON.stringify(target),
+  });
+export const createFsCatalogItem = (data: {
+  group_prefix: string;
+  group_name: string;
+  name: string;
+  prefix?: string | null;
+  func_type?: string | null;
+  story_points?: number;
+  requires_nmd?: string | null;
+  description?: string | null;
+  details?: { name: string; description?: string | null }[];
+}) =>
+  req<FsCatalogItem>('/catalog/fs-catalog/items', { method: 'POST', body: JSON.stringify(data) });
+export const patchFsCatalogItem = (id: number, data: Partial<FsCatalogItem>) =>
+  req<{ ok: boolean }>(`/catalog/fs-catalog/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const saveFsCatalogDetails = (
+  id: number,
+  details: { name: string; description?: string | null }[],
+) => req<{ ok: boolean }>(`/catalog/fs-catalog/${id}/details`, {
+  method: 'PUT',
+  body: JSON.stringify({ details }),
+});
+export const getFsCatalogUsage = (fsItemId: number) =>
+  req<{ briefing_name: string; project_id: number | null; catalog_description: string | null; recorded_at: string }[]>(
+    `/catalog/fs-catalog/${fsItemId}/usage`,
+  );
+export const deleteFsCatalogItem = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/fs-catalog/${id}`, { method: 'DELETE' });
+export const deleteFsCatalogGroup = (groupKey: string | number) =>
+  req<{ ok: boolean; groups: FsCatalogGroup[] }>(`/catalog/fs-catalog/groups/${groupKey}`, { method: 'DELETE' });
+export const publishFsCatalogItem = (id: number) =>
+  req<FsCatalogItem>(`/catalog/fs-catalog/${id}/publish`, { method: 'POST' });
 export const getFsPhases = () => req<FsPhase[]>('/catalog/fs-phases');
 
 export const createWidget = (data: { name: string; description?: string; type?: string }) =>
@@ -168,12 +351,6 @@ export const addSolutionWidgetLink = (solution_id: number, widget_id: number) =>
   req<{ ok: boolean }>('/catalog/links/solution-widget', { method: 'POST', body: JSON.stringify({ solution_id, widget_id }) });
 export const removeSolutionWidgetLink = (solution_id: number, widget_id: number) =>
   req<{ ok: boolean }>('/catalog/links/solution-widget', { method: 'DELETE', body: JSON.stringify({ solution_id, widget_id }) });
-
-export const getSolutionFsLinks = () => req<CatalogLink[]>('/catalog/links/solution-fs');
-export const addSolutionFsLink = (solution_id: number, fs_item_id: number) =>
-  req<{ ok: boolean }>('/catalog/links/solution-fs', { method: 'POST', body: JSON.stringify({ solution_id, fs_item_id }) });
-export const removeSolutionFsLink = (solution_id: number, fs_item_id: number) =>
-  req<{ ok: boolean }>('/catalog/links/solution-fs', { method: 'DELETE', body: JSON.stringify({ solution_id, fs_item_id }) });
 
 export const getWidgetFsLinks = () => req<CatalogLink[]>('/catalog/links/widget-fs');
 export const addWidgetFsLink = (widget_id: number, fs_item_id: number) =>

@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import type {
   BriefingFull, Industry, Segment, MaturityLevel, Problem, Solution, Widget,
-  BriefingFsSel, BriefingParams, TeamProportions,
-  FsQueueKey, FsQueuesMap, BriefingAssessment, QueueLabelsMap, FsNmdValue,
+  BriefingFsSel, BriefingParams, TeamProportions, BriefingFsDetailLine,
+  FsQueueKey, FsQueuesMap, BriefingAssessment, QueueLabelsMap, FsNmdValue, FsCatalogItem,
 } from '../types';
 import {
-  FS_QUEUE_KEYS, FS_QUEUE_LABELS, FS_NMD_VALUES, parseQueuesJson, parseQueueLabels, queueLabel,
+  FS_QUEUE_KEYS, FS_QUEUE_LABELS, FS_NMD_VALUES, FS_FUNC_TYPE_VALUES,
+  parseQueuesJson, parseQueueLabels, queueLabel,
   anyQueueEnabled, itemQueues,
 } from '../types';
 import { compareFsByGroupPrefix, compareFsPrefix } from '../utils/fsPrefixSort';
@@ -13,6 +14,7 @@ import {
   getBriefing, updateBriefing, saveBriefingProblems, saveBriefingSolutions,
   saveBriefingWidgets, saveBriefingFs, saveBriefingParams, deriveBriefingFs,
   generateProjectFromBriefing, patchBriefingAssessment,
+  getBriefingAvailableFsCatalogItems, addBriefingFsCatalogItems,
   getIndustries, getSegmentsByIndustry, getMaturityLevels, getProblems, getSolutions,
   getWidgetsBySolution,
 } from '../api';
@@ -45,6 +47,22 @@ import { loadAssessmentNsi, type AssessmentNsiCache } from '../assessmentNsi';
 import AssessmentTab from './AssessmentTab';
 import PhaseCalcTable from './PhaseCalcTable';
 import PhaseCalcParamsPanel from './PhaseCalcParamsPanel';
+import FsItemCardModal from './FsItemCardModal';
+import { fsDetailLineFlags } from '../fsDetailLines';
+import {
+  buildFsItemOptions,
+  countCustomerDetailLines,
+  moveCommentBetweenItems,
+  moveCustomerDetailLine,
+  patchAllQueuesNo,
+} from '../fsRelocation';
+import {
+  createCustomerFsItem,
+  isCustomerFsGroupPrefix,
+  isCustomerFsItem,
+  patchCustomerFuncType,
+  type CustomerFsGroupPrefix,
+} from '../fsCustomerItems';
 import CollapsibleSection from './CollapsibleSection';
 import QueueSwitcher from './QueueSwitcher';
 import AssessmentScenariosTab from './AssessmentScenariosTab';
@@ -101,13 +119,46 @@ const CALCULATED_SP_CLASS = 'bg-sky-50 border-sky-300';
 const SAVE_BTN_CLASS =
   'text-sm bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:opacity-50';
 
-function defaultExpandedGroups(items: BriefingFsSel[]): Set<string> {
-  const groups = groupFsItems(items);
-  const expanded = new Set<string>();
-  for (const { group, items: groupItems } of groups) {
-    if (groupItems.some(i => i.matched)) expanded.add(group);
-  }
-  return expanded;
+type FsYesFilter = null | 'all' | FsQueueKey;
+
+function itemMatchesYesFilter(item: BriefingFsSel, filter: FsYesFilter): boolean {
+  if (!filter) return true;
+  const queues = itemQueues(item);
+  if (filter === 'all') return anyQueueEnabled(queues);
+  return queues[filter] === 1;
+}
+
+function FsFilterableTh({
+  active,
+  onToggle,
+  title,
+  className = '',
+  rowSpan,
+  colSpan,
+  children,
+}: {
+  active: boolean;
+  onToggle: () => void;
+  title: string;
+  className?: string;
+  rowSpan?: number;
+  colSpan?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <th
+      rowSpan={rowSpan}
+      colSpan={colSpan}
+      className={`border bg-slate-50 cursor-pointer select-none transition-colors ${
+        active ? 'bg-blue-100 ring-2 ring-inset ring-blue-400 text-blue-900' : 'hover:bg-slate-100'
+      } ${className}`}
+      title={title}
+      onClick={onToggle}
+    >
+      {children}
+      {active && <div className="text-[9px] font-normal text-blue-600 mt-0.5">только «Да»</div>}
+    </th>
+  );
 }
 
 function queueTotals(items: BriefingFsSel[]) {
@@ -227,6 +278,22 @@ function serializeQueueCommentForSave(item: BriefingFsSel): Record<string, strin
   return parseJsonRecord<Record<string, string>>(item.queue_comment_json);
 }
 
+function serializeDetailLines(item: BriefingFsSel) {
+  const lines = item.detail_lines ?? [];
+  return lines
+    .filter(l => l.name?.trim())
+    .map((l, i) => ({
+      catalog_detail_id: l.catalog_detail_id ?? null,
+      source: l.source,
+      name: l.name.trim(),
+      description: l.description?.trim() || null,
+      inactive: l.inactive ?? false,
+      nsi_name: l.nsi_name ?? null,
+      nsi_description: l.nsi_description ?? null,
+      sort_order: l.sort_order ?? i,
+    }));
+}
+
 function briefingFsItemPayload(item: BriefingFsSel, opts?: { forceManual?: boolean }) {
   const queues = itemQueues(item);
   return {
@@ -238,6 +305,37 @@ function briefingFsItemPayload(item: BriefingFsSel, opts?: { forceManual?: boole
     queue_sp_json: serializeQueueSpForSave(item),
     queue_nmd_json: serializeQueueNmdForSave(item),
     queue_comment_json: serializeQueueCommentForSave(item),
+    inactive_for_customer: item.inactive_for_customer ?? false,
+    detail_lines: serializeDetailLines(item),
+  };
+}
+
+function briefingCustomerFsItemPayload(item: BriefingFsSel) {
+  const queues = itemQueues(item);
+  return {
+    id: item.customer_item_id,
+    group_prefix: item.group_prefix ?? '10',
+    name: item.name ?? '',
+    description: item.description ?? null,
+    func_type: item.func_type ?? 'ПРОФ',
+    story_points: catalogSpForItem(item),
+    queues_json: JSON.stringify(queues),
+    queue_sp_json: serializeQueueSpForSave(item),
+    queue_nmd_json: serializeQueueNmdForSave(item),
+    queue_comment_json: serializeQueueCommentForSave(item),
+    detail_lines: serializeDetailLines(item),
+    inactive_for_customer: item.inactive_for_customer ?? false,
+  };
+}
+
+function buildFsSavePayload(allItems: BriefingFsSel[]) {
+  return {
+    items: allItems
+      .filter(i => !isCustomerFsItem(i))
+      .map(i => briefingFsItemPayload(i)),
+    customer_items: allItems
+      .filter(i => isCustomerFsItem(i) && i.name?.trim())
+      .map(briefingCustomerFsItemPayload),
   };
 }
 
@@ -284,7 +382,159 @@ function aggregateGroupQueues(groupItems: BriefingFsSel[]): { allOn: boolean; by
   return { allOn, byQueue };
 }
 
-type QueueDragPayload = { fsItemId: number; fromQueue: FsQueueKey };
+type FsDragPayload =
+  | { kind: 'queue'; fsItemId: number; fromQueue: FsQueueKey }
+  | { kind: 'comment'; fsItemId: number; fromQueue: FsQueueKey };
+
+function FsCatalogAddModal({
+  items,
+  loading,
+  onClose,
+  onConfirm,
+}: {
+  items: FsCatalogItem[];
+  loading: boolean;
+  onClose: () => void;
+  onConfirm: (ids: number[]) => void;
+}) {
+  const [selected, setSelected] = useState<Set<number>>(() => new Set());
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  function toggle(id: number) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, FsCatalogItem[]>();
+    for (const item of items) {
+      const g = item.group_name || item.phase || 'Прочее';
+      const list = map.get(g) ?? [];
+      list.push(item);
+      map.set(g, list);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ru'));
+  }, [items]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-slate-100">
+          <div className="text-sm font-semibold text-slate-800">Добавить пункты из НСИ</div>
+          <p className="text-xs text-slate-500 mt-1">Опубликованные пункты каталога, которых ещё нет в этой оценке</p>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 text-xs">
+          {loading ? (
+            <p className="text-slate-400">Загрузка…</p>
+          ) : items.length === 0 ? (
+            <p className="text-slate-400">Нет доступных пунктов для добавления</p>
+          ) : (
+            <div className="space-y-3">
+              {grouped.map(([group, groupItems]) => (
+                <div key={group}>
+                  <div className="font-semibold text-slate-700 mb-1">{group}</div>
+                  <div className="space-y-1">
+                    {groupItems.map(item => (
+                      <label key={item.id} className="flex items-start gap-2 p-2 rounded hover:bg-slate-50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 shrink-0"
+                          checked={selected.has(item.id)}
+                          onChange={() => toggle(item.id)}
+                        />
+                        <div className="min-w-0">
+                          <div className="font-medium text-slate-800">
+                            <span className="text-slate-400 font-normal mr-1">{item.prefix || '—'}</span>
+                            {item.name}
+                          </div>
+                          {item.func_type && (
+                            <div className="text-[10px] text-slate-400">{item.func_type} · SP {item.story_points}</div>
+                          )}
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 px-4 py-3 border-t border-slate-100">
+          <button type="button" className="text-sm px-3 py-1.5 rounded text-slate-500 hover:bg-slate-50" onClick={onClose}>
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="text-sm px-3 py-1.5 rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+            disabled={selected.size === 0 || loading}
+            onClick={() => onConfirm([...selected])}
+          >
+            Добавить ({selected.size})
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FsChoiceModal({
+  title,
+  message,
+  options,
+  onClose,
+}: {
+  title: string;
+  message: string;
+  options: { id: string; label: string }[];
+  onClose: (id: string | null) => void;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose(null);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={() => onClose(null)}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-4" onClick={e => e.stopPropagation()}>
+        <div className="text-sm font-semibold text-slate-800">{title}</div>
+        <p className="text-xs text-slate-600 mt-2 whitespace-pre-wrap">{message}</p>
+        <div className="flex flex-wrap justify-end gap-2 mt-4">
+          {options.map(opt => (
+            <button
+              key={opt.id}
+              type="button"
+              className="text-sm px-3 py-1.5 rounded border border-slate-200 text-slate-700 hover:bg-slate-50"
+              onClick={() => onClose(opt.id)}
+            >
+              {opt.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="text-sm px-3 py-1.5 rounded text-slate-500 hover:bg-slate-50"
+            onClick={() => onClose(null)}
+          >
+            Отмена
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function EditableQueueHeader({
   label,
@@ -341,21 +591,52 @@ function EditableQueueHeader({
 function FsQueueTable({
   items,
   onChange,
+  onChangeMany,
   queueLabels,
   onQueueLabelChange,
+  onAddCustomerItem,
+  onDeleteCustomerItem,
 }: {
   items: BriefingFsSel[];
   onChange: (item: BriefingFsSel, patch: Partial<BriefingFsSel>) => void;
+  onChangeMany: (updates: { item: BriefingFsSel; patch: Partial<BriefingFsSel> }[]) => void | Promise<void>;
   queueLabels: QueueLabelsMap;
   onQueueLabelChange: (q: FsQueueKey, label: string) => void;
+  onAddCustomerItem?: (groupPrefix: CustomerFsGroupPrefix, groupName: string) => void;
+  onDeleteCustomerItem?: (item: BriefingFsSel) => void;
 }) {
-  const [dragPayload, setDragPayload] = useState<QueueDragPayload | null>(null);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => defaultExpandedGroups(items));
-  const [expandedItems, setExpandedItems] = useState<Set<number>>(() => new Set());
+  const [dragPayload, setDragPayload] = useState<FsDragPayload | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [expandedQueues, setExpandedQueues] = useState<Set<FsQueueKey>>(() => new Set());
+  const [yesFilter, setYesFilter] = useState<FsYesFilter>(null);
   const [showNsiColumns, setShowNsiColumns] = useState(false);
+  const [showInactiveFs, setShowInactiveFs] = useState(true);
+  const [cardModalItem, setCardModalItem] = useState<BriefingFsSel | null>(null);
   const [commentModal, setCommentModal] = useState<{ item: BriefingFsSel; q: FsQueueKey } | null>(null);
+  const [commentMergePrompt, setCommentMergePrompt] = useState<{
+    source: BriefingFsSel;
+    target: BriefingFsSel;
+    fromQueue: FsQueueKey;
+    toQueue: FsQueueKey;
+  } | null>(null);
+  const [lastCustomerMovePrompt, setLastCustomerMovePrompt] = useState<{
+    source: BriefingFsSel;
+    sourcePatch: Partial<BriefingFsSel>;
+    target: BriefingFsSel;
+    targetPatch: Partial<BriefingFsSel>;
+  } | null>(null);
+  const moveTargets = useMemo(() => buildFsItemOptions(items), [items]);
   const groups = groupFsItems(items);
+  const displayGroups = useMemo(() => {
+    return groups
+      .map(({ group, groupPrefix, items: groupItems }) => {
+        const visibleItems = yesFilter
+          ? groupItems.filter(i => itemMatchesYesFilter(i, yesFilter))
+          : groupItems;
+        return { group, groupPrefix, groupItems, visibleItems };
+      })
+      .filter(g => !yesFilter || g.visibleItems.length > 0);
+  }, [groups, yesFilter]);
   const totals = queueTotals(items);
 
   function fixedColsBeforeAllQueues(): number {
@@ -406,7 +687,7 @@ function FsQueueTable({
           isDropTarget ? 'bg-blue-100 ring-2 ring-inset ring-blue-300' : ''
         }`}
         onDragOver={e => {
-          if (dragPayload?.fsItemId === item.fs_item_id) e.preventDefault();
+          if (dragPayload?.kind === 'queue' && dragPayload.fsItemId === item.fs_item_id) e.preventDefault();
         }}
         onDrop={e => handleQueueDrop(e, item, q)}
       >
@@ -457,7 +738,9 @@ function FsQueueTable({
 
   function renderQueueDetailCells(item: BriefingFsSel, queues: FsQueuesMap, q: FsQueueKey, unmatched: boolean) {
     const isYes = queues[q] === 1;
-    const isDropTarget = dragPayload?.fsItemId === item.fs_item_id && dragPayload.fromQueue !== q;
+    const isDropTarget = dragPayload?.kind === 'queue'
+      && dragPayload.fsItemId === item.fs_item_id
+      && dragPayload.fromQueue !== q;
     const cells: React.ReactNode[] = [renderQueueYesNoCell(item, queues, q, unmatched, isDropTarget)];
 
     if (!expandedQueues.has(q)) return cells;
@@ -533,17 +816,31 @@ function FsQueueTable({
   function renderQueueCommentCell(item: BriefingFsSel, _queues: FsQueuesMap, q: FsQueueKey) {
     const row = latestItem(item);
     const hasComment = hasFsItemQueueComment(row, q);
+    const isCommentDropTarget = dragPayload?.kind === 'comment'
+      && (dragPayload.fsItemId !== item.fs_item_id || dragPayload.fromQueue !== q);
     return (
-      <td key={`${item.fs_item_id}-${q}-comment`} className="p-1 border text-center align-middle w-9">
+      <td
+        key={`${item.fs_item_id}-${q}-comment`}
+        className={`p-1 border text-center align-middle w-9 ${
+          isCommentDropTarget ? 'bg-amber-50 ring-2 ring-inset ring-amber-300' : ''
+        }`}
+        onDragOver={e => {
+          if (dragPayload?.kind === 'comment') e.preventDefault();
+        }}
+        onDrop={e => handleCommentDrop(e, item, q)}
+      >
         <button
           type="button"
+          draggable={hasComment}
+          onDragStart={hasComment ? e => startCommentDrag(e, row, q) : undefined}
+          onDragEnd={endQueueDrag}
           onClick={() => setCommentModal({ item: row, q })}
           className={`w-7 h-7 mx-auto rounded inline-flex items-center justify-center ${
             hasComment
-              ? 'text-amber-700 bg-amber-100 hover:bg-amber-200 ring-1 ring-amber-300/60'
+              ? 'text-amber-700 bg-amber-100 hover:bg-amber-200 ring-1 ring-amber-300/60 cursor-grab active:cursor-grabbing'
               : 'hover:bg-slate-100'
           }`}
-          title={hasComment ? 'Открыть комментарий' : 'Добавить комментарий'}
+          title={hasComment ? 'Перетащите на комментарий другого пункта или клик — открыть' : 'Добавить комментарий'}
           aria-label={hasComment ? 'Есть комментарий' : 'Добавить комментарий'}
         >
           {hasComment && (
@@ -560,30 +857,29 @@ function FsQueueTable({
     return [...renderQueueDetailCells(item, queues, q, unmatched), renderQueueCommentCell(item, queues, q)];
   }
 
-  useEffect(() => {
-    setExpandedGroups(prev => {
-      const next = new Set(prev);
-      for (const { group, items: groupItems } of groupFsItems(items)) {
-        if (!prev.has(group) && groupItems.some(i => i.matched)) next.add(group);
+  function toggleYesFilter(filter: 'all' | FsQueueKey) {
+    setYesFilter(prev => {
+      const next = prev === filter ? null : filter;
+      if (next) {
+        const toExpand = new Set<string>();
+        for (const { group, items: groupItems } of groups) {
+          if (groupItems.some(i => itemMatchesYesFilter(i, next))) toExpand.add(group);
+        }
+        setExpandedGroups(toExpand);
       }
       return next;
     });
-  }, [items]);
+  }
+
+  function collapseAllSections() {
+    setExpandedGroups(new Set());
+  }
 
   function toggleGroup(group: string) {
     setExpandedGroups(prev => {
       const next = new Set(prev);
       if (next.has(group)) next.delete(group);
       else next.add(group);
-      return next;
-    });
-  }
-
-  function toggleItem(fsItemId: number) {
-    setExpandedItems(prev => {
-      const next = new Set(prev);
-      if (next.has(fsItemId)) next.delete(fsItemId);
-      else next.add(fsItemId);
       return next;
     });
   }
@@ -626,23 +922,95 @@ function FsQueueTable({
 
   function startQueueDrag(e: React.DragEvent, item: BriefingFsSel, fromQueue: FsQueueKey) {
     e.stopPropagation();
-    const payload = { fsItemId: item.fs_item_id, fromQueue };
+    const payload: FsDragPayload = { kind: 'queue', fsItemId: item.fs_item_id, fromQueue };
     setDragPayload(payload);
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('application/x-fs-queue', JSON.stringify(payload));
+  }
+
+  function startCommentDrag(e: React.DragEvent, item: BriefingFsSel, fromQueue: FsQueueKey) {
+    e.stopPropagation();
+    const payload: FsDragPayload = { kind: 'comment', fsItemId: item.fs_item_id, fromQueue };
+    setDragPayload(payload);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-fs-comment', JSON.stringify(payload));
   }
 
   function endQueueDrag() {
     setDragPayload(null);
   }
 
+  function applyCommentMove(
+    source: BriefingFsSel,
+    target: BriefingFsSel,
+    fromQueue: FsQueueKey,
+    toQueue: FsQueueKey,
+    mode: 'merge' | 'replace',
+  ) {
+    const updates = moveCommentBetweenItems(source, target, fromQueue, toQueue, mode);
+    if (!updates?.length) return;
+    void onChangeMany(updates);
+  }
+
+  function handleCommentDrop(e: React.DragEvent, item: BriefingFsSel, targetQueue: FsQueueKey) {
+    e.preventDefault();
+    e.stopPropagation();
+    let payload = dragPayload?.kind === 'comment' ? dragPayload : null;
+    if (!payload) {
+      try {
+        payload = JSON.parse(e.dataTransfer.getData('application/x-fs-comment')) as FsDragPayload;
+        if (payload.kind !== 'comment') return;
+      } catch {
+        return;
+      }
+    }
+    setDragPayload(null);
+    if (payload.fsItemId === item.fs_item_id && payload.fromQueue === targetQueue) return;
+
+    const source = latestItem(items.find(i => i.fs_item_id === payload.fsItemId) ?? item);
+    const target = latestItem(item);
+    const existing = effectiveFsItemCommentForQueue(target, targetQueue).trim();
+    if (existing) {
+      setCommentMergePrompt({ source, target, fromQueue: payload.fromQueue, toQueue: targetQueue });
+      return;
+    }
+    applyCommentMove(source, target, payload.fromQueue, targetQueue, 'replace');
+  }
+
+  function handleMoveCustomerLine(
+    sourceItem: BriefingFsSel,
+    line: BriefingFsDetailLine,
+    remainingSourceLines: BriefingFsDetailLine[],
+    targetFsItemId: number,
+  ) {
+    if (targetFsItemId === sourceItem.fs_item_id) return;
+    const source = latestItem(sourceItem);
+    const target = latestItem(items.find(i => i.fs_item_id === targetFsItemId) ?? sourceItem);
+    const { sourcePatch, targetPatch } = moveCustomerDetailLine(source, line, remainingSourceLines, target);
+    const hadCustomerLines = countCustomerDetailLines(source.detail_lines) > 0;
+    const willHaveCustomerLines = countCustomerDetailLines(remainingSourceLines) > 0;
+
+    if (hadCustomerLines && !willHaveCustomerLines) {
+      setLastCustomerMovePrompt({ source, sourcePatch, target, targetPatch });
+      setCardModalItem(null);
+      return;
+    }
+    void onChangeMany([
+      { item: source, patch: sourcePatch },
+      { item: target, patch: targetPatch },
+    ]);
+    setCardModalItem(null);
+  }
+
   function handleQueueDrop(e: React.DragEvent, item: BriefingFsSel, targetQueue: FsQueueKey) {
     e.preventDefault();
     e.stopPropagation();
-    let payload = dragPayload;
+    let payload = dragPayload?.kind === 'queue' ? dragPayload : null;
     if (!payload) {
       try {
-        payload = JSON.parse(e.dataTransfer.getData('application/x-fs-queue')) as QueueDragPayload;
+        const parsed = JSON.parse(e.dataTransfer.getData('application/x-fs-queue')) as FsDragPayload;
+        if (parsed.kind !== 'queue') return;
+        payload = parsed;
       } catch {
         return;
       }
@@ -657,7 +1025,30 @@ function FsQueueTable({
 
   return (
     <div className="space-y-2">
-      <div className="flex justify-end">
+      <div className="flex flex-wrap justify-end gap-2">
+        <button
+          type="button"
+          onClick={collapseAllSections}
+          className="text-xs text-slate-600 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-50"
+        >
+          Свернуть разделы
+        </button>
+        {yesFilter && (
+          <button
+            type="button"
+            onClick={() => setYesFilter(null)}
+            className="text-xs text-blue-700 border border-blue-200 bg-blue-50 px-3 py-1.5 rounded hover:bg-blue-100"
+          >
+            Сбросить фильтр «Да»
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setShowInactiveFs(v => !v)}
+          className="text-xs text-slate-600 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-50"
+        >
+          {showInactiveFs ? 'Скрыть неактуальные' : 'Показать неактуальные'}
+        </button>
         <button
           type="button"
           onClick={() => setShowNsiColumns(v => !v)}
@@ -680,6 +1071,67 @@ function FsQueueTable({
           }}
         />
       )}
+      {cardModalItem && (
+        <FsItemCardModal
+          item={latestItem(cardModalItem)}
+          moveTargets={moveTargets.filter(t => t.fs_item_id !== cardModalItem.fs_item_id)}
+          onClose={() => setCardModalItem(null)}
+          onSave={patch => {
+            const row = items.find(i => i.fs_item_id === cardModalItem.fs_item_id) ?? cardModalItem;
+            onChange(row, {
+              ...patch,
+              source: isCustomerFsItem(row) ? 'customer' : 'manual',
+            });
+          }}
+          onMoveCustomerLine={(line, remainingSourceLines, targetFsItemId) => {
+            handleMoveCustomerLine(cardModalItem, line, remainingSourceLines, targetFsItemId);
+          }}
+        />
+      )}
+      {commentMergePrompt && (
+        <FsChoiceModal
+          title="Комментарий у пункта-цели"
+          message="У выбранного пункта в этой очереди уже есть комментарий. Как перенести?"
+          options={[
+            { id: 'merge', label: 'Дописать' },
+            { id: 'replace', label: 'Заменить' },
+          ]}
+          onClose={choice => {
+            const pending = commentMergePrompt;
+            setCommentMergePrompt(null);
+            if (!choice || !pending) return;
+            applyCommentMove(
+              pending.source,
+              pending.target,
+              pending.fromQueue,
+              pending.toQueue,
+              choice === 'merge' ? 'merge' : 'replace',
+            );
+          }}
+        />
+      )}
+      {lastCustomerMovePrompt && (
+        <FsChoiceModal
+          title="Подпункты заказчика перенесены"
+          message="На пункте-источнике не осталось подпунктов заказчика. Оставить «Да» в очередях или установить «Нет» во всех очередях?"
+          options={[
+            { id: 'keep_yes', label: 'Оставить Да' },
+            { id: 'set_no', label: 'Установить Нет' },
+          ]}
+          onClose={choice => {
+            const pending = lastCustomerMovePrompt;
+            setLastCustomerMovePrompt(null);
+            if (!choice || !pending) return;
+            const sourcePatch = choice === 'set_no'
+              ? { ...pending.sourcePatch, ...patchAllQueuesNo(pending.source) }
+              : pending.sourcePatch;
+            void onChangeMany([
+              { item: pending.source, patch: sourcePatch },
+              { item: pending.target, patch: pending.targetPatch },
+            ]);
+          }}
+        />
+      )}
       <table className={`w-full text-xs border-collapse ${showNsiColumns ? 'min-w-[1100px]' : 'min-w-[900px]'}`}>
         <thead className="sticky top-0 z-20">
           <tr className="bg-slate-50 text-slate-600">
@@ -693,7 +1145,7 @@ function FsQueueTable({
               </>
             )}
             <th rowSpan={2} className="text-left p-2 border min-w-[140px] bg-slate-50">Виджеты</th>
-            <th rowSpan={2} className="text-center p-2 border w-24 bg-slate-50">Все очереди</th>
+            <th className="text-center p-2 border w-24 bg-slate-50">Все очереди</th>
             {FS_QUEUE_KEYS.flatMap(q => [
               <th key={`${q}-main`} colSpan={queueSpan(q)} className="text-center p-2 border bg-slate-50">
                 <div className="flex items-center justify-center gap-1">
@@ -722,14 +1174,39 @@ function FsQueueTable({
             ])}
           </tr>
           <tr className="bg-slate-50/80 text-[10px] text-slate-500">
+            <FsFilterableTh
+              key="all-yn"
+              active={yesFilter === 'all'}
+              onToggle={() => toggleYesFilter('all')}
+              title="Показать только пункты с «Да» хотя бы в одной очереди (повторный клик — сброс)"
+              className="p-1 text-center font-normal"
+            >
+              Да/Нет
+            </FsFilterableTh>
             {FS_QUEUE_KEYS.flatMap(q => {
               if (!expandedQueues.has(q)) {
                 return [
-                  <th key={`${q}-yn`} className="p-1 border text-center font-normal">Да/Нет</th>,
+                  <FsFilterableTh
+                    key={`${q}-yn`}
+                    active={yesFilter === q}
+                    onToggle={() => toggleYesFilter(q)}
+                    title={`Показать только пункты с «Да» в ${queueLabel(queueLabels, q)} (повторный клик — сброс)`}
+                    className="p-1 text-center font-normal"
+                  >
+                    Да/Нет
+                  </FsFilterableTh>,
                 ];
               }
               return [
-                <th key={`${q}-yn`} className="p-1 border text-center font-normal">Да/Нет</th>,
+                <FsFilterableTh
+                  key={`${q}-yn`}
+                  active={yesFilter === q}
+                  onToggle={() => toggleYesFilter(q)}
+                  title={`Показать только пункты с «Да» в ${queueLabel(queueLabels, q)} (повторный клик — сброс)`}
+                  className="p-1 text-center font-normal"
+                >
+                  Да/Нет
+                </FsFilterableTh>,
                 <th key={`${q}-sp`} className="p-1 border text-center font-normal">
                   SP
                   <div className="font-normal text-[9px] text-slate-400 mt-0.5">
@@ -745,9 +1222,10 @@ function FsQueueTable({
           </tr>
         </thead>
         <tbody>
-          {groups.map(({ group, groupPrefix, items: groupItems }) => {
+          {displayGroups.map(({ group, groupPrefix, groupItems, visibleItems }) => {
             const isExpanded = expandedGroups.has(group);
-            const groupQueues = aggregateGroupQueues(groupItems);
+            const rowItems = yesFilter ? visibleItems : groupItems;
+            const groupQueues = aggregateGroupQueues(rowItems);
             return (
             <React.Fragment key={group}>
               <tr className="bg-amber-50 font-semibold">
@@ -767,8 +1245,20 @@ function FsQueueTable({
                 <td className="p-2 border">
                   {group}
                   <span className="ml-2 text-[10px] font-normal text-slate-500">
-                    ({groupItems.length})
+                    ({rowItems.length}{yesFilter && rowItems.length !== groupItems.length ? ` / ${groupItems.length}` : ''})
                   </span>
+                  {isCustomerFsGroupPrefix(groupPrefix) && onAddCustomerItem && (
+                    <button
+                      type="button"
+                      className="ml-2 text-[10px] font-normal text-emerald-700 hover:underline"
+                      onClick={() => {
+                        onAddCustomerItem(groupPrefix, group);
+                        setExpandedGroups(prev => new Set(prev).add(group));
+                      }}
+                    >
+                      + Функция заказчика
+                    </button>
+                  )}
                 </td>
                 <td className="p-2 border" />
                 {showNsiColumns && (
@@ -804,40 +1294,98 @@ function FsQueueTable({
                   return [...mainCells, <td key={`${q}-cmt`} className="p-2 border" />];
                 })}
               </tr>
-              {isExpanded && groupItems.map(item => {
+              {isExpanded && rowItems
+                .filter(item => showInactiveFs || !item.inactive_for_customer)
+                .map(item => {
                 const queues = itemQueues(item);
                 const allOn = anyQueueEnabled(queues);
-                const unmatched = item.matched === false;
-                const isItemExpanded = expandedItems.has(item.fs_item_id);
-                const hasChildren = (item.details ?? []).length > 0 || (item.matched_widgets ?? []).length > 0;
+                const customerItem = isCustomerFsItem(item);
+                const unmatched = !customerItem && item.matched === false;
+                const inactive = item.inactive_for_customer === true;
+                const detailFlags = customerItem
+                  ? {
+                    modified: false,
+                    customerAdded: Boolean(
+                      item.description?.trim()
+                      || (item.detail_lines ?? []).some(l => l.name.trim() || l.description?.trim()),
+                    ),
+                  }
+                  : fsDetailLineFlags(item);
                 return (
-                  <React.Fragment key={item.fs_item_id}>
-                    <tr className={`hover:bg-slate-50 ${unmatched ? 'bg-red-50/30' : ''}`}>
+                    <tr
+                      key={item.fs_item_id}
+                      className={`hover:bg-slate-50 ${customerItem ? 'bg-emerald-50/40' : ''} ${unmatched ? 'bg-red-50/30' : ''} ${inactive ? 'opacity-50' : ''}`}
+                    >
                       <td className="p-2 border text-[11px] text-slate-500 whitespace-nowrap align-top">
-                        {item.prefix || '—'}
-                      </td>
-                      <td className="p-2 border">
                         <div className="flex items-start gap-1">
-                          {hasChildren ? (
+                          <span>{item.prefix || '—'}</span>
+                          {customerItem && onDeleteCustomerItem && (
                             <button
                               type="button"
-                              onClick={() => toggleItem(item.fs_item_id)}
-                              className="text-slate-500 hover:text-slate-800 w-5 h-5 leading-none shrink-0 mt-0.5"
-                              title={isItemExpanded ? 'Свернуть пункт' : 'Развернуть пункт'}
+                              className="text-red-500 hover:text-red-700 text-xs leading-none"
+                              title="Удалить функцию заказчика"
+                              onClick={() => onDeleteCustomerItem(item)}
                             >
-                              {isItemExpanded ? '▼' : '▶'}
+                              ×
                             </button>
-                          ) : (
-                            <span className="w-5 shrink-0" />
                           )}
-                          <div className="min-w-0">
-                            <div className="font-medium">{item.name}</div>
-                            {item.description && <div className="text-[10px] text-slate-400 mt-0.5">{item.description}</div>}
-                          </div>
                         </div>
                       </td>
+                      <td className="p-2 border">
+                        <button
+                          type="button"
+                          className="text-left w-full min-w-0 group"
+                          onClick={() => setCardModalItem(item)}
+                          title="Открыть карточку пункта ФС"
+                        >
+                          <div className={`font-medium group-hover:text-blue-700 underline-offset-2 group-hover:underline ${
+                            customerItem ? 'text-emerald-800' : 'text-slate-800'
+                          }`}>
+                            {item.name?.trim() || (
+                              <span className="text-slate-400 font-normal italic">Новая функция заказчика…</span>
+                            )}
+                            {inactive && (
+                              <span className="ml-1 text-[10px] font-normal text-slate-400">(не актуален)</span>
+                            )}
+                            {(detailFlags.modified || detailFlags.customerAdded) && (
+                              <span className="ml-1.5 inline-flex items-center gap-0.5 align-middle">
+                                {detailFlags.modified && (
+                                  <span
+                                    className="inline-flex h-4 w-4 items-center justify-center rounded bg-amber-100 text-[10px] text-amber-700"
+                                    title="Расшифровка изменена относительно НСИ"
+                                    aria-label="Расшифровка изменена"
+                                  >
+                                    ✎
+                                  </span>
+                                )}
+                                {detailFlags.customerAdded && (
+                                  <span
+                                    className="inline-flex h-4 w-4 items-center justify-center rounded bg-emerald-100 text-[10px] font-bold text-emerald-700"
+                                    title="Добавлены подпункты расшифровки"
+                                    aria-label="Добавлены подпункты расшифровки"
+                                  >
+                                    +
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      </td>
                       <td className="p-2 border text-[11px] text-slate-600 whitespace-nowrap">
-                        {item.func_type || '—'}
+                        {customerItem ? (
+                          <select
+                            className="text-[11px] border border-emerald-200 rounded px-1 py-0.5 max-w-full bg-white"
+                            value={item.func_type ?? 'ПРОФ'}
+                            onChange={e => onChange(latestItem(item), patchCustomerFuncType(latestItem(item), e.target.value))}
+                          >
+                            {FS_FUNC_TYPE_VALUES.map(v => (
+                              <option key={v} value={v}>{v}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          item.func_type || '—'
+                        )}
                       </td>
                       {showNsiColumns && (
                         <>
@@ -864,59 +1412,6 @@ function FsQueueTable({
                       </td>
                       {FS_QUEUE_KEYS.flatMap(q => renderQueueBlockCells(item, queues, q, unmatched))}
                     </tr>
-                    {isItemExpanded && (item.details ?? []).map((d, i) => (
-                      <tr key={`${item.fs_item_id}-d-${i}`} className="text-slate-500">
-                        <td className="p-2 border" />
-                        <td className="p-2 border pl-6" colSpan={fixedColsBeforeAllQueues() + totalQueueTableCols()}>
-                          <span className="text-[10px]">↳ {d.name}</span>
-                          {d.description && <span className="text-[10px] text-slate-400"> — {d.description}</span>}
-                        </td>
-                      </tr>
-                    ))}
-                    {isItemExpanded && (item.matched_widgets ?? []).map(w => (
-                      <tr key={`${item.fs_item_id}-w-${w.id}`} className="text-slate-600 bg-slate-50/40">
-                        <td className="p-2 border" />
-                        <td className="p-2 border pl-8">
-                          <div className="flex items-start gap-1.5">
-                            <span className="text-[10px] text-slate-400 shrink-0">↳</span>
-                            <div className="min-w-0">
-                              <div className="text-[11px] font-medium">{w.name}</div>
-                              {w.description && (
-                                <div className="text-[10px] text-slate-400 mt-0.5">{w.description}</div>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="p-2 border text-[10px] text-slate-400">
-                          {item.func_type || '—'}
-                        </td>
-                        {showNsiColumns && (
-                          <>
-                            <td className="p-2 border" />
-                            <td className="p-2 border" />
-                          </>
-                        )}
-                        <td className="p-2 border">
-                          {widgetImageUrl(w.image_path) ? (
-                            <WidgetImageThumbnail imagePath={w.image_path} name={w.name} />
-                          ) : (
-                            <span className="text-[10px] text-slate-300">—</span>
-                          )}
-                        </td>
-                        <td className="p-2 border" />
-                        {FS_QUEUE_KEYS.flatMap(q => {
-                          const mainCells = queueSpan(q) === 1
-                            ? [<td key={q} className="p-2 border" />]
-                            : [
-                                <td key={`${q}-yn`} className="p-2 border" />,
-                                <td key={`${q}-sp`} className="p-2 border" />,
-                                <td key={`${q}-nmd`} className="p-2 border" />,
-                              ];
-                          return [...mainCells, <td key={`${q}-cmt`} className="p-2 border" />];
-                        })}
-                      </tr>
-                    ))}
-                  </React.Fragment>
                 );
               })}
             </React.Fragment>
@@ -1106,6 +1601,14 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
   const [assessmentRecalcFlash, setAssessmentRecalcFlash] = useState(0);
   const [phaseQueue, setPhaseQueue] = useState<FsQueueKey>('1');
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [fsTableVisitKey, setFsTableVisitKey] = useState(0);
+  const [catalogAddOpen, setCatalogAddOpen] = useState(false);
+  const [catalogAddItems, setCatalogAddItems] = useState<FsCatalogItem[]>([]);
+  const [catalogAddLoading, setCatalogAddLoading] = useState(false);
+
+  useEffect(() => {
+    if (tab === 'fs') setFsTableVisitKey(k => k + 1);
+  }, [tab]);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -1256,12 +1759,29 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
   function saveFsTab() {
     if (!data) return;
     void runTabSave('fs', async () => {
-      await saveBriefingFs(briefingId, data.fs_items.map(briefingFsItemPayload));
+      await saveBriefingFs(briefingId, buildFsSavePayload(data.fs_items));
       await saveBriefingParams(briefingId, {
         queue_labels_json: parseQueueLabels(data.params.queue_labels_json),
       });
       await load();
     });
+  }
+
+  async function openCatalogAddModal() {
+    setCatalogAddOpen(true);
+    setCatalogAddLoading(true);
+    try {
+      setCatalogAddItems(await getBriefingAvailableFsCatalogItems(briefingId));
+    } finally {
+      setCatalogAddLoading(false);
+    }
+  }
+
+  async function confirmCatalogAdd(ids: number[]) {
+    const result = await addBriefingFsCatalogItems(briefingId, ids);
+    setData(d => (d ? { ...d, fs_items: result.fs_items } : d));
+    setCatalogAddOpen(false);
+    setFsTableVisitKey(k => k + 1);
   }
 
   function isOrgVolumeOnlyPatch(patch: Record<string, unknown>): boolean {
@@ -1480,7 +2000,7 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
     const merged: BriefingFsSel = {
       ...current,
       ...patch,
-      source: patch.source ?? current.source ?? 'manual',
+      source: patch.source ?? current.source ?? (isCustomerFsItem(current) ? 'customer' : 'manual'),
     };
     if (patch.queues_json !== undefined) {
       merged.queues_json = typeof patch.queues_json === 'string'
@@ -1497,7 +2017,65 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
     setData({ ...data, fs_items: items });
 
     try {
-      await saveBriefingFs(briefingId, [briefingFsItemPayload(merged, { forceManual: true })]);
+      await saveBriefingFs(briefingId, buildFsSavePayload(items));
+    } catch (e) {
+      await load();
+      throw e;
+    }
+  }
+
+  function addCustomerFsItem(groupPrefix: CustomerFsGroupPrefix, groupName: string) {
+    if (!data) return;
+    const newItem = createCustomerFsItem(groupPrefix, groupName, data.fs_items);
+    setAssessmentRecalcFlash(k => k + 1);
+    setData({ ...data, fs_items: [...data.fs_items, newItem] });
+  }
+
+  async function deleteCustomerFsItem(item: BriefingFsSel) {
+    if (!data) return;
+    const items = data.fs_items.filter(i => i.fs_item_id !== item.fs_item_id);
+    setAssessmentRecalcFlash(k => k + 1);
+    setData({ ...data, fs_items: items });
+    try {
+      await saveBriefingFs(briefingId, buildFsSavePayload(items));
+      await load();
+    } catch (e) {
+      await load();
+      throw e;
+    }
+  }
+
+  function mergeFsItemPatch(item: BriefingFsSel, patch: Partial<BriefingFsSel>): BriefingFsSel {
+    const merged: BriefingFsSel = {
+      ...item,
+      ...patch,
+      source: patch.source ?? item.source ?? 'manual',
+    };
+    if (patch.queues_json !== undefined) {
+      merged.queues_json = typeof patch.queues_json === 'string'
+        ? parseQueuesJson(patch.queues_json)
+        : patch.queues_json;
+    }
+    const queues = itemQueues(merged);
+    merged.enabled = anyQueueEnabled(queues) ? 1 : 0;
+    merged.queue = FS_QUEUE_KEYS.find(k => queues[k] === 1) ?? item.queue ?? '1';
+    if (item.matched === false && patch.matched !== false) merged.matched = true;
+    return merged;
+  }
+
+  async function updateFsItems(updates: { item: BriefingFsSel; patch: Partial<BriefingFsSel> }[]) {
+    if (!data || updates.length === 0) return;
+    const byId = new Map<number, BriefingFsSel>();
+    for (const { item, patch } of updates) {
+      const current = byId.get(item.fs_item_id) ?? data.fs_items.find(i => i.fs_item_id === item.fs_item_id) ?? item;
+      byId.set(item.fs_item_id, mergeFsItemPatch(current, patch));
+    }
+    const items = data.fs_items.map(i => byId.get(i.fs_item_id) ?? i);
+    setAssessmentRecalcFlash(k => k + 1);
+    setData({ ...data, fs_items: items });
+
+    try {
+      await saveBriefingFs(briefingId, buildFsSavePayload(items));
     } catch (e) {
       await load();
       throw e;
@@ -1922,18 +2500,39 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
 
         {tab === 'fs' && (
           <div className="space-y-3">
-            <p className="text-xs text-slate-500">
-              Полный каталог ФС. Клик по заголовку очереди — переименование (сохраняется с «Сохранить»).
-              Группы с сопоставлениями развёрнуты; пункты ФС и детали — свёрнуты по умолчанию.
-            </p>
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-xs text-slate-500 flex-1">
+                Полный каталог ФС. При переходе на вкладку разделы свёрнуты. Клик по «Да/Нет» в заголовке — фильтр пунктов с «Да» (колонка «Все очереди» или очередь).
+                Клик по названию очереди — переименование (сохраняется с «Сохранить»).
+              </p>
+              <button
+                type="button"
+                className="text-xs px-3 py-1.5 rounded border border-blue-200 text-blue-700 hover:bg-blue-50 whitespace-nowrap shrink-0"
+                onClick={() => void openCatalogAddModal()}
+              >
+                + Добавить из НСИ
+              </button>
+            </div>
+            {catalogAddOpen && (
+              <FsCatalogAddModal
+                items={catalogAddItems}
+                loading={catalogAddLoading}
+                onClose={() => setCatalogAddOpen(false)}
+                onConfirm={ids => void confirmCatalogAdd(ids)}
+              />
+            )}
             {data.fs_items.length === 0 ? (
               <p className="text-sm text-slate-400">Каталог ФС пуст. Запустите импорт: npm run import:briefing-data --workspace=server</p>
             ) : (
               <FsQueueTable
+                key={fsTableVisitKey}
                 items={data.fs_items}
                 onChange={updateFsItem}
+                onChangeMany={updateFsItems}
                 queueLabels={queueLabels}
                 onQueueLabelChange={updateQueueLabel}
+                onAddCustomerItem={addCustomerFsItem}
+                onDeleteCustomerItem={deleteCustomerFsItem}
               />
             )}
           </div>

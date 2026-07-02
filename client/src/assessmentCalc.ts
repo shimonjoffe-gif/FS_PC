@@ -27,15 +27,14 @@ export type { SellerCriteria, SellerCriteriaKey };
 export const HEADCOUNT_CATEGORIES = ['до 200', '201-500', '501-1000', '1001+'] as const;
 export type HeadcountCategory = typeof HEADCOUNT_CATEGORIES[number];
 
-const FUNC_TYPE_MAP: Record<string, string> = {
-  'Кейс-проект': 'CASE',
-  'Проф/мини': 'PROF_MINI',
-  'ПРОФ-проект': 'PROF',
-  'КОРП-проект': 'KORP',
-  'Базовый': 'CASE',
-  'Проф': 'PROF_MINI',
-  'Экспертный': 'PROF',
-};
+import {
+  funcTypeToCode,
+  computeAutoTechnologyForQueue,
+  highestFuncTypeCodeInQueue,
+  technologyLabelForTypeCode,
+  typeCodeForTechnologyLabel,
+  normalizeTechnologyLabel,
+} from './fsFuncType';
 
 export function headcountToCategory(n: number): HeadcountCategory {
   if (n <= 200) return 'до 200';
@@ -94,7 +93,7 @@ function spByFuncType(fsItems: BriefingFsSel[]): Record<string, number> {
     const queues = itemQueues(item);
     if (!anyQueueEnabled(queues)) continue;
     const sp = catalogSpForItem(item);
-    const code = FUNC_TYPE_MAP[item.func_type ?? ''] ?? 'CASE';
+    const code = funcTypeToCode(item.func_type);
     totals[code] = (totals[code] ?? 0) + sp;
     if (catalogRequiresNmd(item)) {
       totals.NMD += nmdSpContribution(catalogNmdLabel(item), sp);
@@ -1482,31 +1481,12 @@ export const QUEUE_TECHNOLOGY_OPTIONS = [
 
 /** Приводит устаревшие подписи к актуальным (БЗ → Быстрый запуск). */
 export function normalizeQueueTechnologyLabel(label: string): string {
-  if (label === 'БЗ') return 'Быстрый запуск';
-  return label;
+  return normalizeTechnologyLabel(label);
 }
 
 export type QueueTechnologyLabel = (typeof QUEUE_TECHNOLOGY_OPTIONS)[number];
 
-export function typeCodeForTechnologyLabel(label: string): string {
-  switch (normalizeQueueTechnologyLabel(label)) {
-    case 'КОРП-проект': return 'KORP';
-    case 'ПРОФ-проект': return 'PROF';
-    case 'Проф/мини': return 'PROF_MINI';
-    case 'Быстрый запуск': return 'BZ';
-    default: return 'CASE';
-  }
-}
-
-export function technologyLabelForTypeCode(code: string | null | undefined): string {
-  switch (code) {
-    case 'KORP': return 'КОРП-проект';
-    case 'PROF': return 'ПРОФ-проект';
-    case 'PROF_MINI': return 'Проф/мини';
-    case 'BZ': return 'Быстрый запуск';
-    default: return 'Кейс-проект';
-  }
-}
+export { typeCodeForTechnologyLabel, technologyLabelForTypeCode } from './fsFuncType';
 
 export function effectiveProjectTypeCode(
   assessment: Pick<BriefingAssessment, 'project_type_id' | 'project_types'>,
@@ -1885,21 +1865,20 @@ export function recomputeAssessmentDerived(
   const groups = ensureCriteriaGroups(criteria);
   const autoCriteriaSp = computeCriteriaSpAuto(criteria.content_selections, groups);
 
-  const autoTechnology = technologyLabelForTypeCode(autoType?.code ?? 'CASE');
-
   const queue_calcs = FS_QUEUE_KEYS.map(q => {
     const qc = assessment.queue_calcs.find(r => r.queue === q) ?? {
       queue: q,
-      technology: autoTechnology,
-      auto_technology: autoTechnology,
+      technology: 'Кейс-проект',
+      auto_technology: 'Кейс-проект',
       technology_manual: 0,
       rate: 5000,
       nsi_rate: 5000,
       rate_manual: 0,
     };
-    const autoTech = autoTechnology;
+    const highest = highestFuncTypeCodeInQueue(context.fs_items, q);
+    const autoTech = computeAutoTechnologyForQueue(highest, typeCode ?? autoType?.code ?? 'CASE');
     const technology = normalizeQueueTechnologyLabel(resolveQueueTechnology(
-      { ...qc, auto_technology: qc.auto_technology ?? autoTech },
+      { ...qc, auto_technology: autoTech },
       autoTech,
     ));
     const nsiRate = getHourlyRateForTechnologyLabel(nsi, technology, projectTypes);

@@ -7,6 +7,8 @@ import fs from 'fs';
 import * as XLSX from 'xlsx';
 import { initDB, db } from '../db';
 import { normalizeFsPrefix } from '../fsPrefix';
+import { isNonTypicalFsPrefix } from '../fsPrefixSort';
+import { technologyLabelToFuncType } from '../fsFuncType';
 import { extractWidgetImageMap, copyWidgetImages, imagePathForWidgetRow } from './xlsxImages';
 
 const ROOT = path.join(process.cwd(), '..');
@@ -239,11 +241,19 @@ function importFsCatalog(wb: XLSX.WorkBook) {
     INSERT INTO fs_catalog(code, prefix, name, group_name, group_prefix, description, item_type, func_type, parent_id, sort_order, phase, queue, default_queues_json, story_points, requires_nmd)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
-  db.prepare(`DELETE FROM briefing_fs_sel`).run();
+  const updFs = db.prepare(`
+    UPDATE fs_catalog SET
+      name=?, group_name=?, group_prefix=?, func_type=?, sort_order=?, phase=?, queue=?,
+      default_queues_json=?, story_points=?, requires_nmd=?
+    WHERE id=?
+  `);
+  const getItemByPrefix = db.prepare(`
+    SELECT id FROM fs_catalog WHERE prefix=? AND (item_type IS NULL OR item_type='item') LIMIT 1
+  `);
   db.prepare(`DELETE FROM fs_industry_blocks`).run();
   db.prepare(`DELETE FROM solution_fs_map`).run();
   db.prepare(`DELETE FROM widget_fs_map`).run();
-  db.prepare(`DELETE FROM fs_catalog`).run();
+  db.prepare(`DELETE FROM fs_catalog WHERE item_type='detail'`).run();
 
   let currentGroup = '';
   let currentGroupPrefix: string | null = null;
@@ -261,8 +271,9 @@ function importFsCatalog(wb: XLSX.WorkBook) {
     const prefix = normalizeFsPrefix(rawPrefix);
     const name = cellStr(row[1]);
     const desc = cellStr(row[2]);
-    const funcTypeRaw = cellStr(row[5]);
-    const funcTypeUpper = funcTypeRaw.toUpperCase();
+    const projectTypeRaw = cellStr(row[6]);
+    const funcTypeRaw = technologyLabelToFuncType(projectTypeRaw);
+    const rowKindUpper = projectTypeRaw.toUpperCase() || cellStr(row[5]).toUpperCase();
     if (!name && !desc) continue;
 
     const q1 = Number(row[14]) || 0;
@@ -279,19 +290,30 @@ function importFsCatalog(wb: XLSX.WorkBook) {
     });
     const primaryQueue = q1 > 0 ? '1' : q2 > 0 ? '2' : q3 > 0 ? '3' : q4 > 0 ? '4' : '1';
 
-    if (funcTypeUpper === 'ГРУППА') {
+    if (rowKindUpper === 'ГРУППА') {
       currentGroup = name;
       currentGroupPrefix = normalizeFsPrefix(rawPrefix);
       lastItemId = null;
       continue;
     }
 
+    if (isNonTypicalFsPrefix(prefix)) continue;
+
     if (prefix && name) {
-      const result = insFs.run(
-        null, prefix, name, currentGroup || null, currentGroupPrefix, null, 'item', funcTypeRaw || null, null, sortOrder++,
-        currentGroup, primaryQueue, defaultQueues, sp, requiresNmd,
-      );
-      lastItemId = Number(result.lastInsertRowid);
+      const existing = getItemByPrefix.get(prefix) as { id: number } | undefined;
+      if (existing) {
+        updFs.run(
+          name, currentGroup || null, currentGroupPrefix, funcTypeRaw || null, sortOrder++,
+          currentGroup, primaryQueue, defaultQueues, sp, requiresNmd, existing.id,
+        );
+        lastItemId = existing.id;
+      } else {
+        const result = insFs.run(
+          null, prefix, name, currentGroup || null, currentGroupPrefix, null, 'item', funcTypeRaw || null, null, sortOrder++,
+          currentGroup, primaryQueue, defaultQueues, sp, requiresNmd,
+        );
+        lastItemId = Number(result.lastInsertRowid);
+      }
       count++;
     } else if (name && lastItemId) {
       insFs.run(

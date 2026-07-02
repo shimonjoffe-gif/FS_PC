@@ -3,9 +3,9 @@ import { FS_QUEUE_KEYS } from './fsQueues';
 import {
   computeAutoProjectType,
   computeAutoUnifiedRate,
+  computeQueueAutoTechnologies,
   getEffectiveQueueRate,
   getHourlyRateForTechnologyLabel,
-  technologyForType,
   type QueueRateRow,
 } from './assessmentCalc';
 import { parseSellerCriteria } from './sellerCriteria';
@@ -47,7 +47,12 @@ export function loadBriefingQueueRates(briefingId: number): BriefingQueueRates {
     ? row.project_type_id
     : autoType?.id ?? row.project_type_id ?? autoType?.id ?? null;
 
-  const autoTechnology = technologyForType(autoType?.code ?? null);
+  const typeRow = effectiveTypeId
+    ? db.prepare(`SELECT code FROM project_types WHERE id=?`).get(effectiveTypeId) as { code: string } | undefined
+    : undefined;
+
+  const projectTypeCode = typeRow?.code ?? autoType?.code ?? null;
+  const queueAutoTech = computeQueueAutoTechnologies(briefingId, projectTypeCode);
 
   const queueCalcs: QueueRateRow[] = FS_QUEUE_KEYS.map(q => {
     const stored = db.prepare(`
@@ -60,9 +65,10 @@ export function loadBriefingQueueRates(briefingId: number): BriefingQueueRates {
     } | undefined;
 
     const techManual = stored?.technology_manual === 1;
+    const autoTech = queueAutoTech[q];
     const rawTechnology = techManual && stored?.technology
       ? stored.technology
-      : autoTechnology;
+      : autoTech;
     const technology = rawTechnology === 'БЗ' ? 'Быстрый запуск' : rawTechnology;
     const nsiRate = getHourlyRateForTechnologyLabel(technology);
     const rate = stored?.rate_manual && stored.rate != null ? stored.rate : nsiRate;
