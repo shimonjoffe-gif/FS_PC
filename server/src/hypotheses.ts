@@ -21,6 +21,8 @@ export interface HypothesisListRow {
   maturity_name: string | null;
   problem_count: number;
   activity_type_count: number;
+  activity_type_names?: string | null;
+  activity_type_ids?: number[];
   updated_at: string;
 }
 
@@ -59,14 +61,28 @@ export interface HypothesisDetail {
 }
 
 export function listHypotheses(): HypothesisListRow[] {
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT h.id, h.name, h.target_audience, h.maturity_id, m.name as maturity_name, h.updated_at,
            (SELECT COUNT(*) FROM hypothesis_problems hp WHERE hp.hypothesis_id = h.id) as problem_count,
-           (SELECT COUNT(*) FROM hypothesis_activity_types hat WHERE hat.hypothesis_id = h.id) as activity_type_count
+           (SELECT COUNT(*) FROM hypothesis_activity_types hat WHERE hat.hypothesis_id = h.id) as activity_type_count,
+           (SELECT GROUP_CONCAT(at.name, ', ')
+            FROM hypothesis_activity_types hat
+            JOIN activity_types at ON at.id = hat.activity_type_id
+            WHERE hat.hypothesis_id = h.id) as activity_type_names,
+           (SELECT GROUP_CONCAT(hat.activity_type_id)
+            FROM hypothesis_activity_types hat
+            WHERE hat.hypothesis_id = h.id) as activity_type_ids_csv
     FROM hypotheses h
     LEFT JOIN maturity_levels m ON m.id = h.maturity_id
-    ORDER BY h.updated_at DESC, h.id DESC
-  `).all() as HypothesisListRow[];
+    ORDER BY h.name, h.id
+  `).all() as (HypothesisListRow & { activity_type_ids_csv: string | null })[];
+
+  return rows.map(row => ({
+    ...row,
+    activity_type_ids: row.activity_type_ids_csv
+      ? row.activity_type_ids_csv.split(',').map(Number).filter(Boolean)
+      : [],
+  }));
 }
 
 function loadProblemSolutions(problemId: number, hypothesisId: number): HypothesisSolutionRow[] {

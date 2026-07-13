@@ -68,7 +68,11 @@ export interface ParsedBriefingExport {
     headcount_category: string;
   };
   problems?: {
-    selections: { problem_id: number | null; custom_text: string | null }[];
+    selections: {
+      problem_id: number | null;
+      custom_text: string | null;
+      linked_problem_id?: number | null;
+    }[];
   };
   solutions?: {
     selected_ids: number[];
@@ -326,11 +330,19 @@ function applyHeadcount(briefingId: number, data: NonNullable<ParsedBriefingExpo
 
 function applyProblems(briefingId: number, data: NonNullable<ParsedBriefingExport['problems']>) {
   const del = db.prepare(`DELETE FROM briefing_problem_sel WHERE briefing_id=?`);
-  const ins = db.prepare(`INSERT INTO briefing_problem_sel(briefing_id, problem_id, custom_text) VALUES (?,?,?)`);
+  const ins = db.prepare(`
+    INSERT INTO briefing_problem_sel(briefing_id, problem_id, custom_text, linked_problem_id)
+    VALUES (?,?,?,?)
+  `);
   const tx = db.transaction(() => {
     del.run(briefingId);
     for (const s of data.selections ?? []) {
-      ins.run(briefingId, s.problem_id ?? null, s.custom_text ?? null);
+      ins.run(
+        briefingId,
+        s.problem_id ?? null,
+        s.custom_text ?? null,
+        s.linked_problem_id ?? null,
+      );
     }
   });
   tx();
@@ -338,10 +350,10 @@ function applyProblems(briefingId: number, data: NonNullable<ParsedBriefingExpor
 
 function applySolutions(briefingId: number, data: NonNullable<ParsedBriefingExport['solutions']>) {
   const del = db.prepare(`DELETE FROM briefing_solution_sel WHERE briefing_id=?`);
-  const ins = db.prepare(`INSERT INTO briefing_solution_sel(briefing_id, solution_id) VALUES (?,?)`);
+  const ins = db.prepare(`INSERT INTO briefing_solution_sel(briefing_id, solution_id, queue) VALUES (?,?,?)`);
   const tx = db.transaction(() => {
     del.run(briefingId);
-    for (const sid of data.selected_ids ?? []) ins.run(briefingId, sid);
+    for (const sid of data.selected_ids ?? []) ins.run(briefingId, sid, '1');
   });
   tx();
 }

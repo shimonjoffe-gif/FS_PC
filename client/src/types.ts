@@ -190,6 +190,13 @@ export interface SolutionDetail extends Solution {
   hypothesis_usages: SolutionHypothesisUsage[];
 }
 
+export type SolutionFsLinkType = 'required' | 'optional';
+
+export interface SolutionFsLink {
+  fs_item_id: number;
+  link_type: SolutionFsLinkType;
+}
+
 export interface HypothesisListItem {
   id: number;
   name: string;
@@ -198,6 +205,8 @@ export interface HypothesisListItem {
   maturity_name: string | null;
   problem_count: number;
   activity_type_count: number;
+  activity_type_names?: string | null;
+  activity_type_ids?: number[];
   updated_at: string;
 }
 
@@ -246,6 +255,34 @@ export interface Widget {
   description: string;
   type: string;
   image_path?: string | null;
+  linked_solution_count?: number;
+  linked_fs_count?: number;
+}
+
+export interface WidgetSolutionRef {
+  id: number;
+  name: string;
+  catalog_code?: string | null;
+  lcm_code?: string | null;
+}
+
+export interface WidgetProblemUsage {
+  id: number;
+  name: string;
+  lcm_code?: string | null;
+  sort_order: number;
+  solutions: WidgetSolutionRef[];
+}
+
+export interface WidgetHypothesisUsage {
+  hypothesis_id: number;
+  hypothesis_name: string;
+  problems: WidgetProblemUsage[];
+}
+
+export interface WidgetDetail extends Widget {
+  hypothesis_usages: WidgetHypothesisUsage[];
+  orphan_solutions: WidgetSolutionRef[];
 }
 
 export interface FsCatalogGroup {
@@ -367,6 +404,10 @@ export interface Briefing {
   id: number;
   name: string;
   industry_id: number | null;
+  industry_ids?: number[];
+  industry_names?: string[];
+  activity_type_ids?: number[];
+  activity_type_names?: string[];
   segment_id: number | null;
   scenario: string | null;
   headcount: number | null;
@@ -382,7 +423,9 @@ export interface BriefingProblemSel {
   id?: number;
   problem_id: number | null;
   custom_text: string | null;
+  linked_problem_id?: number | null;
   problem_name?: string;
+  linked_problem_name?: string;
 }
 
 export interface BriefingWidgetSel {
@@ -390,6 +433,22 @@ export interface BriefingWidgetSel {
   widget_id: number;
   name?: string;
   description?: string;
+}
+
+/** Виджеты заказчика (parallel path: вкладка «Виджеты»). */
+export interface BriefingCustomerWidgetSel {
+  widget_id: number;
+  queue?: string | null;
+  name?: string;
+  description?: string | null;
+  image_path?: string | null;
+  type?: string | null;
+}
+
+export interface BriefingSolutionSel extends Solution {
+  queue?: string;
+  queue_comment_json?: string | Record<string, string> | null;
+  source_problem_sel_id?: number | null;
 }
 
 export interface BriefingFsSel {
@@ -766,8 +825,9 @@ export interface BriefingAssessment {
 
 export interface BriefingFull extends Briefing {
   problems: BriefingProblemSel[];
-  solutions: Solution[];
+  solutions: BriefingSolutionSel[];
   widgets: BriefingWidgetSel[];
+  customer_widgets: BriefingCustomerWidgetSel[];
   fs_items: BriefingFsSel[];
   params: BriefingParams;
   assessment: BriefingAssessment;

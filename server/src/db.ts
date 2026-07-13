@@ -235,6 +235,7 @@ export function initDB() {
     CREATE TABLE IF NOT EXISTS solution_fs_map (
       solution_id INTEGER NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
       fs_item_id  INTEGER NOT NULL REFERENCES fs_catalog(id) ON DELETE CASCADE,
+      link_type   TEXT NOT NULL DEFAULT 'required',
       PRIMARY KEY (solution_id, fs_item_id)
     );
 
@@ -358,6 +359,12 @@ export function initDB() {
   const widgetCols = db.prepare(`PRAGMA table_info(widgets)`).all() as { name: string }[];
   if (!widgetCols.some(c => c.name === 'image_path')) {
     db.exec(`ALTER TABLE widgets ADD COLUMN image_path TEXT`);
+  }
+
+  const solutionFsCols = db.prepare(`PRAGMA table_info(solution_fs_map)`).all() as { name: string }[];
+  if (!solutionFsCols.some(c => c.name === 'link_type')) {
+    db.exec(`ALTER TABLE solution_fs_map ADD COLUMN link_type TEXT NOT NULL DEFAULT 'required'`);
+    db.exec(`UPDATE solution_fs_map SET link_type='required' WHERE link_type IS NULL OR link_type=''`);
   }
 
   const fsCols = db.prepare(`PRAGMA table_info(fs_catalog)`).all() as { name: string }[];
@@ -590,6 +597,96 @@ export function initDB() {
   if (!assessmentColNames.has('assessment_scenarios_json')) {
     db.exec(`ALTER TABLE briefing_assessment ADD COLUMN assessment_scenarios_json TEXT DEFAULT '[]'`);
   }
+
+  const bssColNames = new Set(
+    (db.prepare(`PRAGMA table_info(briefing_solution_sel)`).all() as { name: string }[]).map(c => c.name),
+  );
+  if (!bssColNames.has('queue')) {
+    db.exec(`ALTER TABLE briefing_solution_sel ADD COLUMN queue TEXT DEFAULT '1'`);
+  }
+  if (!bssColNames.has('queue_comment_json')) {
+    db.exec(`ALTER TABLE briefing_solution_sel ADD COLUMN queue_comment_json TEXT`);
+  }
+  if (!bssColNames.has('source_problem_sel_id')) {
+    db.exec(`
+      ALTER TABLE briefing_solution_sel
+      ADD COLUMN source_problem_sel_id INTEGER REFERENCES briefing_problem_sel(id) ON DELETE SET NULL
+    `);
+  }
+
+  const bpsColNames = new Set(
+    (db.prepare(`PRAGMA table_info(briefing_problem_sel)`).all() as { name: string }[]).map(c => c.name),
+  );
+  if (!bpsColNames.has('linked_problem_id')) {
+    db.exec(`
+      ALTER TABLE briefing_problem_sel
+      ADD COLUMN linked_problem_id INTEGER REFERENCES problems(id)
+    `);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS briefing_customer_widget_sel (
+      briefing_id INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      widget_id   INTEGER NOT NULL REFERENCES widgets(id) ON DELETE CASCADE,
+      queue       TEXT DEFAULT '1',
+      PRIMARY KEY (briefing_id, widget_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS briefing_industry_sel (
+      briefing_id INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      industry_id INTEGER NOT NULL REFERENCES industries(id),
+      PRIMARY KEY (briefing_id, industry_id)
+    )
+  `);
+  const legacyIndustryBriefings = db.prepare(`
+    SELECT id, industry_id FROM briefings WHERE industry_id IS NOT NULL
+  `).all() as { id: number; industry_id: number }[];
+  const insBriefingIndustry = db.prepare(`
+    INSERT OR IGNORE INTO briefing_industry_sel(briefing_id, industry_id) VALUES (?,?)
+  `);
+  for (const row of legacyIndustryBriefings) {
+    insBriefingIndustry.run(row.id, row.industry_id);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS briefing_activity_type_sel (
+      briefing_id INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      activity_type_id INTEGER NOT NULL REFERENCES activity_types(id),
+      PRIMARY KEY (briefing_id, activity_type_id)
+    )
+  `);
+  db.prepare(`
+    INSERT OR IGNORE INTO briefing_activity_type_sel(briefing_id, activity_type_id)
+    SELECT bis.briefing_id, at.id
+    FROM briefing_industry_sel bis
+    JOIN industries i ON i.id = bis.industry_id
+    JOIN activity_types at ON at.name = i.name
+  `).run();
+  db.prepare(`
+    INSERT OR IGNORE INTO briefing_activity_type_sel(briefing_id, activity_type_id)
+    SELECT b.id, at.id
+    FROM briefings b
+    JOIN industries i ON i.id = b.industry_id
+    JOIN activity_types at ON at.name = i.name
+    WHERE b.industry_id IS NOT NULL
+  `).run();
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hypothesis_industry_sel (
+      hypothesis_id INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+      industry_id INTEGER NOT NULL REFERENCES industries(id),
+      PRIMARY KEY (hypothesis_id, industry_id)
+    )
+  `);
+  db.prepare(`
+    INSERT OR IGNORE INTO hypothesis_industry_sel(hypothesis_id, industry_id)
+    SELECT DISTINCT hat.hypothesis_id, i.id
+    FROM hypothesis_activity_types hat
+    JOIN activity_types at ON at.id = hat.activity_type_id
+    JOIN industries i ON i.name = at.name
+  `).run();
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS briefing_assessment_snapshots (

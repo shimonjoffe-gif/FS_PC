@@ -216,6 +216,7 @@ function buildExportPayload(briefingId: number, blocks: ExportBlocks) {
     }[];
     const problems = (full.problems ?? []) as Array<{
       problem_id: number | null; custom_text: string | null; problem_name?: string;
+      linked_problem_id?: number | null; linked_problem_name?: string;
     }>;
     payload.problems = {
       catalog: allProblems,
@@ -223,6 +224,8 @@ function buildExportPayload(briefingId: number, blocks: ExportBlocks) {
         problem_id: p.problem_id,
         custom_text: p.custom_text,
         problem_name: p.problem_name,
+        linked_problem_id: p.linked_problem_id ?? null,
+        linked_problem_name: p.linked_problem_name,
       })),
     };
   }

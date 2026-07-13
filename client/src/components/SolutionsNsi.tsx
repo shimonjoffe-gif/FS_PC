@@ -1,66 +1,14 @@
 import React, { useMemo, useState } from 'react';
-import type { Solution, SolutionDetail, FsCatalogGroup, FsCatalogItem } from '../types';
+import type { Solution, SolutionDetail, SolutionFsLink, FsCatalogGroup, FsCatalogItem, Widget } from '../types';
 import { YES_NO_BADGE_CLASS, yesNoClass, yesNoLabel } from '../utils/yesNoBadge';
+import { buildSolutionDisplayUnits, collectSolutionWithAncestors } from '../utils/solutionDisplayGroups';
+import type { SolutionDisplayUnit } from '../utils/solutionDisplayGroups';
 import SolutionCardModal, { emptySolutionDraft, type SolutionDraft } from './SolutionCardModal';
-
-type SolutionDisplayUnit =
-  | { kind: 'group'; parent: Solution; children: Solution[] }
-  | { kind: 'standalone'; item: Solution };
 
 type CardState =
   | { mode: 'view'; solution: SolutionDetail }
   | { mode: 'create' }
   | null;
-
-function buildDisplayUnits(items: Solution[]): SolutionDisplayUnit[] {
-  const byId = new Map(items.map(s => [s.id, s]));
-  const units: SolutionDisplayUnit[] = [];
-  const consumed = new Set<number>();
-
-  const roots = items
-    .filter(s => !s.parent_id || !byId.has(s.parent_id))
-    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id);
-
-  for (const root of roots) {
-    const children = items
-      .filter(c => c.parent_id === root.id)
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id);
-    if (children.length > 0) {
-      units.push({ kind: 'group', parent: root, children });
-      consumed.add(root.id);
-      for (const child of children) consumed.add(child.id);
-    }
-  }
-
-  for (const item of items) {
-    if (!consumed.has(item.id)) {
-      units.push({ kind: 'standalone', item });
-    }
-  }
-
-  units.sort((a, b) => {
-    const orderA = a.kind === 'group' ? (a.parent.sort_order ?? 0) : (a.item.sort_order ?? 0);
-    const orderB = b.kind === 'group' ? (b.parent.sort_order ?? 0) : (b.item.sort_order ?? 0);
-    return orderA - orderB || (a.kind === 'group' ? a.parent.id : a.item.id) - (b.kind === 'group' ? b.parent.id : b.item.id);
-  });
-
-  return units;
-}
-
-function collectWithAncestors(items: Solution[], matchIds: Set<number>): Set<number> {
-  const byId = new Map(items.map(s => [s.id, s]));
-  const result = new Set<number>();
-  for (const id of matchIds) {
-    let cursor: number | null = id;
-    while (cursor) {
-      if (result.has(cursor)) break;
-      result.add(cursor);
-      const row = byId.get(cursor);
-      cursor = row?.parent_id ?? null;
-    }
-  }
-  return result;
-}
 
 function draftToPayload(draft: SolutionDraft) {
   return {
@@ -158,8 +106,11 @@ export default function SolutionsNsi({
   hypothesisOptions,
   fsGroups,
   fsItems,
+  widgets,
   onLoadFsLinks,
   onSaveFsLinks,
+  onLoadWidgetLinks,
+  onSaveWidgetLinks,
   onOpen,
   onCreate,
   onSave,
@@ -170,8 +121,11 @@ export default function SolutionsNsi({
   hypothesisOptions: string[];
   fsGroups: FsCatalogGroup[];
   fsItems: FsCatalogItem[];
-  onLoadFsLinks: (solutionId: number) => Promise<number[]>;
-  onSaveFsLinks: (solutionId: number, fsItemIds: number[]) => Promise<number[]>;
+  widgets: Widget[];
+  onLoadFsLinks: (solutionId: number) => Promise<SolutionFsLink[]>;
+  onSaveFsLinks: (solutionId: number, links: SolutionFsLink[]) => Promise<SolutionFsLink[]>;
+  onLoadWidgetLinks: (solutionId: number) => Promise<number[]>;
+  onSaveWidgetLinks: (solutionId: number, widgetIds: number[]) => Promise<number[]>;
   onOpen: (id: number) => Promise<SolutionDetail>;
   onCreate: (data: ReturnType<typeof draftToPayload>) => Promise<SolutionDetail>;
   onSave: (id: number, data: ReturnType<typeof draftToPayload>) => Promise<SolutionDetail>;
@@ -190,7 +144,7 @@ export default function SolutionsNsi({
       const matchIds = new Set(
         items.filter(s => s.used_in_hypotheses?.includes(hypothesisFilter)).map(s => s.id),
       );
-      const visibleIds = collectWithAncestors(items, matchIds);
+      const visibleIds = collectSolutionWithAncestors(items, matchIds);
       base = items.filter(s => visibleIds.has(s.id));
     }
     if (!q) return base;
@@ -203,11 +157,11 @@ export default function SolutionsNsi({
         || s.used_in_hypotheses?.some(h => h.toLowerCase().includes(q)),
       ).map(s => s.id),
     );
-    const visibleIds = collectWithAncestors(items, textMatch);
+    const visibleIds = collectSolutionWithAncestors(items, textMatch);
     return base.filter(s => visibleIds.has(s.id));
   }, [items, search, hypothesisFilter]);
 
-  const units = useMemo(() => buildDisplayUnits(filteredItems), [filteredItems]);
+  const units = useMemo(() => buildSolutionDisplayUnits(filteredItems), [filteredItems]);
 
   async function openCard(id: number) {
     setBusy(true);
@@ -324,8 +278,11 @@ export default function SolutionsNsi({
           hypothesisOptions={hypothesisOptions}
           fsGroups={fsGroups}
           fsItems={fsItems}
+          widgets={widgets}
           onLoadFsLinks={onLoadFsLinks}
           onSaveFsLinks={onSaveFsLinks}
+          onLoadWidgetLinks={onLoadWidgetLinks}
+          onSaveWidgetLinks={onSaveWidgetLinks}
           onClose={() => setCard(null)}
           onSave={handleSaveExisting}
           onDelete={() => onDelete(card.solution.id)}
@@ -340,8 +297,11 @@ export default function SolutionsNsi({
           hypothesisOptions={hypothesisOptions}
           fsGroups={fsGroups}
           fsItems={fsItems}
+          widgets={widgets}
           onLoadFsLinks={onLoadFsLinks}
           onSaveFsLinks={onSaveFsLinks}
+          onLoadWidgetLinks={onLoadWidgetLinks}
+          onSaveWidgetLinks={onSaveWidgetLinks}
           onClose={() => setCard(null)}
           onSave={async draft => { await onCreate(draftToPayload(draft)); }}
         />

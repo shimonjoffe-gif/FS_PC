@@ -29,6 +29,59 @@ import { buildBriefingHtmlExport } from '../export/briefingHtmlExport';
 import { applyBriefingHtmlImport, previewBriefingHtmlImport } from '../export/briefingHtmlImport';
 import { mergeExportBlocks, type ExportBlocks, type ImportOptions } from '../export/briefingExportTypes';
 
+function loadBriefingActivityTypeIds(briefingId: number): number[] {
+  return (db.prepare(`
+    SELECT activity_type_id FROM briefing_activity_type_sel WHERE briefing_id=? ORDER BY activity_type_id
+  `).all(briefingId) as { activity_type_id: number }[]).map(r => r.activity_type_id);
+}
+
+function saveBriefingActivityTypeIds(briefingId: number, activityTypeIds: number[]) {
+  const unique = [...new Set(activityTypeIds.filter(id => Number.isFinite(id)))];
+  db.prepare(`DELETE FROM briefing_activity_type_sel WHERE briefing_id=?`).run(briefingId);
+  const ins = db.prepare(`INSERT INTO briefing_activity_type_sel(briefing_id, activity_type_id) VALUES (?,?)`);
+  for (const id of unique) ins.run(briefingId, id);
+
+  const firstIndustry = unique.length > 0
+    ? db.prepare(`
+      SELECT i.id FROM activity_types at
+      JOIN industries i ON i.name = at.name
+      WHERE at.id=?
+      LIMIT 1
+    `).get(unique[0]) as { id: number } | undefined
+    : undefined;
+  db.prepare(`UPDATE briefings SET industry_id=? WHERE id=?`).run(firstIndustry?.id ?? null, briefingId);
+
+  db.prepare(`DELETE FROM briefing_industry_sel WHERE briefing_id=?`).run(briefingId);
+  const insIndustry = db.prepare(`INSERT INTO briefing_industry_sel(briefing_id, industry_id) VALUES (?,?)`);
+  for (const atId of unique) {
+    const row = db.prepare(`
+      SELECT i.id FROM activity_types at
+      JOIN industries i ON i.name = at.name
+      WHERE at.id=?
+    `).get(atId) as { id: number } | undefined;
+    if (row) insIndustry.run(briefingId, row.id);
+  }
+}
+
+function loadBriefingIndustryIds(briefingId: number): number[] {
+  const fromSel = (db.prepare(`
+    SELECT industry_id FROM briefing_industry_sel WHERE briefing_id=? ORDER BY industry_id
+  `).all(briefingId) as { industry_id: number }[]).map(r => r.industry_id);
+  if (fromSel.length > 0) return fromSel;
+  const legacy = db.prepare(`SELECT industry_id FROM briefings WHERE id=?`).get(briefingId) as {
+    industry_id: number | null;
+  } | undefined;
+  return legacy?.industry_id ? [legacy.industry_id] : [];
+}
+
+function saveBriefingIndustryIds(briefingId: number, industryIds: number[]) {
+  const unique = [...new Set(industryIds.filter(id => Number.isFinite(id)))];
+  db.prepare(`DELETE FROM briefing_industry_sel WHERE briefing_id=?`).run(briefingId);
+  const ins = db.prepare(`INSERT INTO briefing_industry_sel(briefing_id, industry_id) VALUES (?,?)`);
+  for (const id of unique) ins.run(briefingId, id);
+  db.prepare(`UPDATE briefings SET industry_id=? WHERE id=?`).run(unique[0] ?? null, briefingId);
+}
+
 export const briefingsRouter = Router();
 
 function parseJson<T>(raw: string | T | null | undefined, fallback: T): T {
@@ -287,14 +340,16 @@ export function getBriefingFull(id: number) {
   if (!briefing) return null;
 
   const problems = db.prepare(`
-    SELECT bps.*, p.name as problem_name
+    SELECT bps.*, p.name as problem_name, lp.name as linked_problem_name
     FROM briefing_problem_sel bps
     LEFT JOIN problems p ON p.id = bps.problem_id
+    LEFT JOIN problems lp ON lp.id = bps.linked_problem_id
     WHERE bps.briefing_id=?
   `).all(id);
 
   const solutions = db.prepare(`
-    SELECT bss.solution_id AS id, sol.name, sol.description
+    SELECT bss.solution_id AS id, sol.name, sol.description, bss.queue, bss.queue_comment_json,
+           bss.source_problem_sel_id
     FROM briefing_solution_sel bss
     JOIN solutions sol ON sol.id = bss.solution_id
     WHERE bss.briefing_id=?
@@ -305,6 +360,14 @@ export function getBriefingFull(id: number) {
     FROM briefing_widget_sel bws
     JOIN widgets w ON w.id = bws.widget_id
     WHERE bws.briefing_id=?
+  `).all(id);
+
+  const customer_widgets = db.prepare(`
+    SELECT bcw.widget_id, bcw.queue, w.name, w.description, w.image_path, w.type
+    FROM briefing_customer_widget_sel bcw
+    JOIN widgets w ON w.id = bcw.widget_id
+    WHERE bcw.briefing_id=?
+    ORDER BY w.name, w.id
   `).all(id);
 
   const fsItems = loadFsSelections(id);
@@ -328,9 +391,20 @@ export function getBriefingFull(id: number) {
 
   return {
     ...briefing,
+    industry_ids: loadBriefingIndustryIds(id),
+    industry_names: loadBriefingIndustryIds(id).map(indId => {
+      const row = db.prepare(`SELECT name FROM industries WHERE id=?`).get(indId) as { name: string } | undefined;
+      return row?.name ?? String(indId);
+    }),
+    activity_type_ids: loadBriefingActivityTypeIds(id),
+    activity_type_names: loadBriefingActivityTypeIds(id).map(atId => {
+      const row = db.prepare(`SELECT name FROM activity_types WHERE id=?`).get(atId) as { name: string } | undefined;
+      return row?.name ?? String(atId);
+    }),
     problems,
     solutions,
     widgets,
+    customer_widgets,
     fs_items: fsItems,
     params,
     assessment: loadAssessment(id),
@@ -376,11 +450,39 @@ briefingsRouter.patch('/:id', (req, res) => {
   const existing = db.prepare(`SELECT * FROM briefings WHERE id=?`).get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
 
-  const { name, industry_id, segment_id, scenario, headcount } = req.body as {
-    name?: string; industry_id?: number | null; segment_id?: number | null;
-    scenario?: string; headcount?: number | null;
+  const { name, industry_id, industry_ids, activity_type_ids, segment_id, scenario, headcount } = req.body as {
+    name?: string;
+    industry_id?: number | null;
+    industry_ids?: number[];
+    activity_type_ids?: number[];
+    segment_id?: number | null;
+    scenario?: string;
+    headcount?: number | null;
   };
   const cur = existing as Record<string, unknown>;
+  if (activity_type_ids !== undefined) {
+    saveBriefingActivityTypeIds(id, activity_type_ids);
+  } else if (industry_ids !== undefined) {
+    saveBriefingIndustryIds(id, industry_ids);
+    const atIds = industry_ids.map(indId => {
+      const row = db.prepare(`
+        SELECT at.id FROM industries i
+        JOIN activity_types at ON at.name = i.name
+        WHERE i.id=?
+      `).get(indId) as { id: number } | undefined;
+      return row?.id;
+    }).filter((x): x is number => x != null);
+    saveBriefingActivityTypeIds(id, atIds);
+  } else if (industry_id !== undefined) {
+    saveBriefingIndustryIds(id, industry_id != null ? [industry_id] : []);
+  }
+  const syncedIndustryId = activity_type_ids !== undefined
+    ? (db.prepare(`SELECT industry_id FROM briefings WHERE id=?`).get(id) as { industry_id: number | null }).industry_id
+    : industry_ids !== undefined
+      ? (industry_ids[0] ?? null)
+      : industry_id !== undefined
+        ? industry_id
+        : cur.industry_id;
   db.prepare(`
     UPDATE briefings SET
       name=?, industry_id=?, segment_id=?, scenario=?, headcount=?,
@@ -388,7 +490,7 @@ briefingsRouter.patch('/:id', (req, res) => {
     WHERE id=?
   `).run(
     name ?? cur.name,
-    industry_id !== undefined ? industry_id : cur.industry_id,
+    syncedIndustryId,
     segment_id !== undefined ? segment_id : cur.segment_id,
     scenario !== undefined ? scenario : cur.scenario,
     headcount !== undefined ? headcount : cur.headcount,
@@ -404,13 +506,49 @@ briefingsRouter.delete('/:id', (req, res) => {
 
 briefingsRouter.put('/:id/problems', (req, res) => {
   const id = Number(req.params.id);
-  const { selections } = req.body as { selections: { problem_id?: number; custom_text?: string }[] };
-  const del = db.prepare(`DELETE FROM briefing_problem_sel WHERE briefing_id=?`);
-  const ins = db.prepare(`INSERT INTO briefing_problem_sel(briefing_id, problem_id, custom_text) VALUES (?,?,?)`);
+  const { selections } = req.body as {
+    selections: {
+      id?: number;
+      problem_id?: number | null;
+      custom_text?: string | null;
+      linked_problem_id?: number | null;
+    }[];
+  };
+  const existing = db.prepare(`SELECT id FROM briefing_problem_sel WHERE briefing_id=?`).all(id) as { id: number }[];
+  const keptIds = new Set<number>();
+  const update = db.prepare(`
+    UPDATE briefing_problem_sel
+    SET problem_id=?, custom_text=?, linked_problem_id=?
+    WHERE id=? AND briefing_id=?
+  `);
+  const insert = db.prepare(`
+    INSERT INTO briefing_problem_sel(briefing_id, problem_id, custom_text, linked_problem_id)
+    VALUES (?,?,?,?)
+  `);
+  const delOne = db.prepare(`DELETE FROM briefing_problem_sel WHERE id=? AND briefing_id=?`);
   const tx = db.transaction(() => {
-    del.run(id);
     for (const s of selections ?? []) {
-      ins.run(id, s.problem_id ?? null, s.custom_text ?? null);
+      if (s.id) {
+        update.run(
+          s.problem_id ?? null,
+          s.custom_text ?? null,
+          s.linked_problem_id ?? null,
+          s.id,
+          id,
+        );
+        keptIds.add(s.id);
+      } else {
+        const result = insert.run(
+          id,
+          s.problem_id ?? null,
+          s.custom_text ?? null,
+          s.linked_problem_id ?? null,
+        );
+        keptIds.add(Number(result.lastInsertRowid));
+      }
+    }
+    for (const row of existing) {
+      if (!keptIds.has(row.id)) delOne.run(row.id, id);
     }
   });
   tx();
@@ -420,12 +558,37 @@ briefingsRouter.put('/:id/problems', (req, res) => {
 
 briefingsRouter.put('/:id/solutions', (req, res) => {
   const id = Number(req.params.id);
-  const { solution_ids } = req.body as { solution_ids: number[] };
+  const { solution_ids, selections } = req.body as {
+    solution_ids?: number[];
+    selections?: {
+      solution_id: number;
+      queue?: string;
+      queue_comment_json?: Record<string, string> | string | null;
+      source_problem_sel_id?: number | null;
+    }[];
+  };
+  const rows = selections ?? (solution_ids ?? []).map(solution_id => ({ solution_id, queue: '1' }));
   const del = db.prepare(`DELETE FROM briefing_solution_sel WHERE briefing_id=?`);
-  const ins = db.prepare(`INSERT INTO briefing_solution_sel(briefing_id, solution_id) VALUES (?,?)`);
+  const ins = db.prepare(`
+    INSERT INTO briefing_solution_sel(briefing_id, solution_id, queue, queue_comment_json, source_problem_sel_id)
+    VALUES (?,?,?,?,?)
+  `);
   const tx = db.transaction(() => {
     del.run(id);
-    for (const sid of solution_ids ?? []) ins.run(id, sid);
+    for (const row of rows) {
+      const commentJson = row.queue_comment_json == null
+        ? null
+        : typeof row.queue_comment_json === 'string'
+          ? row.queue_comment_json
+          : JSON.stringify(row.queue_comment_json);
+      ins.run(
+        id,
+        row.solution_id,
+        row.queue ?? '1',
+        commentJson,
+        row.source_problem_sel_id ?? null,
+      );
+    }
   });
   tx();
   db.prepare(`UPDATE briefings SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
@@ -440,6 +603,25 @@ briefingsRouter.put('/:id/widgets', (req, res) => {
   const tx = db.transaction(() => {
     del.run(id);
     for (const s of selections ?? []) ins.run(id, s.solution_id, s.widget_id);
+  });
+  tx();
+  db.prepare(`UPDATE briefings SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
+  res.json({ ok: true });
+});
+
+briefingsRouter.put('/:id/customer-widgets', (req, res) => {
+  const id = Number(req.params.id);
+  const { selections } = req.body as { selections: { widget_id: number; queue?: string }[] };
+  const del = db.prepare(`DELETE FROM briefing_customer_widget_sel WHERE briefing_id=?`);
+  const ins = db.prepare(`
+    INSERT INTO briefing_customer_widget_sel(briefing_id, widget_id, queue) VALUES (?,?,?)
+  `);
+  const tx = db.transaction(() => {
+    del.run(id);
+    for (const s of selections ?? []) {
+      if (!s.widget_id) continue;
+      ins.run(id, s.widget_id, s.queue ?? '1');
+    }
   });
   tx();
   db.prepare(`UPDATE briefings SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);

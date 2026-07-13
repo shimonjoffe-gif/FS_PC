@@ -326,6 +326,17 @@ export function patchFsItemQueueComment(
   return { queue_comment_json, source: item.source ?? 'manual' };
 }
 
+export function appendFsItemQueueComment(
+  item: BriefingFsSel,
+  q: FsQueueKey,
+  lines: string | string[],
+): Partial<BriefingFsSel> {
+  const addition = (Array.isArray(lines) ? lines : [lines]).join('\n');
+  const existing = effectiveFsItemCommentForQueue(item, q);
+  const merged = existing ? `${existing}\n${addition}` : addition;
+  return patchFsItemQueueComment(item, q, merged);
+}
+
 export interface QueueSpTotals {
   /** Excel C20 — функциональный SP по очереди (без интеграций и НМД) */
   functional_sp: Record<FsQueueKey, number>;

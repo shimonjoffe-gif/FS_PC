@@ -83,6 +83,7 @@ export {
   relocateFsItemQueueOverrides,
   effectiveFsItemCommentForQueue,
   patchFsItemQueueComment,
+  appendFsItemQueueComment,
 } from './fsSpCalc';
 export type { QueueSpTotals } from './fsSpCalc';
 export { FS_NMD_VALUES, type FsNmdValue } from './types';

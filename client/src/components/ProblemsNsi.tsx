@@ -1,65 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import type { Problem, ProblemDetail } from '../types';
+import { buildProblemDisplayUnits, collectProblemWithAncestors } from '../utils/problemDisplayGroups';
 import ProblemCardModal, { emptyProblemDraft, type ProblemDraft } from './ProblemCardModal';
-
-type ProblemDisplayUnit =
-  | { kind: 'group'; parent: Problem; children: Problem[] }
-  | { kind: 'standalone'; item: Problem };
 
 type CardState =
   | { mode: 'view'; problem: ProblemDetail }
   | { mode: 'create' }
   | null;
-
-function buildDisplayUnits(items: Problem[]): ProblemDisplayUnit[] {
-  const byId = new Map(items.map(p => [p.id, p]));
-  const units: ProblemDisplayUnit[] = [];
-  const consumed = new Set<number>();
-
-  const roots = items
-    .filter(p => !p.parent_id || !byId.has(p.parent_id))
-    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id);
-
-  for (const root of roots) {
-    const children = items
-      .filter(c => c.parent_id === root.id)
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id);
-    if (children.length > 0) {
-      units.push({ kind: 'group', parent: root, children });
-      consumed.add(root.id);
-      for (const child of children) consumed.add(child.id);
-    }
-  }
-
-  for (const item of items) {
-    if (!consumed.has(item.id)) {
-      units.push({ kind: 'standalone', item });
-    }
-  }
-
-  units.sort((a, b) => {
-    const orderA = a.kind === 'group' ? (a.parent.sort_order ?? 0) : (a.item.sort_order ?? 0);
-    const orderB = b.kind === 'group' ? (b.parent.sort_order ?? 0) : (b.item.sort_order ?? 0);
-    return orderA - orderB || (a.kind === 'group' ? a.parent.id : a.item.id) - (b.kind === 'group' ? b.parent.id : b.item.id);
-  });
-
-  return units;
-}
-
-function collectWithAncestors(items: Problem[], matchIds: Set<number>): Set<number> {
-  const byId = new Map(items.map(p => [p.id, p]));
-  const result = new Set<number>();
-  for (const id of matchIds) {
-    let cursor: number | null = id;
-    while (cursor) {
-      if (result.has(cursor)) break;
-      result.add(cursor);
-      const row = byId.get(cursor);
-      cursor = row?.parent_id ?? null;
-    }
-  }
-  return result;
-}
 
 function draftToPayload(draft: ProblemDraft) {
   return {
@@ -172,7 +119,7 @@ export default function ProblemsNsi({
       const matchIds = new Set(
         items.filter(p => p.used_in_hypotheses?.includes(hypothesisFilter)).map(p => p.id),
       );
-      const visibleIds = collectWithAncestors(items, matchIds);
+      const visibleIds = collectProblemWithAncestors(items, matchIds);
       base = items.filter(p => visibleIds.has(p.id));
     }
     if (!q) return base;
@@ -185,11 +132,11 @@ export default function ProblemsNsi({
         || p.used_in_hypotheses?.some(h => h.toLowerCase().includes(q)),
       ).map(p => p.id),
     );
-    const visibleIds = collectWithAncestors(items, textMatch);
+    const visibleIds = collectProblemWithAncestors(items, textMatch);
     return base.filter(p => visibleIds.has(p.id));
   }, [items, search, hypothesisFilter]);
 
-  const units = useMemo(() => buildDisplayUnits(filteredItems), [filteredItems]);
+  const units = useMemo(() => buildProblemDisplayUnits(filteredItems), [filteredItems]);
 
   async function openCard(id: number) {
     setBusy(true);

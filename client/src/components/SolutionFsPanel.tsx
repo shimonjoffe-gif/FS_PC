@@ -1,37 +1,41 @@
-import React, { useMemo, useState } from 'react';
-import type { FsCatalogGroup, FsCatalogItem } from '../types';
+import React, { useEffect, useMemo, useState } from 'react';
+import type { FsCatalogGroup, FsCatalogItem, SolutionFsLinkType } from '../types';
 import { buildFsDisplayGroups, filterFsCatalogItems } from '../utils/fsDisplayGroups';
-import { yesNoClass, yesNoLabel } from '../utils/yesNoBadge';
+import {
+  cycleFsLinkType,
+  fsLinkBadgeClass,
+  fsLinkBadgeLabel,
+} from '../utils/fsLinkBadge';
 import FsCatalogReadonlyModal from './FsCatalogReadonlyModal';
 
-function groupAnySelected(items: FsCatalogItem[], selectedIds: Set<number>): boolean {
-  return items.some(item => selectedIds.has(item.id));
+function groupAnyLinked(items: FsCatalogItem[], fsLinks: Map<number, SolutionFsLinkType>): boolean {
+  return items.some(item => fsLinks.has(item.id));
 }
 
-function YesNoBadge({
-  value,
+function FsLinkBadge({
+  type,
   editing,
   onToggle,
 }: {
-  value: boolean;
+  type: SolutionFsLinkType | null;
   editing: boolean;
   onToggle?: () => void;
 }) {
-  const className = `inline-block px-2 py-0.5 rounded min-w-[36px] text-[10px] ${yesNoClass(value)}`;
+  const className = `inline-block px-2 py-0.5 rounded min-w-[40px] text-[10px] ${fsLinkBadgeClass(type)}`;
   if (!editing) {
-    return <span className={className}>{yesNoLabel(value)}</span>;
+    return <span className={className}>{fsLinkBadgeLabel(type)}</span>;
   }
   return (
     <button
       type="button"
       className={`${className} cursor-pointer`}
-      title="Клик — переключить Да/Нет"
+      title="Клик: Нет → Да (обяз.) → Опц. → Нет"
       onClick={e => {
         e.stopPropagation();
         onToggle?.();
       }}
     >
-      {yesNoLabel(value)}
+      {fsLinkBadgeLabel(type)}
     </button>
   );
 }
@@ -39,15 +43,21 @@ function YesNoBadge({
 export default function SolutionFsPanel({
   groups,
   items,
-  selectedIds,
+  fsLinks,
   editing,
   onChange,
+  onlySelected = false,
+  compact = false,
 }: {
   groups: FsCatalogGroup[];
   items: FsCatalogItem[];
-  selectedIds: Set<number>;
+  fsLinks: Map<number, SolutionFsLinkType>;
   editing: boolean;
-  onChange: (ids: Set<number>) => void;
+  onChange: (links: Map<number, SolutionFsLinkType>) => void;
+  /** Показать только пункты с «Да» / «Опц.» (для компактного просмотра в карточке). */
+  onlySelected?: boolean;
+  /** Компактный режим: без поиска и переключателя «Только Да». */
+  compact?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [onlyYes, setOnlyYes] = useState(false);
@@ -62,20 +72,22 @@ export default function SolutionFsPanel({
   );
 
   const q = search.trim().toLowerCase();
+  const filterOnlyYes = onlySelected || onlyYes;
 
   function toggleItem(id: number) {
-    const next = new Set(selectedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    const next = new Map(fsLinks);
+    const cycled = cycleFsLinkType(next.get(id));
+    if (cycled) next.set(id, cycled);
+    else next.delete(id);
     onChange(next);
   }
 
   function toggleGroupItems(groupItems: FsCatalogItem[]) {
-    const next = new Set(selectedIds);
-    const any = groupAnySelected(groupItems, selectedIds);
+    const next = new Map(fsLinks);
+    const any = groupAnyLinked(groupItems, fsLinks);
     for (const item of groupItems) {
       if (any) next.delete(item.id);
-      else next.add(item.id);
+      else next.set(item.id, 'required');
     }
     onChange(next);
   }
@@ -98,63 +110,92 @@ export default function SolutionFsPanel({
       .map(group => ({
         group,
         visibleItems: group.items.filter(item => {
-          if (onlyYes && !selectedIds.has(item.id)) return false;
+          if (filterOnlyYes && !fsLinks.has(item.id)) return false;
           if (!q) return true;
           const hay = `${item.prefix ?? ''} ${item.name} ${group.group_name}`.toLowerCase();
           return hay.includes(q);
         }),
       }))
-      .filter(({ visibleItems }) => visibleItems.length > 0 || (!q && !onlyYes));
-  }, [displayGroups, onlyYes, q, selectedIds]);
+      .filter(({ visibleItems }) => visibleItems.length > 0 || (!q && !filterOnlyYes));
+  }, [displayGroups, filterOnlyYes, q, fsLinks]);
 
-  const selectedCount = selectedIds.size;
+  const selectedCount = fsLinks.size;
+
+  useEffect(() => {
+    if (!onlySelected || !compact) return;
+    setExpanded(new Set(
+      displayGroups
+        .filter(g => g.items.some(i => fsLinks.has(i.id)))
+        .map(g => g.group_name),
+    ));
+  }, [onlySelected, compact, displayGroups, fsLinks]);
 
   return (
-    <div className="flex flex-col min-h-0 h-full">
-      <div className="flex flex-wrap items-end gap-2 mb-2">
-        <div className="flex-1 min-w-[140px]">
-          <label className="text-[10px] text-slate-400">Поиск по ФС</label>
-          <input
-            className="w-full text-xs border rounded px-2 py-1"
-            placeholder="Префикс, название…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
+    <div className={`flex flex-col min-h-0 ${compact ? '' : 'h-full'}`}>
+      {compact ? (
+        <div className="flex justify-end mb-1.5">
+          <button
+            type="button"
+            onClick={collapseAllSections}
+            className="text-[10px] text-slate-600 border border-slate-200 px-2 py-0.5 rounded hover:bg-slate-50"
+          >
+            Свернуть разделы
+          </button>
         </div>
-        <button
-          type="button"
-          className={`text-[10px] px-2 py-1 rounded border ${onlyYes ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-slate-200 text-slate-500'}`}
-          onClick={() => setOnlyYes(v => !v)}
-        >
-          Только «Да» ({selectedCount})
-        </button>
-        <button
-          type="button"
-          onClick={collapseAllSections}
-          className="text-[10px] text-slate-600 border border-slate-200 px-2 py-1 rounded hover:bg-slate-50"
-        >
-          Свернуть разделы
-        </button>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-end gap-2 mb-2">
+          <div className="flex-1 min-w-[140px]">
+            <label className="text-[10px] text-slate-400">Поиск по ФС</label>
+            <input
+              className="w-full text-xs border rounded px-2 py-1"
+              placeholder="Префикс, название…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+          </div>
+          {!onlySelected && (
+            <button
+              type="button"
+              className={`text-[10px] px-2 py-1 rounded border ${onlyYes ? 'bg-blue-50 border-blue-200 text-blue-700' : 'border-slate-200 text-slate-500'}`}
+              onClick={() => setOnlyYes(v => !v)}
+            >
+              Только связанные ({selectedCount})
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={collapseAllSections}
+            className="text-[10px] text-slate-600 border border-slate-200 px-2 py-1 rounded hover:bg-slate-50"
+          >
+            Свернуть разделы
+          </button>
+        </div>
+      )}
 
-      <div className="flex-1 overflow-auto border border-slate-200 rounded-lg min-h-[240px]">
+      <div className={`overflow-auto border border-slate-200 rounded-lg ${compact ? 'max-h-[320px]' : 'flex-1 min-h-[240px]'}`}>
         <table className="w-full text-xs border-collapse">
           <thead>
             <tr className="bg-slate-50 text-slate-500">
               <th className="text-left p-2 border w-20">Префикс</th>
               <th className="text-left p-2 border min-w-[160px]">Пункт ФС / Расшифровка</th>
-              <th className="text-center p-2 border w-20">Да/Нет</th>
+              <th className="text-center p-2 border w-24">Связь</th>
             </tr>
           </thead>
           <tbody>
             {visibleGroups.length === 0 ? (
               <tr>
-                <td colSpan={3} className="p-3 text-slate-400 text-center">Ничего не найдено</td>
+                <td colSpan={3} className="p-3 text-slate-400 text-center">
+                  {onlySelected ? 'Нет сопоставленных пунктов ФС' : 'Ничего не найдено'}
+                </td>
               </tr>
             ) : (
               visibleGroups.map(({ group, visibleItems }) => {
                 const isExpanded = expanded.has(group.group_name);
-                const groupSelected = groupAnySelected(group.items, selectedIds);
+                const groupSelected = groupAnyLinked(
+                  onlySelected ? visibleItems : group.items,
+                  fsLinks,
+                );
+                const groupCount = onlySelected ? visibleItems.length : group.items.length;
                 return (
                   <React.Fragment key={group.group_prefix}>
                     <tr className="bg-amber-50 font-semibold">
@@ -173,18 +214,18 @@ export default function SolutionFsPanel({
                       </td>
                       <td className="p-2 border text-slate-800">
                         {group.group_name}
-                        <span className="ml-2 text-[10px] font-normal text-slate-500">({group.items.length})</span>
+                        <span className="ml-2 text-[10px] font-normal text-slate-500">({groupCount})</span>
                       </td>
                       <td className="p-2 border text-center align-top">
-                        <YesNoBadge
-                          value={groupSelected}
+                        <FsLinkBadge
+                          type={groupSelected ? 'required' : null}
                           editing={editing}
                           onToggle={() => toggleGroupItems(group.items)}
                         />
                       </td>
                     </tr>
                     {isExpanded && visibleItems.map(item => (
-                      <tr key={item.id} className={`hover:bg-slate-50 ${selectedIds.has(item.id) ? 'bg-emerald-50/30' : ''}`}>
+                      <tr key={item.id} className={`hover:bg-slate-50 ${fsLinks.has(item.id) ? 'bg-emerald-50/30' : ''}`}>
                         <td className="p-2 border text-[11px] text-slate-500 whitespace-nowrap align-top">
                           {item.prefix || '—'}
                         </td>
@@ -201,8 +242,8 @@ export default function SolutionFsPanel({
                           </button>
                         </td>
                         <td className="p-2 border text-center align-top">
-                          <YesNoBadge
-                            value={selectedIds.has(item.id)}
+                          <FsLinkBadge
+                            type={fsLinks.get(item.id) ?? null}
                             editing={editing}
                             onToggle={() => toggleItem(item.id)}
                           />

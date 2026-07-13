@@ -110,10 +110,10 @@ export default function HypothesesNsi({
         <table className="w-full text-xs border-collapse min-w-[500px]">
           <thead>
             <tr className="bg-slate-50 text-slate-600">
-              <th className="text-left p-2 border">Название</th>
+              <th className="text-left p-2 border">Гипотеза</th>
               <th className="text-left p-2 border min-w-[160px]">Целевая аудитория</th>
               <th className="text-left p-2 border w-28">Зрелость</th>
-              <th className="text-center p-2 border w-20">Виды</th>
+              <th className="text-left p-2 border min-w-[180px]">Виды деятельности</th>
               <th className="text-center p-2 border w-24">Проблематик</th>
               <th className="p-2 border w-20" />
             </tr>
@@ -139,7 +139,7 @@ export default function HypothesesNsi({
                     {item.target_audience || '—'}
                   </td>
                   <td className="p-2 border text-slate-500 text-[11px]">{item.maturity_name || '—'}</td>
-                  <td className="p-2 border text-center tabular-nums">{item.activity_type_count}</td>
+                  <td className="p-2 border text-slate-500 text-[11px]">{item.activity_type_names || '—'}</td>
                   <td className="p-2 border text-center tabular-nums">{item.problem_count}</td>
                   <td className="p-2 border text-center">
                     <button

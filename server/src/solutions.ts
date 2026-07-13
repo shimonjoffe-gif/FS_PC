@@ -169,20 +169,72 @@ export function findSolutionByName(name: string): { id: number } | undefined {
   return db.prepare(`SELECT id FROM solutions WHERE name=? LIMIT 1`).get(trimmed) as { id: number } | undefined;
 }
 
-export function getSolutionFsItemIds(solutionId: number): number[] {
-  return (db.prepare(`
-    SELECT fs_item_id FROM solution_fs_map WHERE solution_id=? ORDER BY fs_item_id
-  `).all(solutionId) as { fs_item_id: number }[]).map(r => r.fs_item_id);
+export type SolutionFsLinkType = 'required' | 'optional';
+
+export interface SolutionFsLink {
+  fs_item_id: number;
+  link_type: SolutionFsLinkType;
 }
 
-export function syncSolutionFsLinks(solutionId: number, fsItemIds: number[]): number[] {
+export function getSolutionFsLinks(solutionId: number): SolutionFsLink[] {
+  return (db.prepare(`
+    SELECT fs_item_id, link_type FROM solution_fs_map WHERE solution_id=? ORDER BY fs_item_id
+  `).all(solutionId) as { fs_item_id: number; link_type: string }[]).map(r => ({
+    fs_item_id: r.fs_item_id,
+    link_type: r.link_type === 'optional' ? 'optional' : 'required',
+  }));
+}
+
+export function getSolutionFsItemIds(solutionId: number): number[] {
+  return getSolutionFsLinks(solutionId).map(r => r.fs_item_id);
+}
+
+function normalizeSolutionFsLinks(links: SolutionFsLink[]): SolutionFsLink[] {
+  const byId = new Map<number, SolutionFsLinkType>();
+  for (const link of links) {
+    if (link.fs_item_id <= 0) continue;
+    byId.set(link.fs_item_id, link.link_type === 'optional' ? 'optional' : 'required');
+  }
+  return [...byId.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([fs_item_id, link_type]) => ({ fs_item_id, link_type }));
+}
+
+export function syncSolutionFsLinks(solutionId: number, links: SolutionFsLink[]): SolutionFsLink[] {
   const existing = db.prepare(`SELECT id FROM solutions WHERE id=?`).get(solutionId);
   if (!existing) throw new Error('not found');
-  const unique = [...new Set(fsItemIds.filter(id => id > 0))];
+  const unique = normalizeSolutionFsLinks(links);
   const tx = db.transaction(() => {
     db.prepare(`DELETE FROM solution_fs_map WHERE solution_id=?`).run(solutionId);
-    const ins = db.prepare(`INSERT OR IGNORE INTO solution_fs_map(solution_id, fs_item_id) VALUES (?,?)`);
-    for (const fsId of unique) ins.run(solutionId, fsId);
+    const ins = db.prepare(`INSERT OR IGNORE INTO solution_fs_map(solution_id, fs_item_id, link_type) VALUES (?,?,?)`);
+    for (const link of unique) ins.run(solutionId, link.fs_item_id, link.link_type);
+  });
+  tx();
+  return unique;
+}
+
+/** @deprecated use syncSolutionFsLinks with link types */
+export function syncSolutionFsItemIds(solutionId: number, fsItemIds: number[]): number[] {
+  return syncSolutionFsLinks(
+    solutionId,
+    fsItemIds.map(fs_item_id => ({ fs_item_id, link_type: 'required' as const })),
+  ).map(r => r.fs_item_id);
+}
+
+export function getSolutionWidgetIds(solutionId: number): number[] {
+  return (db.prepare(`
+    SELECT widget_id FROM solution_widget_map WHERE solution_id=? ORDER BY widget_id
+  `).all(solutionId) as { widget_id: number }[]).map(r => r.widget_id);
+}
+
+export function syncSolutionWidgetLinks(solutionId: number, widgetIds: number[]): number[] {
+  const existing = db.prepare(`SELECT id FROM solutions WHERE id=?`).get(solutionId);
+  if (!existing) throw new Error('not found');
+  const unique = [...new Set(widgetIds.filter(id => id > 0))];
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM solution_widget_map WHERE solution_id=?`).run(solutionId);
+    const ins = db.prepare(`INSERT OR IGNORE INTO solution_widget_map(solution_id, widget_id) VALUES (?,?)`);
+    for (const widgetId of unique) ins.run(solutionId, widgetId);
   });
   tx();
   return unique;
@@ -332,8 +384,8 @@ function mergeSolutionInto(canonicalId: number, duplicateId: number): void {
   db.prepare(`DELETE FROM solution_widget_map WHERE solution_id=?`).run(duplicateId);
 
   db.prepare(`
-    INSERT OR IGNORE INTO solution_fs_map(solution_id, fs_item_id)
-    SELECT ?, fs_item_id FROM solution_fs_map WHERE solution_id=?
+    INSERT OR IGNORE INTO solution_fs_map(solution_id, fs_item_id, link_type)
+    SELECT ?, fs_item_id, link_type FROM solution_fs_map WHERE solution_id=?
   `).run(canonicalId, duplicateId);
   db.prepare(`DELETE FROM solution_fs_map WHERE solution_id=?`).run(duplicateId);
 

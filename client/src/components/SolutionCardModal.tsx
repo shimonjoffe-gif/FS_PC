@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { FsCatalogGroup, FsCatalogItem, Solution, SolutionDetail } from '../types';
+import type { FsCatalogGroup, FsCatalogItem, Solution, SolutionDetail, SolutionFsLink, SolutionFsLinkType, Widget } from '../types';
 import { YES_NO_BADGE_CLASS, yesNoClass, yesNoLabel } from '../utils/yesNoBadge';
+import { fsLinksFromMap, fsLinksToMap } from '../utils/fsLinkBadge';
 import SolutionFsPanel from './SolutionFsPanel';
+import SolutionWidgetsPanel from './SolutionWidgetsPanel';
+import { WidgetImageThumbnail } from './WidgetImagePreview';
 
 export type SolutionDraft = {
   name: string;
@@ -68,6 +71,96 @@ function HypothesisContextPanel({ solution }: { solution: SolutionDetail }) {
   );
 }
 
+function SelectedWidgetsList({ widgets }: { widgets: Widget[] }) {
+  if (widgets.length === 0) {
+    return <p className="text-xs text-slate-400">Нет сопоставленных виджетов</p>;
+  }
+  return (
+    <ul className="space-y-1.5">
+      {widgets.map(w => (
+        <li key={w.id} className="flex items-start gap-2 text-xs">
+          <WidgetImageThumbnail
+            imagePath={w.image_path}
+            name={w.name}
+            className="w-10 h-7 object-contain bg-white border border-slate-100 rounded shrink-0 cursor-pointer hover:border-slate-400"
+          />
+          <div className="min-w-0">
+            <div className="font-medium text-slate-800">{w.name}</div>
+            {w.description ? (
+              <div className="text-[10px] text-slate-500 line-clamp-2">{w.description}</div>
+            ) : null}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function MappingPickModal({
+  title,
+  subtitle,
+  saving,
+  onClose,
+  onSave,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  saving: boolean;
+  onClose: () => void;
+  onSave: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    }
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b border-slate-100 shrink-0">
+          <div className="text-sm font-semibold text-slate-800">{title}</div>
+          {subtitle ? <div className="text-[11px] text-slate-500 mt-0.5">{subtitle}</div> : null}
+        </div>
+        <div className="flex-1 min-h-0 overflow-hidden px-4 py-3">
+          {children}
+        </div>
+        <div className="px-4 py-3 border-t border-slate-100 flex justify-end gap-2 shrink-0">
+          <button
+            type="button"
+            className="text-sm px-3 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+            onClick={onClose}
+            disabled={saving}
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="text-sm px-3 py-1.5 rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+            onClick={onSave}
+            disabled={saving}
+          >
+            {saving ? 'Сохранение…' : 'Сохранить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SolutionCardModal({
   mode,
   solution,
@@ -76,8 +169,11 @@ export default function SolutionCardModal({
   hypothesisOptions,
   fsGroups,
   fsItems,
+  widgets,
   onLoadFsLinks,
   onSaveFsLinks,
+  onLoadWidgetLinks,
+  onSaveWidgetLinks,
   onClose,
   onSave,
   onDelete,
@@ -89,42 +185,58 @@ export default function SolutionCardModal({
   hypothesisOptions: string[];
   fsGroups: FsCatalogGroup[];
   fsItems: FsCatalogItem[];
-  onLoadFsLinks: (solutionId: number) => Promise<number[]>;
-  onSaveFsLinks: (solutionId: number, fsItemIds: number[]) => Promise<number[]>;
+  widgets: Widget[];
+  onLoadFsLinks: (solutionId: number) => Promise<SolutionFsLink[]>;
+  onSaveFsLinks: (solutionId: number, links: SolutionFsLink[]) => Promise<SolutionFsLink[]>;
+  onLoadWidgetLinks: (solutionId: number) => Promise<number[]>;
+  onSaveWidgetLinks: (solutionId: number, widgetIds: number[]) => Promise<number[]>;
   onClose: () => void;
   onSave: (draft: SolutionDraft) => void | Promise<void>;
   onDelete?: () => void | Promise<void>;
 }) {
   const [editing, setEditing] = useState(mode !== 'view');
-  const [editingFs, setEditingFs] = useState(false);
+  const [pickFsOpen, setPickFsOpen] = useState(false);
+  const [pickWidgetsOpen, setPickWidgetsOpen] = useState(false);
   const [draft, setDraft] = useState<SolutionDraft>(
     () => initialDraft ?? (solution ? solutionToDraft(solution) : emptySolutionDraft()),
   );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [fsSaving, setFsSaving] = useState(false);
-  const [fsIds, setFsIds] = useState<Set<number>>(() => new Set());
-  const [fsDraft, setFsDraft] = useState<Set<number>>(() => new Set());
+  const [widgetsSaving, setWidgetsSaving] = useState(false);
+  const [fsLinks, setFsLinks] = useState<Map<number, SolutionFsLinkType>>(() => new Map());
+  const [fsDraft, setFsDraft] = useState<Map<number, SolutionFsLinkType>>(() => new Map());
+  const [widgetIds, setWidgetIds] = useState<Set<number>>(() => new Set());
+  const [widgetDraft, setWidgetDraft] = useState<Set<number>>(() => new Set());
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (pickFsOpen || pickWidgetsOpen) return;
+        onClose();
+      }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, pickFsOpen, pickWidgetsOpen]);
 
   useEffect(() => {
     if (!solution || mode === 'create') return;
     let cancelled = false;
-    onLoadFsLinks(solution.id).then(ids => {
+    onLoadFsLinks(solution.id).then(links => {
+      if (cancelled) return;
+      const map = fsLinksToMap(links);
+      setFsLinks(map);
+      setFsDraft(map);
+    });
+    onLoadWidgetLinks(solution.id).then(ids => {
       if (cancelled) return;
       const set = new Set(ids);
-      setFsIds(set);
-      setFsDraft(set);
+      setWidgetIds(set);
+      setWidgetDraft(set);
     });
     return () => { cancelled = true; };
-  }, [solution?.id, mode, onLoadFsLinks]);
+  }, [solution?.id, mode, onLoadFsLinks, onLoadWidgetLinks]);
 
   const parentOptions = useMemo(() => {
     const hyp = draft.hypothesis.trim();
@@ -134,6 +246,14 @@ export default function SolutionCardModal({
       return true;
     });
   }, [allSolutions, draft.hypothesis, solution]);
+
+  const selectedWidgets = useMemo(() => {
+    const byId = new Map(widgets.map(w => [w.id, w]));
+    return [...widgetIds]
+      .map(id => byId.get(id))
+      .filter((w): w is Widget => w != null)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [widgets, widgetIds]);
 
   async function handleSave() {
     if (!draft.name.trim()) return;
@@ -151,18 +271,37 @@ export default function SolutionCardModal({
     if (!solution) return;
     setFsSaving(true);
     try {
-      const saved = await onSaveFsLinks(solution.id, [...fsDraft]);
-      setFsIds(new Set(saved));
-      setFsDraft(new Set(saved));
-      setEditingFs(false);
+      const saved = await onSaveFsLinks(solution.id, fsLinksFromMap(fsDraft));
+      const map = fsLinksToMap(saved);
+      setFsLinks(map);
+      setFsDraft(map);
+      setPickFsOpen(false);
     } finally {
       setFsSaving(false);
     }
   }
 
   function handleCancelFs() {
-    setFsDraft(new Set(fsIds));
-    setEditingFs(false);
+    setFsDraft(new Map(fsLinks));
+    setPickFsOpen(false);
+  }
+
+  async function handleSaveWidgets() {
+    if (!solution) return;
+    setWidgetsSaving(true);
+    try {
+      const saved = await onSaveWidgetLinks(solution.id, [...widgetDraft]);
+      setWidgetIds(new Set(saved));
+      setWidgetDraft(new Set(saved));
+      setPickWidgetsOpen(false);
+    } finally {
+      setWidgetsSaving(false);
+    }
+  }
+
+  function handleCancelWidgets() {
+    setWidgetDraft(new Set(widgetIds));
+    setPickWidgetsOpen(false);
   }
 
   async function handleDelete() {
@@ -300,50 +439,53 @@ export default function SolutionCardModal({
               <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Гипотезы и проблематики</div>
               <HypothesisContextPanel solution={solution} />
             </div>
-            <div className="flex flex-col min-h-0 px-4 py-3">
-              <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
-                <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Пункты ФС</div>
-                <div className="flex gap-1">
-                  {editingFs ? (
-                    <>
-                      <button
-                        type="button"
-                        className="text-[10px] px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
-                        onClick={handleCancelFs}
-                        disabled={fsSaving}
-                      >
-                        Отмена
-                      </button>
-                      <button
-                        type="button"
-                        className="text-[10px] px-2 py-1 rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
-                        onClick={handleSaveFs}
-                        disabled={fsSaving}
-                      >
-                        {fsSaving ? 'Сохранение…' : 'Сохранить'}
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      className="text-[10px] px-2 py-1 rounded border border-blue-200 text-blue-600 hover:bg-blue-50"
-                      onClick={() => { setFsDraft(new Set(fsIds)); setEditingFs(true); }}
-                    >
-                      Редактировать
-                    </button>
-                  )}
+            <div className="overflow-y-auto px-4 py-3 space-y-4">
+              <section>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
+                    Виджеты
+                    <span className="ml-1.5 font-normal text-slate-400 normal-case">({selectedWidgets.length})</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="text-[10px] px-2 py-1 rounded border border-blue-200 text-blue-600 hover:bg-blue-50"
+                    onClick={() => {
+                      setWidgetDraft(new Set(widgetIds));
+                      setPickWidgetsOpen(true);
+                    }}
+                  >
+                    Редактировать
+                  </button>
                 </div>
-              </div>
-              <div className="flex-1 min-h-0">
+                <SelectedWidgetsList widgets={selectedWidgets} />
+              </section>
+              <section className="border-t border-slate-100 pt-4">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
+                    Пункты ФС
+                    <span className="ml-1.5 font-normal text-slate-400 normal-case">({fsLinks.size})</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="text-[10px] px-2 py-1 rounded border border-blue-200 text-blue-600 hover:bg-blue-50"
+                    onClick={() => {
+                      setFsDraft(new Map(fsLinks));
+                      setPickFsOpen(true);
+                    }}
+                  >
+                    Редактировать
+                  </button>
+                </div>
                 <SolutionFsPanel
-                  key={solution.id}
                   groups={fsGroups}
                   items={fsItems}
-                  selectedIds={editingFs ? fsDraft : fsIds}
-                  editing={editingFs}
-                  onChange={setFsDraft}
+                  fsLinks={fsLinks}
+                  editing={false}
+                  onChange={() => {}}
+                  onlySelected
+                  compact
                 />
-              </div>
+              </section>
             </div>
           </div>
         ) : null}
@@ -384,7 +526,8 @@ export default function SolutionCardModal({
                 className="text-sm px-3 py-1.5 rounded bg-blue-500 text-white hover:bg-blue-600"
                 onClick={() => {
                   if (solution) setDraft(solutionToDraft(solution));
-                  setEditingFs(false);
+                  setPickFsOpen(false);
+                  setPickWidgetsOpen(false);
                   setEditing(true);
                 }}
               >
@@ -394,6 +537,41 @@ export default function SolutionCardModal({
           </div>
         </div>
       </div>
+
+      {pickWidgetsOpen && solution ? (
+        <MappingPickModal
+          title="Сопоставление с виджетами"
+          subtitle={solution.name}
+          saving={widgetsSaving}
+          onClose={handleCancelWidgets}
+          onSave={() => void handleSaveWidgets()}
+        >
+          <SolutionWidgetsPanel
+            widgets={widgets}
+            selectedIds={widgetDraft}
+            editing
+            onChange={setWidgetDraft}
+          />
+        </MappingPickModal>
+      ) : null}
+
+      {pickFsOpen && solution ? (
+        <MappingPickModal
+          title="Сопоставление с пунктами ФС"
+          subtitle={solution.name}
+          saving={fsSaving}
+          onClose={handleCancelFs}
+          onSave={() => void handleSaveFs()}
+        >
+          <SolutionFsPanel
+            groups={fsGroups}
+            items={fsItems}
+            fsLinks={fsDraft}
+            editing
+            onChange={setFsDraft}
+          />
+        </MappingPickModal>
+      ) : null}
     </div>
   );
 }

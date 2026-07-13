@@ -1,7 +1,7 @@
 import type {
   User, Project, ProjectRow, WorkReference, RefAuthor, BaseWork, Constants, HistoryEntry, RefType,
   Briefing, BriefingFull, BriefingCalcResult, Industry, Segment, MaturityLevel,
-  Problem, ProblemDetail, Solution, SolutionDetail, Widget, FsCatalogItem, FsCatalogGroup, FsCatalogItemsResponse, FsPhase, BriefingParams, CatalogLink,
+  Problem, ProblemDetail, Solution, SolutionDetail, SolutionFsLink, Widget, WidgetDetail, FsCatalogItem, FsCatalogGroup, FsCatalogItemsResponse, FsPhase, BriefingParams, CatalogLink,
   ProjectType, ProjectTypeRate, HeadcountCoefficient, BriefingAssessment,
   AssessmentScenarioSnapshot, FsNmdValue, HypothesisListItem, HypothesisDetail, ActivityType,
   ExportBlocks, ImportMode, BriefingImportPreview, BriefingImportResult,
@@ -91,16 +91,40 @@ export const getBriefings = () => req<Briefing[]>('/briefings');
 export const getBriefing = (id: number) => req<BriefingFull>(`/briefings/${id}`);
 export const createBriefing = (data: { name?: string; created_by?: number }) =>
   req<{ id: number }>('/briefings', { method: 'POST', body: JSON.stringify(data) });
-export const updateBriefing = (id: number, data: Partial<Briefing>) =>
+export const updateBriefing = (id: number, data: Partial<Briefing> & { industry_ids?: number[]; activity_type_ids?: number[] }) =>
   req<{ ok: boolean }>(`/briefings/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
 export const deleteBriefing = (id: number) =>
   req<{ ok: boolean }>(`/briefings/${id}`, { method: 'DELETE' });
-export const saveBriefingProblems = (id: number, selections: { problem_id?: number; custom_text?: string }[]) =>
+export const saveBriefingProblems = (
+  id: number,
+  selections: {
+    id?: number;
+    problem_id?: number | null;
+    custom_text?: string | null;
+    linked_problem_id?: number | null;
+  }[],
+) =>
   req<{ ok: boolean }>(`/briefings/${id}/problems`, { method: 'PUT', body: JSON.stringify({ selections }) });
-export const saveBriefingSolutions = (id: number, solution_ids: number[]) =>
-  req<{ ok: boolean }>(`/briefings/${id}/solutions`, { method: 'PUT', body: JSON.stringify({ solution_ids }) });
+export const saveBriefingSolutions = (
+  id: number,
+  selections: {
+    solution_id: number;
+    queue?: string;
+    queue_comment_json?: Record<string, string> | string | null;
+    source_problem_sel_id?: number | null;
+  }[],
+) =>
+  req<{ ok: boolean }>(`/briefings/${id}/solutions`, { method: 'PUT', body: JSON.stringify({ selections }) });
 export const saveBriefingWidgets = (id: number, selections: { solution_id: number; widget_id: number }[]) =>
   req<{ ok: boolean }>(`/briefings/${id}/widgets`, { method: 'PUT', body: JSON.stringify({ selections }) });
+export const saveBriefingCustomerWidgets = (
+  id: number,
+  selections: { widget_id: number; queue?: string }[],
+) =>
+  req<{ ok: boolean }>(`/briefings/${id}/customer-widgets`, {
+    method: 'PUT',
+    body: JSON.stringify({ selections }),
+  });
 export const saveBriefingFs = (
   id: number,
   payload: {
@@ -223,9 +247,17 @@ export const getIndustries = () => req<Industry[]>('/catalog/industries');
 export const getSegments = () => req<Segment[]>('/catalog/segments');
 export const getSegmentsByIndustry = (industryId: number) => req<Segment[]>(`/catalog/industry-segments/${industryId}`);
 export const getMaturityLevels = () => req<MaturityLevel[]>('/catalog/maturity-levels');
-export const getProblems = (filters?: { industry_id?: number; segment_id?: number; maturity_id?: number }) => {
+export const getProblems = (filters?: {
+  industry_id?: number;
+  industry_ids?: number[];
+  activity_type_ids?: number[];
+  segment_id?: number;
+  maturity_id?: number;
+}) => {
   const p = new URLSearchParams();
-  if (filters?.industry_id) p.set('industry_id', String(filters.industry_id));
+  if (filters?.activity_type_ids?.length) p.set('activity_type_ids', filters.activity_type_ids.join(','));
+  else if (filters?.industry_ids?.length) p.set('industry_ids', filters.industry_ids.join(','));
+  else if (filters?.industry_id) p.set('industry_id', String(filters.industry_id));
   if (filters?.segment_id) p.set('segment_id', String(filters.segment_id));
   if (filters?.maturity_id) p.set('maturity_id', String(filters.maturity_id));
   return req<Problem[]>(`/catalog/problems?${p}`);
@@ -277,11 +309,22 @@ export const deleteSolution = (id: number) =>
 export const deleteSolutionsByHypothesis = (hypothesisKey: string) =>
   req<{ ok: boolean; deleted: number; skipped_shared: number }>(`/catalog/solutions/by-hypothesis/${encodeURIComponent(hypothesisKey)}`, { method: 'DELETE' });
 export const getSolutionFsLinks = (solutionId: number) =>
-  req<{ fs_item_ids: number[] }>(`/catalog/solutions/${solutionId}/fs-links`);
-export const saveSolutionFsLinks = (solutionId: number, fs_item_ids: number[]) =>
-  req<{ fs_item_ids: number[] }>(`/catalog/solutions/${solutionId}/fs-links`, {
+  req<{ fs_links: SolutionFsLink[]; fs_item_ids: number[] }>(`/catalog/solutions/${solutionId}/fs-links`);
+export const getSolutionFsLinksAll = () =>
+  req<{ solution_id: number; fs_item_id: number; link_type?: SolutionFsLinkType; solution_name?: string; fs_name?: string }[]>(
+    '/catalog/links/solution-fs',
+  );
+export const saveSolutionFsLinks = (solutionId: number, fs_links: SolutionFsLink[]) =>
+  req<{ fs_links: SolutionFsLink[]; fs_item_ids: number[] }>(`/catalog/solutions/${solutionId}/fs-links`, {
     method: 'PUT',
-    body: JSON.stringify({ fs_item_ids }),
+    body: JSON.stringify({ fs_links }),
+  });
+export const getSolutionWidgetLinksForSolution = (solutionId: number) =>
+  req<{ widget_ids: number[] }>(`/catalog/solutions/${solutionId}/widget-links`);
+export const saveSolutionWidgetLinksForSolution = (solutionId: number, widget_ids: number[]) =>
+  req<{ widget_ids: number[] }>(`/catalog/solutions/${solutionId}/widget-links`, {
+    method: 'PUT',
+    body: JSON.stringify({ widget_ids }),
   });
 export const createProblem = (name: string) =>
   req<{ id: number; name: string }>('/catalog/problems', { method: 'POST', body: JSON.stringify({ name }) });
@@ -314,7 +357,15 @@ export const getActivityTypes = () => req<ActivityType[]>('/catalog/activity-typ
 export const createActivityType = (name: string) =>
   req<ActivityType>('/catalog/activity-types', { method: 'POST', body: JSON.stringify({ name }) });
 export const getWidgets = () => req<Widget[]>('/catalog/widgets');
+export const getWidget = (id: number) => req<WidgetDetail>(`/catalog/widgets/${id}`);
 export const getWidgetsBySolution = (solutionId: number) => req<Widget[]>(`/catalog/widgets-by-solution/${solutionId}`);
+export const getWidgetFsLinksForWidget = (widgetId: number) =>
+  req<{ fs_item_ids: number[] }>(`/catalog/widgets/${widgetId}/fs-links`);
+export const saveWidgetFsLinksForWidget = (widgetId: number, fs_item_ids: number[]) =>
+  req<{ fs_item_ids: number[] }>(`/catalog/widgets/${widgetId}/fs-links`, {
+    method: 'PUT',
+    body: JSON.stringify({ fs_item_ids }),
+  });
 export const getFsCatalog = () => req<FsCatalogItem[]>('/catalog/fs-catalog');
 export const getFsCatalogItems = () => req<FsCatalogItemsResponse>('/catalog/fs-catalog/items');
 export const createFsCatalogGroup = (name: string) =>
@@ -377,8 +428,26 @@ export const createWidget = (data: { name: string; description?: string; type?: 
   req<{ id: number }>('/catalog/widgets', { method: 'POST', body: JSON.stringify(data) });
 export const updateWidget = (id: number, data: Partial<Widget>) =>
   req<{ ok: boolean }>(`/catalog/widgets/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const uploadWidgetImage = async (widgetId: number, file: File): Promise<WidgetDetail> => {
+  const image_base64 = await readFileAsDataUrl(file);
+  return req<WidgetDetail>(`/catalog/widgets/${widgetId}/image`, {
+    method: 'POST',
+    body: JSON.stringify({ image_base64, filename: file.name }),
+  });
+};
+export const removeWidgetImage = (widgetId: number) =>
+  req<WidgetDetail>(`/catalog/widgets/${widgetId}/image`, { method: 'DELETE' });
 export const deleteWidget = (id: number) =>
   req<{ ok: boolean }>(`/catalog/widgets/${id}`, { method: 'DELETE' });
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
 
 export const getProblemSolutionLinks = () => req<CatalogLink[]>('/catalog/links/problem-solution');
 export const addProblemSolutionLink = (problem_id: number, solution_id: number) =>

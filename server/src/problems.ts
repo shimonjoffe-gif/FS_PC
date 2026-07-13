@@ -39,6 +39,8 @@ export interface ProblemDetail extends ProblemRow {
 
 export interface ProblemCatalogFilters {
   industry_id?: number;
+  industry_ids?: number[];
+  activity_type_ids?: number[];
   segment_id?: number;
   maturity_id?: number;
 }
@@ -68,8 +70,36 @@ export function listProblemsCatalog(filters?: ProblemCatalogFilters): ProblemRow
     WHERE 1=1
   `;
   const params: unknown[] = [];
-  if (filters?.industry_id) { sql += ` AND (p.industry_id=? OR p.industry_id IS NULL)`; params.push(filters.industry_id); }
-  if (filters?.segment_id) { sql += ` AND (p.segment_id=? OR p.segment_id IS NULL)`; params.push(filters.segment_id); }
+  const activityTypeIds = filters?.activity_type_ids?.length
+    ? [...new Set(filters.activity_type_ids)]
+    : [];
+  if (activityTypeIds.length > 0) {
+    sql += ` AND EXISTS (
+      SELECT 1 FROM hypothesis_problems hp
+      JOIN hypothesis_activity_types hat ON hat.hypothesis_id = hp.hypothesis_id
+      WHERE hp.problem_id = p.id
+        AND hat.activity_type_id IN (${activityTypeIds.map(() => '?').join(',')})
+    )`;
+    params.push(...activityTypeIds);
+  } else {
+    const industryIds = filters?.industry_ids?.length
+      ? [...new Set(filters.industry_ids)]
+      : filters?.industry_id
+        ? [filters.industry_id]
+        : [];
+    if (industryIds.length > 0) {
+      sql += ` AND EXISTS (
+        SELECT 1 FROM hypothesis_problems hp
+        JOIN hypothesis_activity_types hat ON hat.hypothesis_id = hp.hypothesis_id
+        JOIN activity_types at ON at.id = hat.activity_type_id
+        JOIN industries i ON i.name = at.name
+        WHERE hp.problem_id = p.id
+          AND i.id IN (${industryIds.map(() => '?').join(',')})
+      )`;
+      params.push(...industryIds);
+    }
+  }
+  if (filters?.segment_id) { sql += ` AND p.segment_id=?`; params.push(filters.segment_id); }
   if (filters?.maturity_id) { sql += ` AND (p.maturity_id=? OR p.maturity_id IS NULL)`; params.push(filters.maturity_id); }
   sql += ` ORDER BY p.sort_order, p.id`;
 

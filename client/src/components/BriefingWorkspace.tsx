@@ -1,8 +1,10 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import type {
   BriefingFull, Industry, Segment, MaturityLevel, Problem, Solution, Widget,
-  BriefingFsSel, BriefingParams, TeamProportions, BriefingFsDetailLine,
+  BriefingFsSel, BriefingSolutionSel, BriefingProblemSel, BriefingCustomerWidgetSel, BriefingParams,
+  TeamProportions, BriefingFsDetailLine,
   FsQueueKey, FsQueuesMap, BriefingAssessment, QueueLabelsMap, FsNmdValue, FsCatalogItem,
+  ActivityType, HypothesisListItem, CatalogLink, ProblemSolutionUsage,
 } from '../types';
 import {
   FS_QUEUE_KEYS, FS_QUEUE_LABELS, FS_NMD_VALUES, FS_FUNC_TYPE_VALUES,
@@ -12,11 +14,13 @@ import {
 import { groupFsItemsSorted } from '../utils/fsDisplayGroups';
 import {
   getBriefing, updateBriefing, saveBriefingProblems, saveBriefingSolutions,
-  saveBriefingWidgets, saveBriefingFs, saveBriefingParams, deriveBriefingFs,
+  saveBriefingWidgets, saveBriefingCustomerWidgets, saveBriefingFs, saveBriefingParams, deriveBriefingFs,
   generateProjectFromBriefing, patchBriefingAssessment,
   getBriefingAvailableFsCatalogItems, addBriefingFsCatalogItems,
-  getIndustries, getSegmentsByIndustry, getMaturityLevels, getProblems, getSolutions,
-  getWidgetsBySolution,
+  getIndustries, getSegments, getSegmentsByIndustry, getMaturityLevels, getProblems, getSolutions,
+  getProblemSolutionLinks,
+  getWidgets, getWidgetsBySolution, getSolutionWidgetLinks, getWidgetFsLinks,
+  getActivityTypes, getHypotheses, getSolutionFsLinksAll,
 } from '../api';
 import {
   applyAssessmentPatch, recomputeAssessmentDerived, computeAutoUnifiedRate, isUnifiedRateAutoMode,
@@ -34,6 +38,7 @@ import {
   resetFsItemQueueNmd,
   effectiveFsItemCommentForQueue,
   patchFsItemQueueComment,
+  appendFsItemQueueComment,
   relocateFsItemQueueOverrides,
   applyOrgQueueFieldPatch,
   resetTrainingEField,
@@ -48,6 +53,17 @@ import AssessmentTab from './AssessmentTab';
 import PhaseCalcTable from './PhaseCalcTable';
 import PhaseCalcParamsPanel from './PhaseCalcParamsPanel';
 import FsItemCardModal from './FsItemCardModal';
+import {
+  CustomProblemCards,
+  CustomProblemLinkModal,
+  CustomProblemSolutionsModal,
+  type FsItemTrace,
+} from './CustomProblemPanels';
+import {
+  CustomerWidgetsPanel,
+  WidgetSolutionsPickModal,
+} from './CustomerWidgetsPanel';
+import { WidgetImageThumbnail } from './WidgetImagePreview';
 import { countGroupUserItems, fsDetailLineFlags } from '../fsDetailLines';
 import {
   buildFsItemOptions,
@@ -88,14 +104,25 @@ import {
 import { computeAutoC89FromR81 } from '../phaseCalc';
 import { DEFAULT_TEAM } from '../teamLabels';
 import { yesNoLabel, yesNoClass } from '../utils/yesNoBadge';
+import {
+  buildSolutionDisplayUnits,
+  collectSolutionWithAncestors,
+  type SolutionDisplayUnit,
+} from '../utils/solutionDisplayGroups';
+import {
+  aggregateProblemGroupSelected,
+  buildProblemDisplayUnits,
+  collectProblemWithAncestors,
+  type ProblemDisplayUnit,
+} from '../utils/problemDisplayGroups';
 import { numericInputHandlers } from '../utils/numericInputHandlers';
 import { OverridableNumberInput } from './OverridableNumberInput';
 
-type Tab = 'customer' | 'problems' | 'solutions' | 'fs' | 'assessment' | 'params' | 'scenarios' | 'summary';
+type Tab = 'customer' | 'widgets' | 'solutions' | 'fs' | 'assessment' | 'params' | 'scenarios' | 'summary';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'customer', label: 'Заказчик' },
-  { id: 'problems', label: 'Проблематики' },
+  { id: 'widgets', label: 'Виджеты' },
   { id: 'solutions', label: 'Решения + виджеты' },
   { id: 'fs', label: 'ФС + очереди' },
   { id: 'assessment', label: 'Параметры оценки' },
@@ -171,21 +198,20 @@ function hasFsItemQueueComment(item: BriefingFsSel, q: FsQueueKey): boolean {
   return effectiveFsItemCommentForQueue(item, q).trim().length > 0;
 }
 
-function FsQueueCommentModal({
-  item,
-  queueKey,
-  queueLabels,
+function QueueCommentModal({
+  title,
+  subtitle,
+  initialText,
   onClose,
   onSave,
 }: {
-  item: BriefingFsSel;
-  queueKey: FsQueueKey;
-  queueLabels: QueueLabelsMap;
+  title: string;
+  subtitle: string;
+  initialText: string;
   onClose: () => void;
   onSave: (text: string) => void;
 }) {
-  const [draft, setDraft] = useState(() => effectiveFsItemCommentForQueue(item, queueKey));
-  const qLabel = queueLabel(queueLabels, queueKey);
+  const [draft, setDraft] = useState(initialText);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -203,9 +229,9 @@ function FsQueueCommentModal({
       >
         <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-100">
           <div className="min-w-0">
-            <div className="text-sm font-medium text-slate-800">Комментарий — {qLabel}</div>
-            <div className="text-[11px] text-slate-500 mt-0.5 truncate" title={item.name}>
-              {item.prefix ? `${item.prefix} · ` : ''}{item.name}
+            <div className="text-sm font-medium text-slate-800">{title}</div>
+            <div className="text-[11px] text-slate-500 mt-0.5 truncate" title={subtitle}>
+              {subtitle}
             </div>
           </div>
           <button
@@ -247,6 +273,31 @@ function FsQueueCommentModal({
   );
 }
 
+function FsQueueCommentModal({
+  item,
+  queueKey,
+  queueLabels,
+  onClose,
+  onSave,
+}: {
+  item: BriefingFsSel;
+  queueKey: FsQueueKey;
+  queueLabels: QueueLabelsMap;
+  onClose: () => void;
+  onSave: (text: string) => void;
+}) {
+  const qLabel = queueLabel(queueLabels, queueKey);
+  return (
+    <QueueCommentModal
+      title={`Комментарий — ${qLabel}`}
+      subtitle={`${item.prefix ? `${item.prefix} · ` : ''}${item.name}`}
+      initialText={effectiveFsItemCommentForQueue(item, queueKey)}
+      onClose={onClose}
+      onSave={onSave}
+    />
+  );
+}
+
 function parseJsonRecord<T extends Record<string, unknown>>(raw: string | T | null | undefined): T | null {
   if (!raw) return null;
   if (typeof raw === 'object') return Object.keys(raw).length > 0 ? raw : null;
@@ -276,6 +327,31 @@ function serializeQueueNmdForSave(item: BriefingFsSel): Record<string, FsNmdValu
 
 function serializeQueueCommentForSave(item: BriefingFsSel): Record<string, string> | null {
   return parseJsonRecord<Record<string, string>>(item.queue_comment_json);
+}
+
+function solutionQueueComments(sel: BriefingSolutionSel): Record<string, string> {
+  return parseJsonRecord<Record<string, string>>(sel.queue_comment_json) ?? {};
+}
+
+function hasSolutionQueueComment(sel: BriefingSolutionSel, q: FsQueueKey): boolean {
+  return !!solutionQueueComments(sel)[q]?.trim();
+}
+
+function effectiveSolutionCommentForQueue(sel: BriefingSolutionSel, q: FsQueueKey): string {
+  return solutionQueueComments(sel)[q] ?? '';
+}
+
+function patchSolutionQueueComment(sel: BriefingSolutionSel, q: FsQueueKey, text: string): Partial<BriefingSolutionSel> {
+  const comments = { ...solutionQueueComments(sel) };
+  const trimmed = text.trim();
+  if (trimmed) comments[q] = trimmed;
+  else delete comments[q];
+  return { queue_comment_json: Object.keys(comments).length > 0 ? comments : null };
+}
+
+function serializeSolutionQueueCommentForSave(sel: BriefingSolutionSel): Record<string, string> | null {
+  const comments = solutionQueueComments(sel);
+  return Object.keys(comments).length > 0 ? comments : null;
 }
 
 function serializeDetailLines(item: BriefingFsSel) {
@@ -362,6 +438,26 @@ function aggregateGroupQueues(groupItems: BriefingFsSel[]): { allOn: boolean; by
     for (const q of FS_QUEUE_KEYS) {
       if (flags.byQueue[q]) byQueue[q] = true;
     }
+  }
+  return { allOn, byQueue };
+}
+
+function solutionSelectionQueue(sel: BriefingSolutionSel): FsQueueKey {
+  const q = String(sel.queue ?? '1') as FsQueueKey;
+  return FS_QUEUE_KEYS.includes(q) ? q : '1';
+}
+
+function aggregateSolutionGroupQueues(
+  members: Solution[],
+  selected: BriefingSolutionSel[],
+): { allOn: boolean; byQueue: Record<FsQueueKey, boolean> } {
+  const byQueue = Object.fromEntries(FS_QUEUE_KEYS.map(q => [q, false])) as Record<FsQueueKey, boolean>;
+  let allOn = false;
+  for (const member of members) {
+    const sel = selected.find(s => s.id === member.id);
+    if (!sel) continue;
+    allOn = true;
+    byQueue[solutionSelectionQueue(sel)] = true;
   }
   return { allOn, byQueue };
 }
@@ -563,6 +659,645 @@ function EditableQueueHeader({
   );
 }
 
+function briefingActivityTypeIds(data: Pick<BriefingFull, 'activity_type_ids' | 'industry_ids' | 'industry_id'>): number[] {
+  if (data.activity_type_ids?.length) return data.activity_type_ids;
+  return [];
+}
+
+function ChipMultiSelect({
+  items,
+  selectedIds,
+  onChange,
+  emptyLabel = 'Справочник пуст',
+}: {
+  items: { id: number; name: string }[];
+  selectedIds: number[];
+  onChange: (ids: number[]) => void;
+  emptyLabel?: string;
+}) {
+  function toggle(id: number) {
+    onChange(selectedIds.includes(id) ? selectedIds.filter(x => x !== id) : [...selectedIds, id]);
+  }
+
+  if (items.length === 0) {
+    return <p className="text-xs text-slate-400">{emptyLabel}</p>;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {items.map(item => {
+        const on = selectedIds.includes(item.id);
+        return (
+          <button
+            key={item.id}
+            type="button"
+            className={`text-[11px] leading-tight px-1.5 py-0.5 rounded border whitespace-nowrap ${
+              on ? 'bg-blue-50 border-blue-300 text-blue-800' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+            onClick={() => toggle(item.id)}
+          >
+            {item.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProblemsSelectTable({
+  units,
+  selectedIds,
+  isUnmatched,
+  solutionsByProblemId,
+  onProblemsChange,
+}: {
+  units: ProblemDisplayUnit[];
+  selectedIds: Set<number>;
+  isUnmatched: (problemId: number) => boolean;
+  solutionsByProblemId: Map<number, ProblemSolutionUsage[]>;
+  onProblemsChange: (changes: { problemId: number; selected: boolean }[]) => void;
+}) {
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(() => new Set());
+  const [expandedSolutions, setExpandedSolutions] = useState<Set<number>>(() => new Set());
+
+  function toggleGroup(parentId: number) {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      return next;
+    });
+  }
+
+  function toggleSolutionsExpand(problemId: number) {
+    setExpandedSolutions(prev => {
+      const next = new Set(prev);
+      if (next.has(problemId)) next.delete(problemId);
+      else next.add(problemId);
+      return next;
+    });
+  }
+
+  function toggleProblem(
+    problem: Problem,
+    group?: { parentId: number; siblings: Problem[] },
+  ) {
+    const isYes = selectedIds.has(problem.id);
+    const changes: { problemId: number; selected: boolean }[] = [];
+
+    if (isYes) {
+      changes.push({ problemId: problem.id, selected: false });
+      if (group) {
+        const anySibling = group.siblings
+          .some(s => s.id !== problem.id && selectedIds.has(s.id));
+        if (!anySibling) {
+          changes.push({ problemId: group.parentId, selected: false });
+        }
+      }
+    } else {
+      changes.push({ problemId: problem.id, selected: true });
+      if (group) {
+        changes.push({ problemId: group.parentId, selected: true });
+      }
+    }
+
+    onProblemsChange(changes);
+  }
+
+  function renderProblemMeta(problem: Problem) {
+    const meta = [problem.segment_name, problem.maturity_name].filter(Boolean).join(' · ');
+    if (!meta) return null;
+    return <div className="text-[10px] text-slate-400 mt-0.5">{meta}</div>;
+  }
+
+  function renderRow(
+    problem: Problem,
+    opts: {
+      indent?: number;
+      variant: 'parent' | 'child' | 'standalone';
+      groupParentId?: number;
+      groupChildren?: Problem[];
+      groupSiblings?: Problem[];
+    },
+  ) {
+    const isGroupParent = opts.variant === 'parent' && (opts.groupChildren?.length ?? 0) > 0;
+    const groupMembers = isGroupParent ? [problem, ...(opts.groupChildren ?? [])] : [problem];
+    const groupSelected = isGroupParent
+      ? aggregateProblemGroupSelected(groupMembers, selectedIds)
+      : selectedIds.has(problem.id);
+    const isYes = groupSelected;
+    const unmatched = isUnmatched(problem.id);
+    const titleClass = opts.variant === 'parent'
+      ? 'text-sm font-semibold text-slate-800'
+      : opts.variant === 'child'
+        ? 'text-sm font-medium text-slate-700'
+        : 'text-sm font-medium text-slate-800';
+    const groupCtx = opts.variant === 'child' && opts.groupParentId != null && opts.groupSiblings
+      ? { parentId: opts.groupParentId, siblings: opts.groupSiblings }
+      : undefined;
+    const solutions = solutionsByProblemId.get(problem.id) ?? [];
+    const solutionsExpanded = expandedSolutions.has(problem.id);
+
+    return (
+      <tr
+        key={problem.id}
+        className={`${isYes ? 'bg-blue-50/20' : ''} ${opts.variant === 'parent' ? 'bg-amber-50/40' : ''}`}
+      >
+        <td className="p-2 border align-top" style={{ paddingLeft: `${8 + (opts.indent ?? 0)}px` }}>
+          <div className="flex items-start gap-1">
+            {opts.variant === 'parent' && opts.groupParentId != null ? (
+              <button
+                type="button"
+                className="text-slate-500 hover:text-slate-800 w-5 h-5 leading-none shrink-0 mt-0.5"
+                title={collapsedGroups.has(opts.groupParentId) ? 'Развернуть группу' : 'Свернуть группу'}
+                onClick={() => toggleGroup(opts.groupParentId!)}
+              >
+                {collapsedGroups.has(opts.groupParentId) ? '▶' : '▼'}
+              </button>
+            ) : (
+              <span className="w-5 shrink-0" aria-hidden />
+            )}
+            {solutions.length > 0 ? (
+              <button
+                type="button"
+                className="text-slate-400 hover:text-slate-700 shrink-0 mt-0.5 text-[10px] leading-none px-0.5"
+                title="Показать/скрыть решения"
+                onClick={() => toggleSolutionsExpand(problem.id)}
+              >
+                {solutionsExpanded ? '▾' : '▸'} реш. ({solutions.length})
+              </button>
+            ) : null}
+            <div className="min-w-0">
+              <div className={`${titleClass} ${unmatched ? 'italic text-slate-500' : ''}`}>
+                {problem.catalog_code ? (
+                  <span className="text-slate-400 font-normal mr-1 font-mono text-[11px]">{problem.catalog_code}</span>
+                ) : null}
+                {problem.name}
+              </div>
+              {renderProblemMeta(problem)}
+              {unmatched && (
+                <div className="text-[10px] text-slate-400 italic mt-0.5">
+                  не подходит под виды деятельности/сегмент
+                </div>
+              )}
+              {solutionsExpanded && solutions.length > 0 && (
+                <ul className="mt-1.5 pl-2 border-l-2 border-slate-200 space-y-0.5">
+                  {solutions.map(solution => (
+                    <li key={solution.id} className="text-[11px] text-slate-600">
+                      <span className="text-slate-400 font-mono mr-1">
+                        {solution.catalog_code ?? solution.lcm_code ?? '—'}
+                      </span>
+                      {solution.name}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </td>
+        <td className="p-1 border text-center align-top w-24">
+          {isGroupParent ? (
+            <span className={`inline-block px-2 py-0.5 rounded min-w-[36px] ${yesNoClass(isYes)}`}>
+              {yesNoLabel(isYes)}
+            </span>
+          ) : (
+            <button
+              type="button"
+              className={`px-2 py-0.5 rounded min-w-[36px] cursor-pointer ${
+                yesNoClass(isYes, !isYes && unmatched)
+              }`}
+              title={isYes ? 'Клик — снять выбор' : 'Клик — выбрать проблематику'}
+              onClick={() => toggleProblem(problem, groupCtx)}
+            >
+              {yesNoLabel(isYes)}
+            </button>
+          )}
+        </td>
+      </tr>
+    );
+  }
+
+  const totalRows = units.reduce((n, u) => {
+    if (u.kind === 'group') return n + 1 + (collapsedGroups.has(u.parent.id) ? 0 : u.children.length);
+    return n + 1;
+  }, 0);
+
+  return (
+    <div className="overflow-x-auto border rounded">
+      <table className="w-full text-xs border-collapse min-w-[480px]">
+        <thead className="sticky top-0 z-10">
+          <tr className="bg-slate-50 text-slate-600">
+            <th className="text-left p-2 border min-w-[280px] bg-slate-50">Проблематика</th>
+            <th className="text-center p-2 border w-24 bg-slate-50">Да/Нет</th>
+          </tr>
+        </thead>
+        <tbody>
+          {totalRows === 0 && (
+            <tr>
+              <td colSpan={2} className="p-4 text-center text-slate-400">
+                Нет проблематик для отображения. Укажите виды деятельности/сегмент или нажмите «Показать все».
+              </td>
+            </tr>
+          )}
+          {units.map(unit => {
+            if (unit.kind === 'group') {
+              const rows = [
+                renderRow(unit.parent, {
+                  variant: 'parent',
+                  groupParentId: unit.parent.id,
+                  groupChildren: unit.children,
+                }),
+              ];
+              if (!collapsedGroups.has(unit.parent.id)) {
+                for (const child of unit.children) {
+                  rows.push(renderRow(child, {
+                    variant: 'child',
+                    indent: 12,
+                    groupParentId: unit.parent.id,
+                    groupSiblings: unit.children,
+                  }));
+                }
+              }
+              return <React.Fragment key={`g-${unit.parent.id}`}>{rows}</React.Fragment>;
+            }
+            return renderRow(unit.item, { variant: 'standalone' });
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SolutionsQueueTable({
+  units,
+  isUnmatched,
+  selected,
+  solutionWidgets,
+  widgetSelections,
+  queueLabels,
+  onQueueLabelChange,
+  onSolutionsChange,
+  onToggleWidget,
+}: {
+  units: SolutionDisplayUnit[];
+  isUnmatched: (solutionId: number) => boolean;
+  selected: BriefingSolutionSel[];
+  solutionWidgets: Record<number, Widget[]>;
+  widgetSelections: { solution_id: number; widget_id: number }[];
+  queueLabels: QueueLabelsMap;
+  onQueueLabelChange: (q: FsQueueKey, label: string) => void;
+  onSolutionsChange: (changes: { solutionId: number; next: BriefingSolutionSel | null }[]) => void;
+  onToggleWidget: (solutionId: number, widgetId: number) => void;
+}) {
+  const [commentModal, setCommentModal] = useState<{ sol: BriefingSolutionSel; q: FsQueueKey } | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(() => new Set());
+
+  const solutionById = useMemo(() => {
+    const map = new Map<number, Solution>();
+    for (const unit of units) {
+      if (unit.kind === 'group') {
+        map.set(unit.parent.id, unit.parent);
+        for (const child of unit.children) map.set(child.id, child);
+      } else {
+        map.set(unit.item.id, unit.item);
+      }
+    }
+    return map;
+  }, [units]);
+
+  function findSelected(solutionId: number): BriefingSolutionSel | undefined {
+    return selected.find(s => s.id === solutionId);
+  }
+
+  function makeSolutionSelection(
+    sol: Solution,
+    q: FsQueueKey,
+    prev?: BriefingSolutionSel | null,
+  ): BriefingSolutionSel {
+    return {
+      ...(prev ?? sol),
+      id: sol.id,
+      name: sol.name,
+      description: sol.description,
+      queue: q,
+      queue_comment_json: prev?.queue_comment_json ?? null,
+    };
+  }
+
+  function toggleSolutionQueue(
+    sol: Solution,
+    q: FsQueueKey,
+    group?: { parentId: number; siblings: Solution[] },
+  ) {
+    const cur = findSelected(sol.id);
+    const changes: { solutionId: number; next: BriefingSolutionSel | null }[] = [];
+
+    if (cur && solutionSelectionQueue(cur) === q) {
+      changes.push({ solutionId: sol.id, next: null });
+      if (group) {
+        const anySiblingSelected = group.siblings
+          .some(s => s.id !== sol.id && findSelected(s.id));
+        if (!anySiblingSelected) {
+          changes.push({ solutionId: group.parentId, next: null });
+        }
+      }
+    } else {
+      changes.push({ solutionId: sol.id, next: makeSolutionSelection(sol, q, cur) });
+      if (group) {
+        const parent = solutionById.get(group.parentId);
+        if (parent) {
+          changes.push({
+            solutionId: group.parentId,
+            next: makeSolutionSelection(parent, q, findSelected(group.parentId)),
+          });
+        }
+      }
+    }
+
+    onSolutionsChange(changes);
+  }
+
+  function openCommentModal(sol: Solution, q: FsQueueKey) {
+    const sel = findSelected(sol.id);
+    if (!sel || solutionSelectionQueue(sel) !== q) return;
+    setCommentModal({ sol: sel, q });
+  }
+
+  function renderCommentCell(sol: Solution, q: FsQueueKey, readOnly = false) {
+    if (readOnly) {
+      return <td key={`${sol.id}-${q}-comment`} className="p-1 border text-center align-middle w-9 min-h-[2rem]" />;
+    }
+    const sel = findSelected(sol.id);
+    const canComment = !!sel && solutionSelectionQueue(sel) === q;
+    const hasComment = canComment && hasSolutionQueueComment(sel, q);
+    const cellClass = `p-1 border text-center align-middle w-9 min-h-[2rem] ${
+      canComment ? 'cursor-pointer hover:bg-slate-50' : ''
+    }`;
+
+    if (!canComment) {
+      return (
+        <td key={`${sol.id}-${q}-comment`} className={cellClass} />
+      );
+    }
+
+    if (!hasComment) {
+      return (
+        <td
+          key={`${sol.id}-${q}-comment`}
+          className={cellClass}
+          onClick={() => openCommentModal(sol, q)}
+          title="Добавить комментарий"
+          aria-label="Добавить комментарий"
+        />
+      );
+    }
+
+    return (
+      <td key={`${sol.id}-${q}-comment`} className={cellClass}>
+        <button
+          type="button"
+          onClick={() => openCommentModal(sol, q)}
+          className="w-7 h-7 mx-auto rounded inline-flex items-center justify-center text-amber-700 bg-amber-100 hover:bg-amber-200 ring-1 ring-amber-300/60"
+          title="Клик — открыть комментарий"
+          aria-label="Есть комментарий"
+        >
+          <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 fill-current" aria-hidden>
+            <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v5A1.5 1.5 0 0 1 12.5 10H9l-2.5 2.5V10H3.5A1.5 1.5 0 0 1 2 8.5v-5Z" />
+          </svg>
+        </button>
+      </td>
+    );
+  }
+
+  function toggleGroup(parentId: number) {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(parentId)) next.delete(parentId);
+      else next.add(parentId);
+      return next;
+    });
+  }
+
+  function renderSolutionRow(
+    sol: Solution,
+    opts: {
+      indent?: number;
+      variant: 'parent' | 'child' | 'standalone';
+      groupParentId?: number;
+      groupChildren?: Solution[];
+      groupSiblings?: Solution[];
+    },
+  ) {
+    const sel = findSelected(sol.id);
+    const isGroupParent = opts.variant === 'parent' && (opts.groupChildren?.length ?? 0) > 0;
+    const groupMembers = isGroupParent ? [sol, ...(opts.groupChildren ?? [])] : [];
+    const groupQueues = isGroupParent
+      ? aggregateSolutionGroupQueues(groupMembers, selected)
+      : null;
+    const isSelected = isGroupParent ? groupQueues!.allOn : !!sel;
+    const widgets = solutionWidgets[sol.id] ?? [];
+    const unmatchedProblem = isUnmatched(sol.id);
+    const titleClass = opts.variant === 'parent'
+      ? 'text-sm font-semibold text-slate-800'
+      : opts.variant === 'child'
+        ? 'text-sm font-medium text-slate-700'
+        : 'text-sm font-medium text-slate-800';
+
+    return (
+      <tr
+        key={sol.id}
+        className={`${isSelected ? 'bg-blue-50/20' : ''} ${opts.variant === 'parent' ? 'bg-amber-50/40' : ''}`}
+      >
+        <td className="p-2 border align-top" style={{ paddingLeft: `${8 + (opts.indent ?? 0)}px` }}>
+          <div className="flex items-start gap-1">
+            {opts.variant === 'parent' && opts.groupParentId != null ? (
+              <button
+                type="button"
+                className="text-slate-500 hover:text-slate-800 w-5 h-5 leading-none shrink-0 mt-0.5"
+                title={collapsedGroups.has(opts.groupParentId) ? 'Развернуть группу' : 'Свернуть группу'}
+                onClick={() => toggleGroup(opts.groupParentId!)}
+              >
+                {collapsedGroups.has(opts.groupParentId) ? '▶' : '▼'}
+              </button>
+            ) : (
+              <span className="w-5 shrink-0" aria-hidden />
+            )}
+            <div className="min-w-0">
+              <div className={`${titleClass} ${unmatchedProblem ? 'italic text-slate-500' : ''}`}>
+                {sol.name}
+              </div>
+              {sol.description && (
+                <div className={`text-[10px] text-slate-500 mt-0.5 line-clamp-3 ${unmatchedProblem ? 'italic' : ''}`}>
+                  {sol.description}
+                </div>
+              )}
+              {unmatchedProblem && (
+                <div className="text-[10px] text-slate-400 italic mt-0.5">не связано с выбранными проблематиками</div>
+              )}
+            </div>
+          </div>
+        </td>
+        <td className="p-2 border align-top">
+          {!isSelected && <span className="text-slate-300">—</span>}
+          {isSelected && widgets.length === 0 && (
+            <span className="text-[10px] text-slate-400">Нет виджетов</span>
+          )}
+          {isSelected && widgets.length > 0 && (
+            <div className="space-y-1">
+              {widgets.map(w => (
+                <label key={w.id} className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 shrink-0"
+                    checked={widgetSelections.some(
+                      bw => bw.solution_id === sol.id && bw.widget_id === w.id,
+                    )}
+                    onChange={() => onToggleWidget(sol.id, w.id)}
+                  />
+                  <WidgetImageThumbnail
+                    imagePath={w.image_path}
+                    name={w.name}
+                    className="w-12 h-8 object-contain bg-white border border-slate-100 rounded shrink-0 cursor-pointer hover:border-slate-400"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-xs">{w.name}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+        </td>
+        {FS_QUEUE_KEYS.flatMap(q => {
+          const isYes = isGroupParent
+            ? groupQueues!.byQueue[q]
+            : sel ? solutionSelectionQueue(sel) === q : false;
+          const unmatched = !isSelected;
+          const groupCtx = opts.variant === 'child' && opts.groupParentId != null && opts.groupSiblings
+            ? { parentId: opts.groupParentId, siblings: opts.groupSiblings }
+            : undefined;
+          return [
+            <td key={`${sol.id}-${q}-yes`} className="p-1 border text-center align-top">
+              {isGroupParent ? (
+                <span className={`inline-block px-2 py-0.5 rounded min-w-[36px] ${yesNoClass(isYes)}`}>
+                  {yesNoLabel(isYes)}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className={`px-2 py-0.5 rounded min-w-[36px] cursor-pointer ${
+                    yesNoClass(isYes, unmatched && !isYes)
+                  }`}
+                  title={isYes ? 'Клик — снять решение с очереди' : 'Клик — назначить решение в очередь'}
+                  onClick={() => toggleSolutionQueue(sol, q, groupCtx)}
+                >
+                  {yesNoLabel(isYes)}
+                </button>
+              )}
+            </td>,
+            renderCommentCell(sol, q, isGroupParent),
+          ];
+        })}
+      </tr>
+    );
+  }
+
+  const totalRows = units.reduce((n, u) => {
+    if (u.kind === 'group') return n + 1 + (collapsedGroups.has(u.parent.id) ? 0 : u.children.length);
+    return n + 1;
+  }, 0);
+
+  return (
+    <>
+      {commentModal && (
+        <QueueCommentModal
+          key={`${commentModal.sol.id}-${commentModal.q}`}
+          title={`Комментарий — ${queueLabel(queueLabels, commentModal.q)}`}
+          subtitle={commentModal.sol.name}
+          initialText={effectiveSolutionCommentForQueue(commentModal.sol, commentModal.q)}
+          onClose={() => setCommentModal(null)}
+          onSave={text => {
+            const cur = findSelected(commentModal.sol.id);
+            if (!cur) {
+              setCommentModal(null);
+              return;
+            }
+            onSolutionsChange([{
+              solutionId: commentModal.sol.id,
+              next: { ...cur, ...patchSolutionQueueComment(cur, commentModal.q, text) },
+            }]);
+            setCommentModal(null);
+          }}
+        />
+      )}
+      <div className="overflow-x-auto border rounded">
+      <table className="w-full text-xs border-collapse min-w-[720px]">
+        <thead className="sticky top-0 z-10">
+          <tr className="bg-slate-50 text-slate-600">
+            <th rowSpan={2} className="text-left p-2 border min-w-[220px] bg-slate-50">Решение</th>
+            <th rowSpan={2} className="text-left p-2 border min-w-[180px] bg-slate-50">Виджеты</th>
+            {FS_QUEUE_KEYS.flatMap(q => [
+              <th key={`${q}-main`} className="text-center p-2 border bg-slate-50">
+                <EditableQueueHeader
+                  label={queueLabel(queueLabels, q)}
+                  onChange={next => onQueueLabelChange(q, next)}
+                />
+              </th>,
+              <th
+                key={`${q}-cmt`}
+                rowSpan={2}
+                className="text-center p-2 border w-10 bg-slate-50"
+                title={`Комментарий — ${queueLabel(queueLabels, q)}`}
+              >
+                Коммент.
+              </th>,
+            ])}
+          </tr>
+          <tr className="bg-slate-50/80 text-[10px] text-slate-500">
+            {FS_QUEUE_KEYS.map(q => (
+              <th key={`${q}-yn`} className="p-1 text-center font-normal border">
+                Да/Нет
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {totalRows === 0 && (
+            <tr>
+              <td colSpan={2 + FS_QUEUE_KEYS.length * 2} className="p-4 text-center text-slate-400">
+                Нет решений для отображения. Выберите проблематики на предыдущей вкладке или нажмите «Показать все решения».
+              </td>
+            </tr>
+          )}
+          {units.map(unit => {
+            if (unit.kind === 'group') {
+              const rows = [
+                renderSolutionRow(unit.parent, {
+                  variant: 'parent',
+                  groupParentId: unit.parent.id,
+                  groupChildren: unit.children,
+                }),
+              ];
+              if (!collapsedGroups.has(unit.parent.id)) {
+                for (const child of unit.children) {
+                  rows.push(renderSolutionRow(child, {
+                    variant: 'child',
+                    indent: 12,
+                    groupParentId: unit.parent.id,
+                    groupSiblings: unit.children,
+                  }));
+                }
+              }
+              return <React.Fragment key={`g-${unit.parent.id}`}>{rows}</React.Fragment>;
+            }
+            return renderSolutionRow(unit.item, { variant: 'standalone' });
+          })}
+        </tbody>
+      </table>
+    </div>
+    </>
+  );
+}
+
 function FsQueueTable({
   items,
   onChange,
@@ -571,6 +1306,8 @@ function FsQueueTable({
   onQueueLabelChange,
   onAddCustomerItem,
   onDeleteCustomerItem,
+  fsTraceByItemId,
+  requiredSolutionsByFsItemId,
 }: {
   items: BriefingFsSel[];
   onChange: (item: BriefingFsSel, patch: Partial<BriefingFsSel>) => void;
@@ -579,6 +1316,8 @@ function FsQueueTable({
   onQueueLabelChange: (q: FsQueueKey, label: string) => void;
   onAddCustomerItem?: (groupPrefix: CustomerFsGroupPrefix, groupName: string) => void;
   onDeleteCustomerItem?: (item: BriefingFsSel) => void;
+  fsTraceByItemId?: Map<number, FsItemTrace>;
+  requiredSolutionsByFsItemId?: Map<number, { id: number; name: string }[]>;
 }) {
   const [dragPayload, setDragPayload] = useState<FsDragPayload | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
@@ -893,7 +1632,7 @@ function FsQueueTable({
     container.scrollTop += delta;
   }, [expandedGroups]);
 
-  function patchQueues(item: BriefingFsSel, queues: FsQueuesMap) {
+  function patchQueues(item: BriefingFsSel, queues: FsQueuesMap, extra: Partial<BriefingFsSel> = {}) {
     const primary = FS_QUEUE_KEYS.find(k => queues[k] === 1) ?? item.queue ?? '1';
     const enabled = anyQueueEnabled(queues) ? 1 : 0;
     const patch: Partial<BriefingFsSel> = {
@@ -901,6 +1640,7 @@ function FsQueueTable({
       queue: primary,
       enabled,
       source: 'manual',
+      ...extra,
     };
     if (item.matched === false) patch.matched = true;
     onChange(item, patch);
@@ -909,8 +1649,30 @@ function FsQueueTable({
   function toggleQueue(item: BriefingFsSel, q: FsQueueKey) {
     const row = latestItem(item);
     const queues = { ...itemQueues(row) };
-    queues[q] = queues[q] ? 0 : 1;
-    patchQueues(row, queues);
+    if (!queues[q]) {
+      queues[q] = 1;
+      patchQueues(row, queues);
+      return;
+    }
+    const nextQueues: FsQueuesMap = { ...queues, [q]: 0 };
+    const willDisable = !anyQueueEnabled(nextQueues);
+    const requiredSolutions = requiredSolutionsByFsItemId?.get(row.fs_item_id) ?? [];
+    if (willDisable && requiredSolutions.length > 0) {
+      const names = requiredSolutions.map(s => `• ${s.name}`).join('\n');
+      const label = row.name?.trim() || `пункт ${row.prefix ?? row.fs_item_id}`;
+      const ok = confirm(
+        `Пункт ФС «${label}» обязателен для решений:\n\n${names}\n\nЕсли снять «Да», эти решения не будут считаться выполненными.\n\nСнять пункт ФС?`,
+      );
+      if (!ok) return;
+      const dateStr = new Date().toLocaleDateString('ru-RU');
+      const noteLines = requiredSolutions.map(
+        s => `пункт снят ${dateStr}, решение «${s.name}» не выполняется`,
+      );
+      const commentPatch = appendFsItemQueueComment(row, q, noteLines);
+      patchQueues(row, nextQueues, commentPatch);
+      return;
+    }
+    patchQueues(row, nextQueues);
   }
 
   function moveToQueue(item: BriefingFsSel, fromQueue: FsQueueKey, targetQueue: FsQueueKey) {
@@ -1084,6 +1846,7 @@ function FsQueueTable({
         <FsItemCardModal
           item={latestItem(cardModalItem)}
           moveTargets={moveTargets.filter(t => t.fs_item_id !== cardModalItem.fs_item_id)}
+          fsTrace={fsTraceByItemId?.get(cardModalItem.fs_item_id)}
           onClose={() => setCardModalItem(null)}
           onSave={patch => {
             const row = items.find(i => i.fs_item_id === cardModalItem.fs_item_id) ?? cardModalItem;
@@ -1429,9 +2192,21 @@ function FsQueueTable({
                         </>
                       )}
                       <td className="p-2 border text-[10px] text-slate-400">
-                        {(item.matched_widgets ?? []).length > 0
-                          ? `${item.matched_widgets!.length} выбрано`
-                          : '—'}
+                        {(item.matched_widgets ?? []).length > 0 ? (
+                          <div className="flex flex-wrap gap-1 items-center">
+                            {item.matched_widgets!.map(w => (
+                              <WidgetImageThumbnail
+                                key={w.id}
+                                imagePath={w.image_path}
+                                name={w.name}
+                                className="w-10 h-7 object-contain bg-white border border-slate-100 rounded cursor-pointer hover:border-slate-400"
+                                showPlaceholder={false}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          '—'
+                        )}
                       </td>
                       <td className="p-2 border text-center">
                         <span className={`inline-block px-2 py-0.5 rounded ${yesNoClass(allOn, unmatched && !allOn)}`}>
@@ -1514,67 +2289,6 @@ function FsQueueTable({
   );
 }
 
-function widgetImageUrl(imagePath?: string | null): string | null {
-  return imagePath ? `/api/uploads/${imagePath}` : null;
-}
-
-function ImagePreviewModal({ src, title, onClose }: { src: string; title: string; onClose: () => void }) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div
-        className="relative bg-white rounded-xl shadow-2xl max-w-[90vw] max-h-[90vh] flex flex-col"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100">
-          <span className="text-sm font-medium text-slate-700 truncate pr-4">{title}</span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0"
-            aria-label="Закрыть"
-          >
-            ✕
-          </button>
-        </div>
-        <div className="p-4 overflow-auto">
-          <img src={src} alt={title} className="max-w-full max-h-[calc(90vh-4rem)] object-contain mx-auto" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WidgetImageThumbnail({ imagePath, name }: { imagePath?: string | null; name: string }) {
-  const [open, setOpen] = useState(false);
-  const url = widgetImageUrl(imagePath);
-  if (!url) return null;
-
-  return (
-    <>
-      <img
-        src={url}
-        alt={name}
-        title={name}
-        className="w-16 h-12 object-contain border border-slate-200 rounded bg-white shrink-0 cursor-pointer hover:border-slate-400"
-        onClick={e => {
-          e.preventDefault();
-          e.stopPropagation();
-          setOpen(true);
-        }}
-      />
-      {open && <ImagePreviewModal src={url} title={name} onClose={() => setOpen(false)} />}
-    </>
-  );
-}
-
 type SaveFeedback = { tab: Tab; type: 'success' | 'error'; message: string };
 
 function TabSaveBar({
@@ -1618,10 +2332,18 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   const [tab, setTab] = useState<Tab>('customer');
   const [data, setData] = useState<BriefingFull | null>(null);
   const [industries, setIndustries] = useState<Industry[]>([]);
+  const [activityTypes, setActivityTypes] = useState<ActivityType[]>([]);
+  const [hypothesesCatalog, setHypothesesCatalog] = useState<HypothesisListItem[]>([]);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [maturityLevels, setMaturityLevels] = useState<MaturityLevel[]>([]);
-  const [problems, setProblems] = useState<Problem[]>([]);
-  const [availableSolutions, setAvailableSolutions] = useState<Solution[]>([]);
+  const [allProblemsCatalog, setAllProblemsCatalog] = useState<Problem[]>([]);
+  const [filteredProblemIds, setFilteredProblemIds] = useState<Set<number>>(() => new Set());
+  const [showAllProblems, setShowAllProblems] = useState(false);
+  const [hypothesisFilterIds, setHypothesisFilterIds] = useState<number[]>([]);
+  const [allSolutionsCatalog, setAllSolutionsCatalog] = useState<Solution[]>([]);
+  const [problemSolutionLinks, setProblemSolutionLinks] = useState<CatalogLink[]>([]);
+  const [matchedSolutionIds, setMatchedSolutionIds] = useState<Set<number>>(() => new Set());
+  const [showAllSolutions, setShowAllSolutions] = useState(false);
   const [solutionWidgets, setSolutionWidgets] = useState<Record<number, Widget[]>>({});
   const [savingTab, setSavingTab] = useState<Tab | null>(null);
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
@@ -1634,6 +2356,22 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   const [catalogAddOpen, setCatalogAddOpen] = useState(false);
   const [catalogAddItems, setCatalogAddItems] = useState<FsCatalogItem[]>([]);
   const [catalogAddLoading, setCatalogAddLoading] = useState(false);
+  const [linkModalSelId, setLinkModalSelId] = useState<number | null>(null);
+  const [customSolutionsSelId, setCustomSolutionsSelId] = useState<number | null>(null);
+  const [widgetsCatalog, setWidgetsCatalog] = useState<Widget[]>([]);
+  const [solutionWidgetLinks, setSolutionWidgetLinks] = useState<CatalogLink[]>([]);
+  const [widgetFsLinks, setWidgetFsLinks] = useState<CatalogLink[]>([]);
+  const [widgetSolutionsModal, setWidgetSolutionsModal] = useState<{
+    widget: Widget;
+    candidates: Solution[];
+  } | null>(null);
+  /** Решения, добавленные вкладкой «Виджеты» (widgetId → solutionIds). */
+  const customerWidgetSolutionIdsRef = useRef<Map<number, Set<number>>>(new Map());
+  /** Решения, явно отмеченные «Да» на вкладке «Решения» (не только от виджета). */
+  const manualSolutionIdsRef = useRef<Set<number>>(new Set());
+  const [solutionFsLinksAll, setSolutionFsLinksAll] = useState<
+    { solution_id: number; fs_item_id: number; link_type?: 'required' | 'optional'; solution_name?: string }[]
+  >([]);
 
   useEffect(() => {
     if (tab === 'fs') setFsTableVisitKey(k => k + 1);
@@ -1646,7 +2384,10 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
       if (b.assessment?.phase_calc_params) {
         b.assessment.phase_calc_params = mergePhaseCalcParams(b.assessment.phase_calc_params);
       }
-      setData(b);
+      const activity_type_ids = b.activity_type_ids?.length
+        ? b.activity_type_ids
+        : [];
+      setData({ ...b, activity_type_ids, customer_widgets: b.customer_widgets ?? [] });
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Ошибка загрузки';
       setLoadError(message);
@@ -1654,6 +2395,11 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }, [briefingId]);
 
   useEffect(() => { load(); }, [load, reloadToken]);
+
+  useEffect(() => {
+    customerWidgetSolutionIdsRef.current = new Map();
+    manualSolutionIdsRef.current = new Set();
+  }, [briefingId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1679,27 +2425,280 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
 
   useEffect(() => {
     getIndustries().then(setIndustries);
+    getActivityTypes().then(setActivityTypes);
+    getHypotheses().then(setHypothesesCatalog);
     getMaturityLevels().then(setMaturityLevels);
   }, []);
 
   useEffect(() => {
-    if (!data?.industry_id) { setSegments([]); return; }
-    getSegmentsByIndustry(data.industry_id).then(setSegments);
-  }, [data?.industry_id]);
+    const ids = data?.activity_type_ids ?? [];
+    if (ids.length === 0) {
+      void getSegments().then(setSegments);
+      return;
+    }
+    const industryIds = [...new Set(
+      ids.map(atId => {
+        const atName = activityTypes.find(a => a.id === atId)?.name;
+        return industries.find(i => i.name === atName)?.id;
+      }).filter((x): x is number => x != null),
+    )];
+    if (industryIds.length === 0) {
+      void getSegments().then(setSegments);
+      return;
+    }
+    void Promise.all(industryIds.map(id => getSegmentsByIndustry(id))).then(results => {
+      const merged = new Map<number, Segment>();
+      for (const list of results) {
+        for (const s of list) merged.set(s.id, s);
+      }
+      setSegments([...merged.values()]);
+      if (data?.segment_id && !merged.has(data.segment_id)) {
+        setData(d => (d ? { ...d, segment_id: null } : d));
+      }
+    });
+  }, [data?.activity_type_ids, industries, activityTypes]);
+
+  useEffect(() => {
+    getProblems().then(setAllProblemsCatalog);
+  }, []);
 
   useEffect(() => {
     if (!data) return;
+    const ids = briefingActivityTypeIds(data);
+    const segmentId = data.segment_id ?? undefined;
+    if (ids.length === 0 && !segmentId) {
+      setFilteredProblemIds(new Set());
+      return;
+    }
     getProblems({
-      industry_id: data.industry_id ?? undefined,
-      segment_id: data.segment_id ?? undefined,
-    }).then(setProblems);
-  }, [data?.industry_id, data?.segment_id]);
+      activity_type_ids: ids.length ? ids : undefined,
+      segment_id: segmentId,
+    }).then(list => {
+      setFilteredProblemIds(new Set(list.map(p => p.id)));
+    });
+  }, [data?.activity_type_ids, data?.segment_id]);
+
+  useEffect(() => {
+    setShowAllProblems(false);
+    setHypothesisFilterIds([]);
+  }, [data?.activity_type_ids, data?.segment_id]);
+
+  const selectedProblemIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const p of data?.problems ?? []) {
+      if (p.problem_id) ids.add(p.problem_id);
+    }
+    return ids;
+  }, [data?.problems]);
+
+  const customerProblemFilterActive =
+    (data?.activity_type_ids?.length ?? 0) > 0 || data?.segment_id != null;
+
+  const strictFilterPoolIds = useMemo(() => {
+    if (!customerProblemFilterActive) return new Set<number>();
+    return collectProblemWithAncestors(allProblemsCatalog, filteredProblemIds);
+  }, [allProblemsCatalog, filteredProblemIds, customerProblemFilterActive]);
+
+  const baseVisibleProblemIds = useMemo(() => {
+    if (!customerProblemFilterActive || showAllProblems) {
+      return new Set(allProblemsCatalog.map(p => p.id));
+    }
+    const visibleIds = new Set(strictFilterPoolIds);
+    for (const id of selectedProblemIds) visibleIds.add(id);
+    return visibleIds;
+  }, [
+    allProblemsCatalog,
+    strictFilterPoolIds,
+    showAllProblems,
+    customerProblemFilterActive,
+    selectedProblemIds,
+  ]);
+
+  const availableHypothesesForFilter = useMemo(() => {
+    if (!customerProblemFilterActive) return [];
+    const namesInPool = new Set<string>();
+    for (const p of allProblemsCatalog) {
+      if (!strictFilterPoolIds.has(p.id)) continue;
+      for (const name of p.used_in_hypotheses ?? []) namesInPool.add(name);
+    }
+    return hypothesesCatalog
+      .filter(h => namesInPool.has(h.name))
+      .map(h => ({ id: h.id, name: h.name }));
+  }, [allProblemsCatalog, strictFilterPoolIds, hypothesesCatalog, customerProblemFilterActive]);
+
+  useEffect(() => {
+    const available = new Set(availableHypothesesForFilter.map(h => h.id));
+    setHypothesisFilterIds(prev => prev.filter(id => available.has(id)));
+  }, [availableHypothesesForFilter]);
+
+  const problemDisplayUnits = useMemo(() => {
+    const hypByName = new Map(hypothesesCatalog.map(h => [h.name, h.id]));
+    const selectedHyp = new Set(hypothesisFilterIds);
+
+    let visibleIds = baseVisibleProblemIds;
+    if (selectedHyp.size > 0) {
+      const matched = new Set<number>();
+      for (const p of allProblemsCatalog) {
+        if (!visibleIds.has(p.id)) continue;
+        const linked = p.used_in_hypotheses ?? [];
+        if (linked.some(name => {
+          const hid = hypByName.get(name);
+          return hid != null && selectedHyp.has(hid);
+        })) {
+          matched.add(p.id);
+        }
+      }
+      visibleIds = collectProblemWithAncestors(allProblemsCatalog, matched);
+      for (const id of selectedProblemIds) {
+        const p = allProblemsCatalog.find(x => x.id === id);
+        if (!p) continue;
+        const linked = p.used_in_hypotheses ?? [];
+        if (linked.some(name => {
+          const hid = hypByName.get(name);
+          return hid != null && selectedHyp.has(hid);
+        })) {
+          visibleIds.add(id);
+        }
+      }
+    }
+
+    const visible = allProblemsCatalog.filter(p => visibleIds.has(p.id));
+    return buildProblemDisplayUnits(visible);
+  }, [
+    allProblemsCatalog,
+    baseVisibleProblemIds,
+    hypothesisFilterIds,
+    hypothesesCatalog,
+    selectedProblemIds,
+  ]);
+
+  const isProblemUnmatched = useCallback((problemId: number) => {
+    return customerProblemFilterActive && showAllProblems && !filteredProblemIds.has(problemId);
+  }, [customerProblemFilterActive, showAllProblems, filteredProblemIds]);
+
+  useEffect(() => {
+    getSolutions().then(setAllSolutionsCatalog);
+  }, []);
+
+  useEffect(() => {
+    getWidgets().then(setWidgetsCatalog);
+    getSolutionWidgetLinks().then(setSolutionWidgetLinks);
+    getWidgetFsLinks().then(setWidgetFsLinks);
+  }, []);
+
+  useEffect(() => {
+    getProblemSolutionLinks().then(setProblemSolutionLinks);
+    getSolutionFsLinksAll().then(setSolutionFsLinksAll);
+  }, []);
+
+  const solutionsByProblemId = useMemo(() => {
+    const solutionById = new Map(allSolutionsCatalog.map(s => [s.id, s]));
+    const map = new Map<number, ProblemSolutionUsage[]>();
+
+    for (const link of problemSolutionLinks) {
+      if (link.problem_id == null || link.solution_id == null) continue;
+      const sol = solutionById.get(link.solution_id);
+      const usage: ProblemSolutionUsage = {
+        id: link.solution_id,
+        name: sol?.name ?? link.solution_name ?? '',
+        lcm_code: sol?.lcm_code ?? null,
+        catalog_code: sol?.catalog_code ?? null,
+        sort_order: sol?.sort_order ?? 0,
+      };
+
+      const list = map.get(link.problem_id) ?? [];
+      if (!list.some(x => x.id === usage.id)) {
+        list.push(usage);
+        map.set(link.problem_id, list);
+      }
+    }
+
+    for (const [problemId, list] of map) {
+      list.sort((a, b) => {
+        if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+        return a.name.localeCompare(b.name, 'ru');
+      });
+      map.set(problemId, list);
+    }
+
+    return map;
+  }, [problemSolutionLinks, allSolutionsCatalog]);
+
+  const requiredSolutionsByFsItemId = useMemo(() => {
+    const map = new Map<number, { id: number; name: string }[]>();
+    if (!data) return map;
+    const selectedById = new Map(data.solutions.map(s => [s.id, s.name]));
+    for (const link of solutionFsLinksAll) {
+      const linkType = link.link_type === 'optional' ? 'optional' : 'required';
+      if (linkType !== 'required') continue;
+      const solutionName = selectedById.get(link.solution_id);
+      if (!solutionName) continue;
+      const list = map.get(link.fs_item_id) ?? [];
+      if (!list.some(s => s.id === link.solution_id)) {
+        list.push({ id: link.solution_id, name: solutionName });
+      }
+      map.set(link.fs_item_id, list);
+    }
+    return map;
+  }, [data, solutionFsLinksAll]);
+
+  const fsTraceByItemId = useMemo(() => {
+    const map = new Map<number, FsItemTrace>();
+    if (!data || solutionFsLinksAll.length === 0) return map;
+    const probBySelId = new Map(
+      data.problems.filter(p => p.id != null).map(p => [p.id!, p]),
+    );
+    const fsIdsBySolution = new Map<number, number[]>();
+    for (const link of solutionFsLinksAll) {
+      const list = fsIdsBySolution.get(link.solution_id) ?? [];
+      list.push(link.fs_item_id);
+      fsIdsBySolution.set(link.solution_id, list);
+    }
+    for (const sol of data.solutions) {
+      const customText = sol.source_problem_sel_id
+        ? probBySelId.get(sol.source_problem_sel_id)?.custom_text
+        : null;
+      if (!customText) continue;
+      for (const fsId of fsIdsBySolution.get(sol.id) ?? []) {
+        const cur = map.get(fsId) ?? { customTexts: [], solutionNames: [] };
+        if (!cur.customTexts.includes(customText)) cur.customTexts.push(customText);
+        if (!cur.solutionNames.includes(sol.name)) cur.solutionNames.push(sol.name);
+        map.set(fsId, cur);
+      }
+    }
+    return map;
+  }, [data, solutionFsLinksAll]);
 
   useEffect(() => {
     if (!data) return;
     const probIds = data.problems.filter(p => p.problem_id).map(p => p.problem_id!);
-    getSolutions(probIds.length > 0 ? probIds : undefined).then(setAvailableSolutions);
+    if (probIds.length === 0) {
+      setMatchedSolutionIds(new Set());
+      return;
+    }
+    getSolutions(probIds).then(list => {
+      setMatchedSolutionIds(new Set(list.map(s => s.id)));
+    });
   }, [data?.problems]);
+
+  const solutionDisplayUnits = useMemo(() => {
+    const probIds = data?.problems.filter(p => p.problem_id).map(p => p.problem_id!) ?? [];
+    let visibleIds: Set<number>;
+    if (showAllSolutions) {
+      visibleIds = new Set(allSolutionsCatalog.map(s => s.id));
+    } else if (probIds.length === 0) {
+      visibleIds = new Set(data?.solutions.map(s => s.id) ?? []);
+    } else {
+      visibleIds = collectSolutionWithAncestors(allSolutionsCatalog, matchedSolutionIds);
+      for (const s of data?.solutions ?? []) visibleIds.add(s.id);
+    }
+    const visible = allSolutionsCatalog.filter(s => visibleIds.has(s.id));
+    return buildSolutionDisplayUnits(visible);
+  }, [allSolutionsCatalog, matchedSolutionIds, showAllSolutions, data?.problems, data?.solutions]);
+
+  const isSolutionUnmatched = useCallback((solutionId: number) => {
+    return showAllSolutions && !matchedSolutionIds.has(solutionId);
+  }, [showAllSolutions, matchedSolutionIds]);
 
   useEffect(() => {
     if (!data) return;
@@ -1739,12 +2738,25 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     }
   }
 
+  function setBriefingActivityTypeIds(ids: number[]) {
+    if (!data) return;
+    setData({
+      ...data,
+      activity_type_ids: ids,
+      segment_id: ids.length === 0 ? null : data.segment_id,
+    });
+  }
+
   function saveCustomerTab() {
     if (!data) return;
     void runTabSave('customer', async () => {
+      const activity_type_ids = briefingActivityTypeIds(data);
       await updateBriefing(briefingId, {
-        name: data.name, industry_id: data.industry_id, segment_id: data.segment_id,
-        scenario: data.scenario, headcount: data.headcount,
+        name: data.name,
+        activity_type_ids,
+        segment_id: data.segment_id,
+        scenario: data.scenario,
+        headcount: data.headcount,
       });
       if (data.assessment) {
         await patchBriefingAssessment(briefingId, {
@@ -1753,6 +2765,35 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
           headcount_manual: data.assessment.headcount_manual,
         });
       }
+      await saveBriefingProblems(briefingId, data.problems.map(s => ({
+        id: s.id,
+        problem_id: s.problem_id ?? undefined,
+        custom_text: s.custom_text ?? undefined,
+        linked_problem_id: s.linked_problem_id ?? undefined,
+      })));
+      await load();
+    });
+  }
+
+  function saveWidgetsTab() {
+    if (!data) return;
+    void runTabSave('widgets', async () => {
+      await saveBriefingCustomerWidgets(briefingId, (data.customer_widgets ?? []).map(w => ({
+        widget_id: w.widget_id,
+        queue: w.queue ?? '1',
+      })));
+      // Дополненные решения/виджеты под решениями тоже сохраняем
+      await saveBriefingSolutions(briefingId, data.solutions.map(s => ({
+        solution_id: s.id,
+        queue: s.queue ?? '1',
+        queue_comment_json: serializeSolutionQueueCommentForSave(s),
+        source_problem_sel_id: s.source_problem_sel_id ?? undefined,
+      })));
+      await saveBriefingWidgets(briefingId, data.widgets.map(w => ({
+        solution_id: w.solution_id,
+        widget_id: w.widget_id,
+      })));
+      await load();
     });
   }
 
@@ -1762,21 +2803,15 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     updateAssessment({ headcount_category: cat, headcount_manual: true });
   }
 
-  function saveProblemsTab() {
-    if (!data) return;
-    void runTabSave('problems', async () => {
-      await saveBriefingProblems(briefingId, data.problems.map(s => ({
-        problem_id: s.problem_id ?? undefined,
-        custom_text: s.custom_text ?? undefined,
-      })));
-      await load();
-    });
-  }
-
   function saveSolutionsTab() {
     if (!data) return;
     void runTabSave('solutions', async () => {
-      await saveBriefingSolutions(briefingId, data.solutions.map(s => s.id));
+      await saveBriefingSolutions(briefingId, data.solutions.map(s => ({
+        solution_id: s.id,
+        queue: s.queue ?? '1',
+        queue_comment_json: serializeSolutionQueueCommentForSave(s),
+        source_problem_sel_id: s.source_problem_sel_id ?? undefined,
+      })));
       await saveBriefingWidgets(briefingId, data.widgets.map(w => ({
         solution_id: w.solution_id,
         widget_id: w.widget_id,
@@ -1975,49 +3010,370 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     void runTabSave('summary', async () => {});
   }
 
-  async function toggleProblem(problemId: number) {
-    if (!data) return;
-    const selected = data.problems.some(p => p.problem_id === problemId);
-    const selections = selected
-      ? data.problems.filter(p => p.problem_id !== problemId)
-      : [...data.problems, { problem_id: problemId, custom_text: null }];
-    await saveBriefingProblems(briefingId, selections.map(s => ({
-      problem_id: s.problem_id ?? undefined,
-      custom_text: s.custom_text ?? undefined,
-    })));
-    await load();
+  function updateProblemSelections(changes: { problemId: number; selected: boolean }[]) {
+    if (!data || changes.length === 0) return;
+    setData(d => {
+      if (!d) return d;
+      const custom = d.problems.filter(p => p.custom_text);
+      let catalog = d.problems.filter(p => p.problem_id);
+      for (const { problemId, selected } of changes) {
+        if (selected) {
+          if (!catalog.some(p => p.problem_id === problemId)) {
+            const prob = allProblemsCatalog.find(p => p.id === problemId);
+            catalog = [...catalog, {
+              problem_id: problemId,
+              custom_text: null,
+              problem_name: prob?.name,
+            }];
+          }
+        } else {
+          catalog = catalog.filter(p => p.problem_id !== problemId);
+        }
+      }
+      return { ...d, problems: [...catalog, ...custom] };
+    });
   }
 
-  async function addCustomProblem() {
+  function addCustomProblem() {
     if (!data || !customProblem.trim()) return;
-    await saveBriefingProblems(briefingId, [
-      ...data.problems.map(s => ({ problem_id: s.problem_id ?? undefined, custom_text: s.custom_text ?? undefined })),
-      { custom_text: customProblem.trim() },
-    ]);
+    setData(d => (d ? {
+      ...d,
+      problems: [...d.problems, { problem_id: null, custom_text: customProblem.trim(), linked_problem_id: null }],
+    } : d));
     setCustomProblem('');
-    await load();
   }
 
-  async function toggleSolution(solutionId: number) {
-    if (!data) return;
-    const ids = data.solutions.map(s => s.id);
-    const newIds = ids.includes(solutionId) ? ids.filter(id => id !== solutionId) : [...ids, solutionId];
-    await saveBriefingSolutions(briefingId, newIds);
-    await load();
+  function applyLinkCustomProblem(selId: number, linkedProblemId: number) {
+    const linkedProb = allProblemsCatalog.find(p => p.id === linkedProblemId);
+    const linkedName = linkedProb?.name;
+    const linkedSolutions = solutionsByProblemId.get(linkedProblemId) ?? [];
+    setData(d => {
+      if (!d) return d;
+      let problems = d.problems.map(p =>
+        p.id === selId
+          ? { ...p, linked_problem_id: linkedProblemId, linked_problem_name: linkedName }
+          : p,
+      );
+
+      // Отметить сопоставленную проблематику как «Да» в таблице (и родителя, если есть)
+      const toSelect = [linkedProblemId];
+      if (linkedProb?.parent_id) toSelect.push(linkedProb.parent_id);
+      for (const problemId of toSelect) {
+        if (!problems.some(p => p.problem_id === problemId)) {
+          const prob = allProblemsCatalog.find(p => p.id === problemId);
+          problems = [...problems, {
+            problem_id: problemId,
+            custom_text: null,
+            problem_name: prob?.name,
+          }];
+        }
+      }
+
+      // Взаимоисключение: убрать ручные решения этой строки, затем подтянуть из справочника
+      let solutions = d.solutions.filter(s => s.source_problem_sel_id !== selId);
+      for (const sol of linkedSolutions) {
+        const full = allSolutionsCatalog.find(s => s.id === sol.id);
+        if (!full) continue;
+        const idx = solutions.findIndex(s => s.id === sol.id);
+        if (idx < 0) {
+          solutions.push({ ...full, queue: '1', source_problem_sel_id: selId });
+        } else if (!solutions[idx].source_problem_sel_id) {
+          solutions[idx] = { ...solutions[idx], source_problem_sel_id: selId };
+        }
+      }
+      return { ...d, problems, solutions };
+    });
+    setLinkModalSelId(null);
   }
 
-  async function toggleWidget(solutionId: number, widgetId: number) {
+  function unlinkCustomProblem(selId: number) {
+    setData(d => {
+      if (!d) return d;
+      return {
+        ...d,
+        problems: d.problems.map(p =>
+          p.id === selId
+            ? { ...p, linked_problem_id: null, linked_problem_name: undefined }
+            : p,
+        ),
+        // Решения, пришедшие от сопоставления, снимаем вместе с отвязкой
+        solutions: d.solutions.filter(s => s.source_problem_sel_id !== selId),
+      };
+    });
+  }
+
+  function removeCustomProblem(selId: number) {
+    setData(d => {
+      if (!d) return d;
+      return {
+        ...d,
+        problems: d.problems.filter(p => p.id !== selId),
+        solutions: d.solutions.filter(s => s.source_problem_sel_id !== selId),
+      };
+    });
+  }
+
+  function toggleCustomProblemSolution(problemSelId: number, solutionId: number, enabled: boolean) {
+    setData(d => {
+      if (!d) return d;
+      // Взаимоисключение: при ручном выборе решений снимаем привязку к справочнику
+      const problems = d.problems.map(p =>
+        p.id === problemSelId
+          ? { ...p, linked_problem_id: null, linked_problem_name: undefined }
+          : p,
+      );
+      let solutions = [...d.solutions];
+      if (enabled) {
+        const full = allSolutionsCatalog.find(s => s.id === solutionId);
+        if (!full) return d;
+        const idx = solutions.findIndex(s => s.id === solutionId);
+        if (idx < 0) {
+          solutions.push({ ...full, queue: '1', source_problem_sel_id: problemSelId });
+        } else {
+          solutions[idx] = { ...solutions[idx], source_problem_sel_id: problemSelId };
+        }
+      } else {
+        solutions = solutions.filter(
+          s => !(s.id === solutionId && s.source_problem_sel_id === problemSelId),
+        );
+      }
+      return { ...d, problems, solutions };
+    });
+  }
+
+  const customProblemBySelId = useMemo(() => {
+    if (!data) return new Map<number, BriefingProblemSel>();
+    return new Map(data.problems.filter(p => p.id != null).map(p => [p.id!, p]));
+  }, [data]);
+
+  function trackCustomerWidgetSolutions(widgetId: number, solutionIds: number[]) {
+    const map = customerWidgetSolutionIdsRef.current;
+    let set = map.get(widgetId);
+    if (!set) {
+      set = new Set();
+      map.set(widgetId, set);
+    }
+    for (const id of solutionIds) set.add(id);
+  }
+
+  /** Решение имеет источник кроме снимаемого виджета заказчика. */
+  function solutionHasOtherSource(
+    solId: number,
+    solutions: BriefingSolutionSel[],
+    remainingCustomerWidgetIds: Set<number>,
+    widgets: { solution_id: number; widget_id: number }[],
+  ): boolean {
+    const sel = solutions.find(s => s.id === solId);
+    if (sel?.source_problem_sel_id) return true;
+    if (manualSolutionIdsRef.current.has(solId)) return true;
+    for (const w of widgets) {
+      if (w.solution_id !== solId) continue;
+      if (remainingCustomerWidgetIds.has(w.widget_id)) return true;
+    }
+    for (const [otherWidgetId, set] of customerWidgetSolutionIdsRef.current) {
+      if (!remainingCustomerWidgetIds.has(otherWidgetId)) continue;
+      if (set.has(solId)) return true;
+    }
+    return false;
+  }
+
+  function solutionsToRemoveOnCustomerWidgetUncheck(
+    widgetId: number,
+    solutions: BriefingSolutionSel[],
+    customerWidgets: BriefingCustomerWidgetSel[],
+    widgets: { solution_id: number; widget_id: number }[],
+  ): Set<number> {
+    const remainingCustomerWidgetIds = new Set(
+      customerWidgets.filter(w => w.widget_id !== widgetId).map(w => w.widget_id),
+    );
+
+    const fromWidget = new Set<number>(customerWidgetSolutionIdsRef.current.get(widgetId) ?? []);
+    for (const w of widgets) {
+      if (w.widget_id === widgetId) fromWidget.add(w.solution_id);
+    }
+    for (const sol of solutionsByWidgetId.get(widgetId) ?? []) {
+      if (solutions.some(s => s.id === sol.id)) fromWidget.add(sol.id);
+    }
+    customerWidgetSolutionIdsRef.current.delete(widgetId);
+
+    const toRemove = new Set<number>();
+    for (const solId of fromWidget) {
+      if (solutionHasOtherSource(solId, solutions, remainingCustomerWidgetIds, widgets)) continue;
+      toRemove.add(solId);
+    }
+    return toRemove;
+  }
+
+  function updateSolutionSelections(changes: { solutionId: number; next: BriefingSolutionSel | null }[]) {
+    if (!data || changes.length === 0) return;
+    for (const { solutionId, next } of changes) {
+      if (next) manualSolutionIdsRef.current.add(solutionId);
+      else manualSolutionIdsRef.current.delete(solutionId);
+    }
+    setData(d => {
+      if (!d) return d;
+      let solutions = [...d.solutions];
+      let widgets = [...d.widgets];
+      for (const { solutionId, next } of changes) {
+        solutions = next
+          ? [...solutions.filter(s => s.id !== solutionId), next]
+          : solutions.filter(s => s.id !== solutionId);
+        if (!next) widgets = widgets.filter(w => w.solution_id !== solutionId);
+      }
+      return { ...d, solutions, widgets };
+    });
+  }
+
+  function updateSolutionSelection(solutionId: number, next: BriefingSolutionSel | null) {
+    updateSolutionSelections([{ solutionId, next }]);
+  }
+
+  function toggleWidget(solutionId: number, widgetId: number) {
     if (!data) return;
-    const key = `${solutionId}-${widgetId}`;
     const exists = data.widgets.some(w => w.solution_id === solutionId && w.widget_id === widgetId);
-    const selections = exists
+    const widgets = exists
       ? data.widgets.filter(w => !(w.solution_id === solutionId && w.widget_id === widgetId))
       : [...data.widgets, { solution_id: solutionId, widget_id: widgetId }];
-    await saveBriefingWidgets(briefingId, selections);
-    await load();
+    setData(d => (d ? { ...d, widgets } : d));
+  }
+
+  const solutionsByWidgetId = useMemo(() => {
+    const solutionById = new Map(allSolutionsCatalog.map(s => [s.id, s]));
+    const map = new Map<number, Solution[]>();
+    for (const link of solutionWidgetLinks) {
+      if (link.widget_id == null || link.solution_id == null) continue;
+      const sol = solutionById.get(link.solution_id);
+      if (!sol) continue;
+      const list = map.get(link.widget_id) ?? [];
+      if (!list.some(s => s.id === sol.id)) list.push(sol);
+      map.set(link.widget_id, list);
+    }
+    return map;
+  }, [solutionWidgetLinks, allSolutionsCatalog]);
+
+  /** Виджеты с хотя бы одной связью на решение или пункт ФС (+ уже выбранные, чтобы можно было снять). */
+  const customerWidgetsCatalog = useMemo(() => {
+    const usable = new Set<number>();
+    for (const wid of solutionsByWidgetId.keys()) usable.add(wid);
+    for (const link of widgetFsLinks) {
+      if (link.widget_id != null) usable.add(link.widget_id);
+    }
+    const selectedIds = new Set((data?.customer_widgets ?? []).map(w => w.widget_id));
+    return widgetsCatalog.filter(w => usable.has(w.id) || selectedIds.has(w.id));
+  }, [widgetsCatalog, solutionsByWidgetId, widgetFsLinks, data?.customer_widgets]);
+
+  function supplementSolutionsFromWidget(widgetId: number, solutionIds: number[]) {
+    trackCustomerWidgetSolutions(widgetId, solutionIds);
+    setData(d => {
+      if (!d) return d;
+      let solutions = [...d.solutions];
+      let widgets = [...d.widgets];
+      const customer_widgets = d.customer_widgets.some(w => w.widget_id === widgetId)
+        ? d.customer_widgets
+        : [...d.customer_widgets, {
+          widget_id: widgetId,
+          queue: '1',
+          name: widgetsCatalog.find(w => w.id === widgetId)?.name,
+        } satisfies BriefingCustomerWidgetSel];
+
+      for (const solId of solutionIds) {
+        const full = allSolutionsCatalog.find(s => s.id === solId);
+        if (!full) continue;
+        if (!solutions.some(s => s.id === solId)) {
+          solutions.push({ ...full, queue: '1' });
+        }
+        if (!widgets.some(w => w.solution_id === solId && w.widget_id === widgetId)) {
+          widgets.push({ solution_id: solId, widget_id: widgetId });
+        }
+      }
+      return { ...d, solutions, widgets, customer_widgets };
+    });
+  }
+
+  function requestToggleCustomerWidget(widget: Widget, enable: boolean) {
+    if (!enable) {
+      setData(d => {
+        if (!d) return d;
+        const removeSolutionIds = solutionsToRemoveOnCustomerWidgetUncheck(
+          widget.id,
+          d.solutions,
+          d.customer_widgets ?? [],
+          d.widgets,
+        );
+        return {
+          ...d,
+          customer_widgets: d.customer_widgets.filter(w => w.widget_id !== widget.id),
+          solutions: d.solutions.filter(s => !removeSolutionIds.has(s.id)),
+          widgets: d.widgets.filter(w => {
+            if (w.widget_id === widget.id) return false;
+            if (removeSolutionIds.has(w.solution_id)) return false;
+            return true;
+          }),
+        };
+      });
+      return;
+    }
+
+    const linked = solutionsByWidgetId.get(widget.id) ?? [];
+    if (linked.length > 1) {
+      setWidgetSolutionsModal({ widget, candidates: linked });
+      return;
+    }
+
+    const autoSolutionIds = linked.length === 1 ? [linked[0].id] : [];
+    trackCustomerWidgetSolutions(widget.id, autoSolutionIds);
+
+    setData(d => {
+      if (!d) return d;
+      const customer_widgets = d.customer_widgets.some(w => w.widget_id === widget.id)
+        ? d.customer_widgets
+        : [...d.customer_widgets, {
+          widget_id: widget.id,
+          queue: '1',
+          name: widget.name,
+          description: widget.description,
+          image_path: widget.image_path,
+          type: widget.type,
+        }];
+      let solutions = [...d.solutions];
+      let widgets = [...d.widgets];
+      if (linked.length === 1) {
+        const sol = linked[0];
+        if (!solutions.some(s => s.id === sol.id)) {
+          solutions.push({ ...sol, queue: '1' });
+        }
+        if (!widgets.some(w => w.solution_id === sol.id && w.widget_id === widget.id)) {
+          widgets.push({ solution_id: sol.id, widget_id: widget.id });
+        }
+      }
+      return { ...d, customer_widgets, solutions, widgets };
+    });
+  }
+
+  function confirmWidgetSolutionsPick(solutionIds: number[]) {
+    if (!widgetSolutionsModal) return;
+    const widgetId = widgetSolutionsModal.widget.id;
+    supplementSolutionsFromWidget(widgetId, solutionIds);
+    setWidgetSolutionsModal(null);
   }
 
   async function handleDeriveFs(goToFsTab = true) {
+    if (data) {
+      await saveBriefingCustomerWidgets(briefingId, (data.customer_widgets ?? []).map(w => ({
+        widget_id: w.widget_id,
+        queue: w.queue ?? '1',
+      })));
+      await saveBriefingSolutions(briefingId, data.solutions.map(s => ({
+        solution_id: s.id,
+        queue: s.queue ?? '1',
+        queue_comment_json: serializeSolutionQueueCommentForSave(s),
+        source_problem_sel_id: s.source_problem_sel_id ?? undefined,
+      })));
+      await saveBriefingWidgets(briefingId, data.widgets.map(w => ({
+        solution_id: w.solution_id,
+        widget_id: w.widget_id,
+      })));
+    }
     await deriveBriefingFs(briefingId);
     await load();
     if (goToFsTab) setTab('fs');
@@ -2330,7 +3686,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
 
   const tabSaveHandlers: Record<Tab, () => void> = {
     customer: saveCustomerTab,
-    problems: saveProblemsTab,
+    widgets: saveWidgetsTab,
     solutions: saveSolutionsTab,
     fs: saveFsTab,
     assessment: saveAssessmentTab,
@@ -2362,6 +3718,44 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
             savingTab={savingTab}
             feedback={saveFeedback}
           />
+          {tab === 'customer' && (
+            <div className="flex flex-wrap items-end gap-3 flex-1 min-w-0">
+              <div className="flex-1 min-w-[160px]">
+                <label className="text-xs text-slate-500 block mb-1">Название оценки</label>
+                <input className="w-full text-sm border rounded px-3 py-1.5" value={data.name}
+                  onChange={e => setData({ ...data, name: e.target.value })} />
+              </div>
+              <div className="w-32 shrink-0">
+                <label className="text-xs text-slate-500 block mb-1">Сценарий</label>
+                <select className="w-full text-sm border rounded px-3 py-1.5"
+                  value={data.scenario ?? ''}
+                  onChange={e => setData({ ...data, scenario: e.target.value || null })}>
+                  <option value="">— выберите —</option>
+                  {SCENARIOS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div className="w-40 shrink-0">
+                <div className="flex items-center justify-between mb-1 gap-2">
+                  <label className="text-xs text-slate-500 whitespace-nowrap">Численность (C62)</label>
+                  {data.assessment?.headcount_manual && (
+                    <button type="button" className="text-[10px] text-blue-600 hover:underline whitespace-nowrap"
+                      onClick={() => updateAssessment({ reset_headcount: true })}>
+                      Сбросить
+                    </button>
+                  )}
+                </div>
+                <select
+                  className={`w-full text-sm border rounded px-3 py-1.5 ${data.assessment?.headcount_manual ? OVERRIDE_INPUT_CLASS : ''}`}
+                  value={data.assessment?.headcount_category ?? 'до 200'}
+                  onChange={e => handleHeadcountCategoryChange(e.target.value)}
+                >
+                  {HEADCOUNT_CATEGORIES.map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
           {tab === 'solutions' && (
             <button
               type="button"
@@ -2383,147 +3777,162 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-4">
+      <div className={`flex-1 min-h-0 p-4 ${tab === 'customer' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}>
         {tab === 'customer' && (
-          <div className="max-w-lg space-y-4">
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Название оценки</label>
-              <input className="w-full text-sm border rounded px-3 py-2" value={data.name}
-                onChange={e => setData({ ...data, name: e.target.value })} />
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Отрасль</label>
-              <select className="w-full text-sm border rounded px-3 py-2"
-                value={data.industry_id ?? ''}
-                onChange={e => setData({ ...data, industry_id: e.target.value ? Number(e.target.value) : null, segment_id: null })}>
-                <option value="">— выберите —</option>
-                {industries.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Сегмент</label>
-              <select className="w-full text-sm border rounded px-3 py-2"
-                value={data.segment_id ?? ''}
-                onChange={e => setData({ ...data, segment_id: e.target.value ? Number(e.target.value) : null })}>
-                <option value="">— выберите —</option>
-                {segments.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-              {segments.length === 0 && data.industry_id && (
-                <p className="text-[10px] text-amber-600 mt-1">Нет привязанных сегментов для отрасли</p>
-              )}
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 block mb-1">Сценарий</label>
-              <select className="w-full text-sm border rounded px-3 py-2"
-                value={data.scenario ?? ''}
-                onChange={e => setData({ ...data, scenario: e.target.value || null })}>
-                <option value="">— выберите —</option>
-                {SCENARIOS.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs text-slate-500">Численность (категория C62)</label>
-                {data.assessment?.headcount_manual && (
-                  <button type="button" className="text-[10px] text-blue-600 hover:underline"
-                    onClick={() => updateAssessment({ reset_headcount: true })}>
-                    Сбросить к авто
-                  </button>
-                )}
+          <div className="flex flex-col gap-2 flex-1 min-h-0">
+            <div
+              className="grid w-full items-center gap-2 shrink-0"
+              style={{
+                gridTemplateColumns: customerProblemFilterActive
+                  ? 'minmax(0, 1fr) minmax(3rem, 10%) auto'
+                  : 'minmax(0, 1fr) minmax(3rem, 10%)',
+              }}
+            >
+              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                <span className="text-[11px] text-slate-500 shrink-0">Виды деятельности</span>
+                <ChipMultiSelect
+                  items={activityTypes}
+                  selectedIds={briefingActivityTypeIds(data)}
+                  onChange={setBriefingActivityTypeIds}
+                  emptyLabel="Справочник видов деятельности пуст"
+                />
               </div>
               <select
-                className={`w-full text-sm border rounded px-3 py-2 ${data.assessment?.headcount_manual ? OVERRIDE_INPUT_CLASS : ''}`}
-                value={data.assessment?.headcount_category ?? 'до 200'}
-                onChange={e => handleHeadcountCategoryChange(e.target.value)}
+                className="text-[11px] border rounded px-1 py-0.5 bg-white w-full min-w-0 truncate justify-self-end"
+                value={data.segment_id ?? ''}
+                title={`Сегмент: ${segments.find(s => s.id === data.segment_id)?.name ?? 'все'}`}
+                onChange={e => setData({ ...data, segment_id: e.target.value ? Number(e.target.value) : null })}
               >
-                {HEADCOUNT_CATEGORIES.map(cat => (
-                  <option key={cat} value={cat}>{cat}</option>
-                ))}
+                <option value="">Сегм.</option>
+                {segments.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
+              {customerProblemFilterActive && (
+                <button
+                  type="button"
+                  className="text-[11px] px-2 py-0.5 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 whitespace-nowrap shrink-0 justify-self-end"
+                  onClick={() => setShowAllProblems(v => !v)}
+                >
+                  {showAllProblems ? 'Только по фильтру' : 'Показать все'}
+                </button>
+              )}
+            </div>
+            {customerProblemFilterActive && (
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                <span className="text-[11px] text-slate-500 shrink-0">Гипотезы</span>
+                {availableHypothesesForFilter.length > 0 ? (
+                  <ChipMultiSelect
+                    items={availableHypothesesForFilter}
+                    selectedIds={hypothesisFilterIds}
+                    onChange={setHypothesisFilterIds}
+                    emptyLabel=""
+                  />
+                ) : (
+                  <span className="text-[11px] text-slate-400">нет по текущему фильтру</span>
+                )}
+              </div>
+            )}
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
+              <ProblemsSelectTable
+                units={problemDisplayUnits}
+                selectedIds={selectedProblemIds}
+                isUnmatched={isProblemUnmatched}
+                onProblemsChange={updateProblemSelections}
+                solutionsByProblemId={solutionsByProblemId}
+              />
+              <CustomProblemCards
+                items={data.problems.filter(p => p.custom_text)}
+                selectedSolutions={data.solutions}
+                solutionsByLinkedProblemId={solutionsByProblemId}
+                onLink={setLinkModalSelId}
+                onEditSolutions={setCustomSolutionsSelId}
+                onUnlink={unlinkCustomProblem}
+                onRemove={removeCustomProblem}
+              />
+              {linkModalSelId != null && (
+                <CustomProblemLinkModal
+                  problems={allProblemsCatalog}
+                  onClose={() => setLinkModalSelId(null)}
+                  onSelect={linkedId => applyLinkCustomProblem(linkModalSelId, linkedId)}
+                />
+              )}
+              {customSolutionsSelId != null && (() => {
+                const p = customProblemBySelId.get(customSolutionsSelId);
+                if (!p?.custom_text) return null;
+                const selectedIds = new Set(
+                  data.solutions
+                    .filter(s => s.source_problem_sel_id === customSolutionsSelId)
+                    .map(s => s.id),
+                );
+                return (
+                  <CustomProblemSolutionsModal
+                    customText={p.custom_text}
+                    solutions={allSolutionsCatalog}
+                    selectedIds={selectedIds}
+                    onToggle={(solutionId, enabled) =>
+                      toggleCustomProblemSolution(customSolutionsSelId, solutionId, enabled)
+                    }
+                    onClose={() => setCustomSolutionsSelId(null)}
+                  />
+                );
+              })()}
+              <div className="flex gap-2 shrink-0">
+                <input className="flex-1 text-sm border rounded px-2 py-1" placeholder="Свободный ввод проблематики"
+                  value={customProblem} onChange={e => setCustomProblem(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') addCustomProblem(); }} />
+                <button onClick={addCustomProblem} className="text-sm bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">+</button>
+              </div>
             </div>
           </div>
         )}
 
-        {tab === 'problems' && (
-          <div className="space-y-4">
-            <p className="text-xs text-slate-500">Выберите проблематики заказчика (фильтр по отрасли/сегменту)</p>
-            <div className="space-y-1 max-h-96 overflow-y-auto">
-              {problems.map(p => (
-                <label key={p.id} className="flex items-start gap-2 p-2 rounded hover:bg-slate-50 cursor-pointer">
-                  <input type="checkbox" className="mt-0.5"
-                    checked={data.problems.some(bp => bp.problem_id === p.id)}
-                    onChange={() => toggleProblem(p.id)} />
-                  <div>
-                    <div className="text-sm">{p.name}</div>
-                    {(p.segment_name || p.maturity_name) && (
-                      <div className="text-[10px] text-slate-400">{[p.segment_name, p.maturity_name].filter(Boolean).join(' · ')}</div>
-                    )}
-                  </div>
-                </label>
-              ))}
-              {problems.length === 0 && (
-                <p className="text-sm text-amber-600">
-                  {data.industry_id
-                    ? 'Нет проблематик для выбранной отрасли/сегмента. Проверьте вкладку «Заказчик» или запустите импорт справочника.'
-                    : 'Справочник не загружен. Запустите: npm run import:briefing-data --workspace=server'}
-                </p>
-              )}
-            </div>
-            {data.problems.filter(p => p.custom_text).map((p, i) => (
-              <div key={`custom-${i}`} className="text-sm bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                {p.custom_text} <span className="text-[10px] text-amber-600">(свободный ввод)</span>
-              </div>
-            ))}
-            <div className="flex gap-2">
-              <input className="flex-1 text-sm border rounded px-3 py-2" placeholder="Свободный ввод проблематики"
-                value={customProblem} onChange={e => setCustomProblem(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') addCustomProblem(); }} />
-              <button onClick={addCustomProblem} className="text-sm bg-slate-100 px-3 py-2 rounded hover:bg-slate-200">+</button>
-            </div>
+        {tab === 'widgets' && (
+          <div className="space-y-3">
+            <CustomerWidgetsPanel
+              catalog={customerWidgetsCatalog}
+              selected={data.customer_widgets ?? []}
+              solutionsByWidgetId={solutionsByWidgetId}
+              onRequestToggle={requestToggleCustomerWidget}
+            />
+            {widgetSolutionsModal && (
+              <WidgetSolutionsPickModal
+                widgetName={widgetSolutionsModal.widget.name}
+                solutions={widgetSolutionsModal.candidates}
+                initialSelectedIds={new Set()}
+                onClose={() => setWidgetSolutionsModal(null)}
+                onConfirm={confirmWidgetSolutionsPick}
+              />
+            )}
           </div>
         )}
 
         {tab === 'solutions' && (
-          <div className="space-y-4">
-            <p className="text-xs text-slate-500">Выберите решения и виджеты в контексте каждого решения</p>
-            {availableSolutions.length === 0 && (
-              <p className="text-sm text-amber-600">Нет решений. Выберите проблематики или заполните связи в админке.</p>
-            )}
-            {availableSolutions.map(sol => {
-              const selected = data.solutions.some(s => s.id === sol.id);
-              const widgets = solutionWidgets[sol.id] ?? [];
-              return (
-                <div key={sol.id} className={`border rounded p-3 ${selected ? 'border-blue-300 bg-blue-50/30' : 'border-slate-200'}`}>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="checkbox" checked={selected} onChange={() => toggleSolution(sol.id)} />
-                    <span className="text-sm font-medium">{sol.name}</span>
-                  </label>
-                  {sol.description && <p className="text-xs text-slate-500 ml-6 mt-1">{sol.description}</p>}
-                  {selected && widgets.length > 0 && (
-                    <div className="ml-6 mt-2 space-y-1 border-l-2 border-blue-200 pl-3">
-                      <div className="text-[10px] text-slate-400 uppercase">Виджеты</div>
-                      {widgets.map(w => (
-                        <label key={w.id} className="flex items-start gap-2 cursor-pointer">
-                          <input type="checkbox" className="mt-0.5 shrink-0"
-                            checked={data.widgets.some(bw => bw.solution_id === sol.id && bw.widget_id === w.id)}
-                            onChange={() => toggleWidget(sol.id, w.id)} />
-                          {widgetImageUrl(w.image_path) && (
-                            <WidgetImageThumbnail imagePath={w.image_path} name={w.name} />
-                          )}
-                          <div className="min-w-0">
-                            <div className="text-xs font-medium">{w.name}</div>
-                            {w.description && <div className="text-[10px] text-slate-400 line-clamp-3">{w.description}</div>}
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                  {selected && widgets.length === 0 && (
-                    <p className="text-[10px] text-slate-400 ml-6 mt-1">Нет виджетов (настройте в админке)</p>
-                  )}
-                </div>
-              );
-            })}
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-slate-500 flex-1 min-w-[240px]">
+                {showAllSolutions
+                  ? 'Все решения справочника. Курсивом — не связаны с выбранными проблематиками.'
+                  : 'Решения, сопоставленные с выбранными проблематиками (и группы из НСИ).'}
+                {' '}Назначьте очередь («Да»), комментарий — в колонке «Коммент.» той же очереди.
+              </p>
+              <button
+                type="button"
+                className="text-xs px-3 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 whitespace-nowrap shrink-0"
+                onClick={() => setShowAllSolutions(v => !v)}
+              >
+                {showAllSolutions ? 'Только по проблематикам' : 'Показать все решения'}
+              </button>
+            </div>
+            <SolutionsQueueTable
+              units={solutionDisplayUnits}
+              isUnmatched={isSolutionUnmatched}
+              selected={data.solutions}
+              solutionWidgets={solutionWidgets}
+              widgetSelections={data.widgets}
+              queueLabels={parseQueueLabels(data.params.queue_labels_json)}
+              onQueueLabelChange={updateQueueLabel}
+              onSolutionsChange={updateSolutionSelections}
+              onToggleWidget={toggleWidget}
+            />
           </div>
         )}
 
@@ -2562,6 +3971,8 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                 onQueueLabelChange={updateQueueLabel}
                 onAddCustomerItem={addCustomerFsItem}
                 onDeleteCustomerItem={deleteCustomerFsItem}
+                fsTraceByItemId={fsTraceByItemId}
+                requiredSolutionsByFsItemId={requiredSolutionsByFsItemId}
               />
             )}
           </div>

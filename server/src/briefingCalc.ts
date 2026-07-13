@@ -80,6 +80,74 @@ export interface FsSelection {
 
 type DerivedFsMeta = { source: string; story_points: number | null; widget_ids: Set<number> };
 
+function buildFsQueueAssignments(briefingId: number): Map<number, string> {
+  const assigned = new Map<number, string>();
+
+  const solutionsByQueue = db.prepare(`
+    SELECT solution_id, queue FROM briefing_solution_sel WHERE briefing_id=?
+  `).all(briefingId) as { solution_id: number; queue: string | null }[];
+
+  const widgetsBySolution = new Map<number, number[]>();
+  for (const row of db.prepare(`
+    SELECT solution_id, widget_id FROM briefing_widget_sel WHERE briefing_id=?
+  `).all(briefingId) as { solution_id: number; widget_id: number }[]) {
+    const list = widgetsBySolution.get(row.solution_id) ?? [];
+    list.push(row.widget_id);
+    widgetsBySolution.set(row.solution_id, list);
+  }
+
+  for (const q of FS_QUEUE_KEYS) {
+    const solIds = solutionsByQueue
+      .filter(s => (s.queue ?? '1') === q)
+      .map(s => s.solution_id);
+    if (solIds.length === 0) continue;
+
+    const solPh = solIds.map(() => '?').join(',');
+    for (const r of db.prepare(`
+      SELECT sfm.fs_item_id
+      FROM solution_fs_map sfm
+      JOIN fs_catalog fc ON fc.id = sfm.fs_item_id AND fc.published = 1 AND COALESCE(fc.is_deleted, 0) = 0
+      WHERE sfm.solution_id IN (${solPh}) AND (fc.item_type IS NULL OR fc.item_type = 'item')
+    `).all(...solIds) as { fs_item_id: number }[]) {
+      if (!assigned.has(r.fs_item_id)) assigned.set(r.fs_item_id, q);
+    }
+
+    const widgetIds = [...new Set(solIds.flatMap(sid => widgetsBySolution.get(sid) ?? []))];
+    if (widgetIds.length > 0) {
+      const wPh = widgetIds.map(() => '?').join(',');
+      for (const r of db.prepare(`
+        SELECT wfm.fs_item_id
+        FROM widget_fs_map wfm
+        JOIN fs_catalog fc ON fc.id = wfm.fs_item_id AND fc.published = 1 AND COALESCE(fc.is_deleted, 0) = 0
+        WHERE wfm.widget_id IN (${wPh}) AND (fc.item_type IS NULL OR fc.item_type = 'item')
+      `).all(...widgetIds) as { fs_item_id: number }[]) {
+        if (!assigned.has(r.fs_item_id)) assigned.set(r.fs_item_id, q);
+      }
+    }
+  }
+
+  // Виджеты заказчика (parallel path) → очередь из briefing_customer_widget_sel
+  for (const q of FS_QUEUE_KEYS) {
+    const customerWidgetIds = (db.prepare(`
+      SELECT widget_id FROM briefing_customer_widget_sel
+      WHERE briefing_id=? AND COALESCE(queue, '1')=?
+    `).all(briefingId, q) as { widget_id: number }[]).map(r => r.widget_id);
+    if (customerWidgetIds.length === 0) continue;
+
+    const wPh = customerWidgetIds.map(() => '?').join(',');
+    for (const r of db.prepare(`
+      SELECT wfm.fs_item_id
+      FROM widget_fs_map wfm
+      JOIN fs_catalog fc ON fc.id = wfm.fs_item_id AND fc.published = 1 AND COALESCE(fc.is_deleted, 0) = 0
+      WHERE wfm.widget_id IN (${wPh}) AND (fc.item_type IS NULL OR fc.item_type = 'item')
+    `).all(...customerWidgetIds) as { fs_item_id: number }[]) {
+      if (!assigned.has(r.fs_item_id)) assigned.set(r.fs_item_id, q);
+    }
+  }
+
+  return assigned;
+}
+
 function buildDerivedFsMap(briefingId: number): Map<number, DerivedFsMeta> {
   const briefing = db.prepare(`SELECT industry_id, segment_id FROM briefings WHERE id=?`).get(briefingId) as {
     industry_id: number | null; segment_id: number | null;
@@ -113,8 +181,19 @@ function buildDerivedFsMap(briefingId: number): Map<number, DerivedFsMeta> {
     WHERE bws.briefing_id=?
       AND bws.solution_id IN (SELECT solution_id FROM briefing_solution_sel WHERE briefing_id=?)
   `).all(briefingId, briefingId) as { widget_id: number; widget_name: string }[];
-  if (widgets.length > 0) {
-    const wIds = widgets.map(w => w.widget_id);
+
+  const customerWidgets = db.prepare(`
+    SELECT bcw.widget_id
+    FROM briefing_customer_widget_sel bcw
+    JOIN widgets w ON w.id = bcw.widget_id
+    WHERE bcw.briefing_id=?
+  `).all(briefingId) as { widget_id: number }[];
+
+  const wIds = [...new Set([
+    ...widgets.map(w => w.widget_id),
+    ...customerWidgets.map(w => w.widget_id),
+  ])];
+  if (wIds.length > 0) {
     const placeholders = wIds.map(() => '?').join(',');
     const fromWidgets = db.prepare(`
       SELECT wfm.widget_id, wfm.fs_item_id, fc.story_points
@@ -225,6 +304,7 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
     source: string; story_points: number | null;
   }[];
   const existingMap = new Map(existing.map(e => [e.fs_item_id, e]));
+  const queueAssignments = buildFsQueueAssignments(briefingId);
 
   const upsert = db.prepare(`
     INSERT INTO briefing_fs_sel (briefing_id, fs_item_id, enabled, queue, queues_json, source, story_points)
@@ -253,14 +333,21 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
       `).get(fsId) as { queue: string; story_points: number; default_queues_json: string | null } | undefined;
 
       const defaultQueues = parseQueuesJson(catalog?.default_queues_json);
-      const derivedQueues: FsQueuesMap = { ...defaultQueues };
-      if (!anyQueueEnabled(derivedQueues)) derivedQueues['1'] = 1;
+      const assignedQueue = queueAssignments.get(fsId);
 
-      const queues = ex?.source === 'manual' && ex.queues_json
-        ? parseQueuesJson(ex.queues_json)
-        : ex?.queues_json
-          ? parseQueuesJson(ex.queues_json)
-          : derivedQueues;
+      let queues: FsQueuesMap;
+      const exQueues = ex?.queues_json ? parseQueuesJson(ex.queues_json) : null;
+      const manualLocks = ex?.source === 'manual' && exQueues != null && anyQueueEnabled(exQueues);
+      if (manualLocks && exQueues) {
+        queues = exQueues;
+      } else if (assignedQueue) {
+        queues = { ...EMPTY_QUEUES, [assignedQueue]: 1 };
+      } else if (meta.source === 'industry') {
+        queues = { ...defaultQueues };
+        if (!anyQueueEnabled(queues)) queues['1'] = 1;
+      } else {
+        queues = { ...EMPTY_QUEUES };
+      }
 
       const enabled = enabledFromQueues(queues);
       const queue = ex?.queue ?? primaryQueue(queues);
@@ -341,11 +428,14 @@ export function loadFsSelections(briefingId: number): FsSelection[] {
 
   const widgetLinks = db.prepare(`
     SELECT wfm.fs_item_id, w.id, w.name, w.description, w.image_path
-    FROM briefing_widget_sel bws
-    JOIN widget_fs_map wfm ON wfm.widget_id = bws.widget_id
-    JOIN widgets w ON w.id = bws.widget_id
-    WHERE bws.briefing_id=?
-  `).all(briefingId) as { fs_item_id: number; id: number; name: string; description: string | null; image_path: string | null }[];
+    FROM (
+      SELECT widget_id FROM briefing_widget_sel WHERE briefing_id=?
+      UNION
+      SELECT widget_id FROM briefing_customer_widget_sel WHERE briefing_id=?
+    ) sel
+    JOIN widget_fs_map wfm ON wfm.widget_id = sel.widget_id
+    JOIN widgets w ON w.id = sel.widget_id
+  `).all(briefingId, briefingId) as { fs_item_id: number; id: number; name: string; description: string | null; image_path: string | null }[];
   const widgetsByFs = new Map<number, { id: number; name: string; description: string | null; image_path: string | null }[]>();
   for (const w of widgetLinks) {
     const list = widgetsByFs.get(w.fs_item_id) ?? [];

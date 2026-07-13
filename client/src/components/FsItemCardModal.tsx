@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { BriefingFsDetailLine, BriefingFsSel } from '../types';
 import { isNsiLineModified } from '../fsDetailLines';
 import { isCustomerFsItem } from '../fsCustomerItems';
+import { WidgetImageThumbnail } from './WidgetImagePreview';
 
 function initialCustomerBreakdown(item: BriefingFsSel): string {
   if (item.description?.trim()) return item.description;
@@ -70,12 +71,14 @@ function buildInitialDetailLines(item: BriefingFsSel): BriefingFsDetailLine[] {
 export default function FsItemCardModal({
   item,
   moveTargets,
+  fsTrace,
   onClose,
   onSave,
   onMoveCustomerLine,
 }: {
   item: BriefingFsSel;
   moveTargets: { fs_item_id: number; label: string; group: string }[];
+  fsTrace?: { customTexts: string[]; solutionNames: string[] };
   onClose: () => void;
   onSave: (patch: Partial<BriefingFsSel>) => void;
   onMoveCustomerLine: (
@@ -336,11 +339,36 @@ export default function FsItemCardModal({
           {!customerItem && (item.matched_widgets ?? []).length > 0 && (
             <section>
               <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Виджеты</h3>
-              <ul className="text-xs text-slate-600 space-y-0.5">
+              <ul className="text-xs text-slate-600 space-y-1">
                 {item.matched_widgets!.map(w => (
-                  <li key={w.id}>· {w.name}</li>
+                  <li key={w.id} className="flex items-center gap-2">
+                    <WidgetImageThumbnail
+                      imagePath={w.image_path}
+                      name={w.name}
+                      className="w-10 h-7 object-contain bg-white border border-slate-100 rounded shrink-0 cursor-pointer hover:border-slate-400"
+                    />
+                    <span>{w.name}</span>
+                  </li>
                 ))}
               </ul>
+            </section>
+          )}
+
+          {fsTrace && (fsTrace.customTexts.length > 0 || fsTrace.solutionNames.length > 0) && (
+            <section className="border border-slate-100 rounded-lg p-3 bg-slate-50/80">
+              <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+                Источник в брифинге
+              </h3>
+              {fsTrace.customTexts.map(text => (
+                <div key={text} className="text-xs text-slate-700 italic mb-1">
+                  Проблематика заказчика: «{text}»
+                </div>
+              ))}
+              {fsTrace.solutionNames.length > 0 && (
+                <div className="text-xs text-slate-600">
+                  Решения: {fsTrace.solutionNames.join('; ')}
+                </div>
+              )}
             </section>
           )}
 

@@ -17,8 +17,9 @@ import {
   loadFsCatalogGroups,
   moveFsCatalogItemToGroup,
 } from '../fsCatalogReorder';
-import { listSolutionsCatalog, loadSolutionById, createSolutionCatalog, updateSolution, deleteSolution, deleteSolutionsExclusiveToHypothesis, deduplicateSolutions, getSolutionFsItemIds, syncSolutionFsLinks } from '../solutions';
+import { listSolutionsCatalog, loadSolutionById, createSolutionCatalog, updateSolution, deleteSolution, deleteSolutionsExclusiveToHypothesis, deduplicateSolutions, getSolutionFsLinks, syncSolutionFsLinks, getSolutionWidgetIds, syncSolutionWidgetLinks } from '../solutions';
 import { listProblemsCatalog, loadProblemById, createProblemCatalog, updateProblem, deleteProblem, deleteProblemsExclusiveToHypothesis, createProblem } from '../problems';
+import { loadWidgetById, getWidgetFsItemIds, syncWidgetFsLinks, saveWidgetImage, removeWidgetImage } from '../widgets';
 
 export const catalogRouter = Router();
 
@@ -44,9 +45,22 @@ catalogRouter.get('/maturity-levels', (_req, res) => {
 });
 
 catalogRouter.get('/problems', (req, res) => {
-  const { industry_id, segment_id, maturity_id } = req.query;
-  const filters: { industry_id?: number; segment_id?: number; maturity_id?: number } = {};
-  if (industry_id) filters.industry_id = Number(industry_id);
+  const { industry_id, industry_ids, activity_type_ids, segment_id, maturity_id } = req.query;
+  const filters: {
+    industry_id?: number;
+    industry_ids?: number[];
+    activity_type_ids?: number[];
+    segment_id?: number;
+    maturity_id?: number;
+  } = {};
+  if (activity_type_ids) {
+    filters.activity_type_ids = String(activity_type_ids).split(',').map(Number).filter(Boolean);
+  }
+  if (industry_ids) {
+    filters.industry_ids = String(industry_ids).split(',').map(Number).filter(Boolean);
+  } else if (industry_id) {
+    filters.industry_id = Number(industry_id);
+  }
   if (segment_id) filters.segment_id = Number(segment_id);
   if (maturity_id) filters.maturity_id = Number(maturity_id);
   res.json(listProblemsCatalog(filters));
@@ -151,15 +165,42 @@ catalogRouter.get('/solutions/:id/fs-links', (req, res) => {
   const id = Number(req.params.id);
   const solution = db.prepare(`SELECT id FROM solutions WHERE id=?`).get(id);
   if (!solution) return res.status(404).json({ error: 'not found' });
-  res.json({ fs_item_ids: getSolutionFsItemIds(id) });
+  const fs_links = getSolutionFsLinks(id);
+  res.json({ fs_links, fs_item_ids: fs_links.map(l => l.fs_item_id) });
 });
 
 catalogRouter.put('/solutions/:id/fs-links', (req, res) => {
   const id = Number(req.params.id);
-  const body = req.body as { fs_item_ids?: number[] };
+  const body = req.body as { fs_links?: { fs_item_id: number; link_type?: string }[]; fs_item_ids?: number[] };
   try {
-    const fs_item_ids = syncSolutionFsLinks(id, body.fs_item_ids ?? []);
-    res.json({ fs_item_ids });
+    const links = body.fs_links?.length
+      ? body.fs_links.map(l => ({
+        fs_item_id: l.fs_item_id,
+        link_type: (l.link_type === 'optional' ? 'optional' : 'required') as 'required' | 'optional',
+      }))
+      : (body.fs_item_ids ?? []).map(fs_item_id => ({ fs_item_id, link_type: 'required' as const }));
+    const fs_links = syncSolutionFsLinks(id, links);
+    res.json({ fs_links, fs_item_ids: fs_links.map(l => l.fs_item_id) });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'update failed';
+    if (msg === 'not found') return res.status(404).json({ error: msg });
+    res.status(400).json({ error: msg });
+  }
+});
+
+catalogRouter.get('/solutions/:id/widget-links', (req, res) => {
+  const id = Number(req.params.id);
+  const solution = db.prepare(`SELECT id FROM solutions WHERE id=?`).get(id);
+  if (!solution) return res.status(404).json({ error: 'not found' });
+  res.json({ widget_ids: getSolutionWidgetIds(id) });
+});
+
+catalogRouter.put('/solutions/:id/widget-links', (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as { widget_ids?: number[] };
+  try {
+    const widget_ids = syncSolutionWidgetLinks(id, body.widget_ids ?? []);
+    res.json({ widget_ids });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'update failed';
     if (msg === 'not found') return res.status(404).json({ error: msg });
@@ -168,7 +209,13 @@ catalogRouter.put('/solutions/:id/fs-links', (req, res) => {
 });
 
 catalogRouter.get('/widgets', (_req, res) => {
-  res.json(db.prepare(`SELECT * FROM widgets ORDER BY name`).all());
+  res.json(db.prepare(`
+    SELECT w.*,
+      (SELECT COUNT(*) FROM solution_widget_map swm WHERE swm.widget_id = w.id) AS linked_solution_count,
+      (SELECT COUNT(*) FROM widget_fs_map wfm WHERE wfm.widget_id = w.id) AS linked_fs_count
+    FROM widgets w
+    ORDER BY w.name
+  `).all());
 });
 
 catalogRouter.get('/widgets-by-solution/:solutionId', (req, res) => {
@@ -178,6 +225,59 @@ catalogRouter.get('/widgets-by-solution/:solutionId', (req, res) => {
     WHERE swm.solution_id=?
     ORDER BY w.name
   `).all(req.params.solutionId));
+});
+
+catalogRouter.get('/widgets/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const item = loadWidgetById(id);
+  if (!item) return res.status(404).json({ error: 'not found' });
+  res.json(item);
+});
+
+catalogRouter.get('/widgets/:id/fs-links', (req, res) => {
+  const id = Number(req.params.id);
+  const widget = db.prepare(`SELECT id FROM widgets WHERE id=?`).get(id);
+  if (!widget) return res.status(404).json({ error: 'not found' });
+  res.json({ fs_item_ids: getWidgetFsItemIds(id) });
+});
+
+catalogRouter.put('/widgets/:id/fs-links', (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as { fs_item_ids?: number[] };
+  try {
+    const fs_item_ids = syncWidgetFsLinks(id, body.fs_item_ids ?? []);
+    res.json({ fs_item_ids });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'update failed';
+    if (msg === 'not found') return res.status(404).json({ error: msg });
+    res.status(400).json({ error: msg });
+  }
+});
+
+catalogRouter.post('/widgets/:id/image', (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as { image_base64?: string; filename?: string };
+  try {
+    if (!body.image_base64?.trim()) return res.status(400).json({ error: 'image_base64 is required' });
+    const item = saveWidgetImage(id, body.image_base64, body.filename);
+    res.json(item);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'upload failed';
+    if (msg === 'not found') return res.status(404).json({ error: msg });
+    res.status(400).json({ error: msg });
+  }
+});
+
+catalogRouter.delete('/widgets/:id/image', (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const item = removeWidgetImage(id);
+    res.json(item);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'delete failed';
+    if (msg === 'not found') return res.status(404).json({ error: msg });
+    res.status(400).json({ error: msg });
+  }
 });
 
 catalogRouter.get('/fs-catalog', (_req, res) => {
@@ -645,8 +745,12 @@ catalogRouter.get('/links/solution-fs', (_req, res) => {
 });
 
 catalogRouter.post('/links/solution-fs', (req, res) => {
-  const { solution_id, fs_item_id } = req.body as { solution_id: number; fs_item_id: number };
-  db.prepare(`INSERT OR IGNORE INTO solution_fs_map(solution_id, fs_item_id) VALUES (?,?)`).run(solution_id, fs_item_id);
+  const { solution_id, fs_item_id, link_type } = req.body as {
+    solution_id: number; fs_item_id: number; link_type?: string;
+  };
+  db.prepare(`
+    INSERT OR IGNORE INTO solution_fs_map(solution_id, fs_item_id, link_type) VALUES (?,?,?)
+  `).run(solution_id, fs_item_id, link_type === 'optional' ? 'optional' : 'required');
   res.json({ ok: true });
 });
 

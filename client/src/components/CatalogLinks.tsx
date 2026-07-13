@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import type { Widget, Solution, Problem, FsCatalogItem, FsCatalogGroup, CatalogLink, ProjectType, ProjectTypeRate, HeadcountCoefficient, HypothesisListItem, HypothesisProblemDraft, ActivityType } from '../types';
+import type { Widget, Solution, Problem, FsCatalogItem, FsCatalogGroup, ProjectType, ProjectTypeRate, HeadcountCoefficient, HypothesisListItem, HypothesisProblemDraft, ActivityType } from '../types';
 import {
-  getWidgets, createWidget, updateWidget, deleteWidget,
+  getWidgets, createWidget, updateWidget, deleteWidget, getWidget,
+  uploadWidgetImage, removeWidgetImage,
   getSolutions, getProblems, getProblem, createProblemCatalog, saveProblem, deleteProblem, deleteProblemsByHypothesis, getMaturityLevels, getActivityTypes, getFsCatalog, getFsCatalogItems, createFsCatalogItem, patchFsCatalogItem, saveFsCatalogDetails, getFsCatalogUsage, publishFsCatalogItem,
   createFsCatalogGroup, copyFsCatalogItem, copyFsCatalogGroup, reorderFsCatalog, moveFsCatalogItemToGroup,
   deleteFsCatalogItem, deleteFsCatalogGroup,
   getHypotheses, getHypothesis, createHypothesis, saveHypothesis, deleteHypothesis,
   getSolution, createSolutionCatalog, saveSolution, deleteSolution, deleteSolutionsByHypothesis,
   getSolutionFsLinks, saveSolutionFsLinks,
-  getSolutionWidgetLinks, addSolutionWidgetLink, removeSolutionWidgetLink,
-  getWidgetFsLinks, addWidgetFsLink, removeWidgetFsLink,
+  getSolutionWidgetLinksForSolution, saveSolutionWidgetLinksForSolution,
+  getWidgetFsLinksForWidget, saveWidgetFsLinksForWidget,
   getProjectTypes, createProjectType, updateProjectType, deleteProjectType,
   getProjectTypeRates, addProjectTypeRate, getProjectTypeCoefficients, saveProjectTypeCoefficients,
 } from '../api';
@@ -17,6 +18,7 @@ import FsNsiTable from './FsNsiTable';
 import HypothesesNsi from './HypothesesNsi';
 import ProblemsNsi from './ProblemsNsi';
 import SolutionsNsi from './SolutionsNsi';
+import WidgetsNsi from './WidgetsNsi';
 
 type FsCatalogUsageRow = {
   briefing_name: string;
@@ -25,7 +27,7 @@ type FsCatalogUsageRow = {
   recorded_at: string;
 };
 
-type LinkTab = 'widgets' | 'nsi-fs' | 'hypotheses' | 'problems' | 'solutions' | 'solution-widget' | 'widget-fs' | 'project-types';
+type LinkTab = 'widgets' | 'nsi-fs' | 'hypotheses' | 'problems' | 'solutions' | 'project-types';
 
 const LINK_TABS: { id: LinkTab; label: string }[] = [
   { id: 'widgets', label: 'Виджеты' },
@@ -33,8 +35,6 @@ const LINK_TABS: { id: LinkTab; label: string }[] = [
   { id: 'hypotheses', label: 'Гипотезы' },
   { id: 'problems', label: 'Проблематики' },
   { id: 'solutions', label: 'Решения' },
-  { id: 'solution-widget', label: 'Решение → Виджет' },
-  { id: 'widget-fs', label: 'Виджет → ФС' },
   { id: 'project-types', label: 'Типы проекта' },
 ];
 
@@ -47,16 +47,12 @@ export default function CatalogLinks() {
   const [hypotheses, setHypotheses] = useState<HypothesisListItem[]>([]);
   const [activityTypes, setActivityTypes] = useState<ActivityType[]>([]);
   const [maturityLevels, setMaturityLevels] = useState<import('../types').MaturityLevel[]>([]);
-  const [swLinks, setSwLinks] = useState<CatalogLink[]>([]);
-  const [wfLinks, setWfLinks] = useState<CatalogLink[]>([]);
   const [projectTypes, setProjectTypes] = useState<ProjectType[]>([]);
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
   const [typeRates, setTypeRates] = useState<ProjectTypeRate[]>([]);
   const [typeCoeffs, setTypeCoeffs] = useState<HeadcountCoefficient[]>([]);
   const [newRate, setNewRate] = useState('');
 
-  const [newWidget, setNewWidget] = useState({ name: '', description: '', type: 'dashboard' });
-  const [addLink, setAddLink] = useState<Record<string, string>>({});
   const [fsNsiGroups, setFsNsiGroups] = useState<FsCatalogGroup[]>([]);
   const [fsNsiItems, setFsNsiItems] = useState<FsCatalogItem[]>([]);
   const [usageModal, setUsageModal] = useState<{ id: number; name: string } | null>(null);
@@ -170,8 +166,6 @@ export default function CatalogLinks() {
     setHypotheses(await getHypotheses());
     setActivityTypes(await getActivityTypes());
     setMaturityLevels(await getMaturityLevels());
-    setSwLinks(await getSolutionWidgetLinks());
-    setWfLinks(await getWidgetFsLinks());
     const pts = await getProjectTypes();
     setProjectTypes(pts);
     if (selectedTypeId && pts.some(p => p.id === selectedTypeId)) {
@@ -188,18 +182,11 @@ export default function CatalogLinks() {
 
   useEffect(() => { reload(); }, []);
 
-  async function handleCreateWidget() {
-    if (!newWidget.name.trim()) return;
-    await createWidget(newWidget);
-    setNewWidget({ name: '', description: '', type: 'dashboard' });
-    reload();
-  }
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="bg-white border-b border-slate-200 px-4 py-2">
         <h2 className="text-sm font-semibold text-slate-700">Админка справочников предоценки</h2>
-        <p className="text-[10px] text-slate-400">Связи problem→solution, solution→widget, widget→ФС · сопоставление solution→ФС в карточке решения</p>
+        <p className="text-[10px] text-slate-400">Связи problem→solution · сопоставление solution→виджет и solution→ФС в карточке решения; widget→ФС — в карточке виджета</p>
       </div>
 
       <div className="bg-white border-b border-slate-200 px-4 flex gap-0 shrink-0 overflow-x-auto">
@@ -280,58 +267,42 @@ export default function CatalogLinks() {
         )}
 
         {linkTab === 'widgets' && (
-          <div className="space-y-4">
-            <div className="flex gap-2 items-end">
-              <div className="flex-1">
-                <label className="text-[10px] text-slate-400">Название</label>
-                <input className="w-full text-sm border rounded px-2 py-1" value={newWidget.name}
-                  onChange={e => setNewWidget({ ...newWidget, name: e.target.value })} />
-              </div>
-              <div className="flex-1">
-                <label className="text-[10px] text-slate-400">Описание</label>
-                <input className="w-full text-sm border rounded px-2 py-1" value={newWidget.description}
-                  onChange={e => setNewWidget({ ...newWidget, description: e.target.value })} />
-              </div>
-              <select className="text-sm border rounded px-2 py-1" value={newWidget.type}
-                onChange={e => setNewWidget({ ...newWidget, type: e.target.value })}>
-                <option value="dashboard">dashboard</option>
-                <option value="screen">screen</option>
-                <option value="report">report</option>
-              </select>
-              <button onClick={handleCreateWidget} className="text-sm bg-blue-500 text-white px-3 py-1 rounded">+</button>
-            </div>
-            <table className="w-full text-xs border-collapse">
-              <thead><tr className="bg-slate-50">
-                <th className="p-2 border text-left w-20">Картинка</th>
-                <th className="p-2 border text-left">Название</th>
-                <th className="p-2 border text-left">Тип</th>
-                <th className="p-2 border text-left">Описание</th>
-                <th className="p-2 border w-16"></th>
-              </tr></thead>
-              <tbody>
-                {widgets.map(w => (
-                  <tr key={w.id}>
-                    <td className="p-2 border">
-                      {w.image_path ? (
-                        <img src={`/api/uploads/${w.image_path}`} alt="" className="w-14 h-10 object-contain" />
-                      ) : (
-                        <span className="text-slate-300">—</span>
-                      )}
-                    </td>
-                    <td className="p-2 border">
-                      <input className="w-full border-0 bg-transparent" defaultValue={w.name}
-                        onBlur={e => { if (e.target.value !== w.name) updateWidget(w.id, { name: e.target.value }).then(reload); }} />
-                    </td>
-                    <td className="p-2 border text-slate-500">{w.type}</td>
-                    <td className="p-2 border text-slate-500 truncate max-w-xs">{w.description}</td>
-                    <td className="p-2 border">
-                      <button onClick={() => { if (confirm('Удалить?')) deleteWidget(w.id).then(reload); }}
-                        className="text-red-400 hover:text-red-600">✕</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500">
+              Справочник виджетов. Откройте виджет — слева гипотезы, проблематики и связанные решения; справа сопоставление с пунктами ФС.
+            </p>
+            <WidgetsNsi
+              items={widgets}
+              fsGroups={fsNsiGroups}
+              fsItems={fsNsiItems}
+              onLoadFsLinks={async id => (await getWidgetFsLinksForWidget(id)).fs_item_ids}
+              onSaveFsLinks={async (id, ids) => (await saveWidgetFsLinksForWidget(id, ids)).fs_item_ids}
+              onOpen={id => getWidget(id)}
+              onCreate={async data => {
+                const { id } = await createWidget(data);
+                await reload();
+                return getWidget(id);
+              }}
+              onSave={async (id, data) => {
+                await updateWidget(id, data);
+                await reload();
+                return getWidget(id);
+              }}
+              onDelete={async id => {
+                await deleteWidget(id);
+                await reload();
+              }}
+              onUploadImage={async (id, file) => {
+                const updated = await uploadWidgetImage(id, file);
+                await reload();
+                return updated;
+              }}
+              onRemoveImage={async id => {
+                const updated = await removeWidgetImage(id);
+                await reload();
+                return updated;
+              }}
+            />
           </div>
         )}
 
@@ -413,15 +384,18 @@ export default function CatalogLinks() {
         {linkTab === 'solutions' && (
           <div className="space-y-3">
             <p className="text-xs text-slate-500">
-              Глобальный справочник решений. Откройте решение — слева гипотезы и проблематики, справа сопоставление с пунктами ФС (да/нет).
+              Глобальный справочник решений. Откройте решение — слева гипотезы и проблематики, справа сопоставление с виджетами и пунктами ФС (да/нет).
             </p>
             <SolutionsNsi
               items={solutions}
               hypothesisOptions={hypotheses.map(h => h.name).sort((a, b) => a.localeCompare(b, 'ru'))}
               fsGroups={fsNsiGroups}
               fsItems={fsNsiItems}
-              onLoadFsLinks={async id => (await getSolutionFsLinks(id)).fs_item_ids}
-              onSaveFsLinks={async (id, ids) => (await saveSolutionFsLinks(id, ids)).fs_item_ids}
+              widgets={widgets}
+              onLoadFsLinks={async id => (await getSolutionFsLinks(id)).fs_links}
+              onSaveFsLinks={async (id, links) => (await saveSolutionFsLinks(id, links)).fs_links}
+              onLoadWidgetLinks={async id => (await getSolutionWidgetLinksForSolution(id)).widget_ids}
+              onSaveWidgetLinks={async (id, ids) => (await saveSolutionWidgetLinksForSolution(id, ids)).widget_ids}
               onOpen={id => getSolution(id)}
               onCreate={async data => {
                 const created = await createSolutionCatalog(data);
@@ -444,34 +418,6 @@ export default function CatalogLinks() {
               }}
             />
           </div>
-        )}
-
-        {linkTab === 'solution-widget' && (
-          <LinkEditor
-            links={swLinks}
-            fields={[
-              { key: 'solution_id', label: 'Решение', options: solutions.map(s => ({ id: s.id, name: s.name })) },
-              { key: 'widget_id', label: 'Виджет', options: widgets.map(w => ({ id: w.id, name: w.name })) },
-            ]}
-            display={(l) => `${l.solution_name} → ${l.widget_name}`}
-            onAdd={async (v) => { await addSolutionWidgetLink(Number(v.solution_id), Number(v.widget_id)); reload(); }}
-            onRemove={async (l) => { await removeSolutionWidgetLink(l.solution_id!, l.widget_id!); reload(); }}
-            addLink={addLink} setAddLink={setAddLink} tabKey="sw"
-          />
-        )}
-
-        {linkTab === 'widget-fs' && (
-          <LinkEditor
-            links={wfLinks}
-            fields={[
-              { key: 'widget_id', label: 'Виджет', options: widgets.map(w => ({ id: w.id, name: w.name })) },
-              { key: 'fs_item_id', label: 'ФС', options: fsCatalog.map(f => ({ id: f.id, name: f.name })) },
-            ]}
-            display={(l) => `${l.widget_name} → ${l.fs_name}`}
-            onAdd={async (v) => { await addWidgetFsLink(Number(v.widget_id), Number(v.fs_item_id)); reload(); }}
-            onRemove={async (l) => { await removeWidgetFsLink(l.widget_id!, l.fs_item_id!); reload(); }}
-            addLink={addLink} setAddLink={setAddLink} tabKey="wf"
-          />
         )}
 
         {linkTab === 'project-types' && (
@@ -563,51 +509,6 @@ export default function CatalogLinks() {
             )}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function LinkEditor({ links, fields, display, onAdd, onRemove, addLink, setAddLink, tabKey }: {
-  links: CatalogLink[];
-  fields: { key: string; label: string; options: { id: number; name: string }[] }[];
-  display: (l: CatalogLink) => string;
-  onAdd: (v: Record<string, string>) => Promise<void>;
-  onRemove: (l: CatalogLink) => Promise<void>;
-  addLink: Record<string, string>;
-  setAddLink: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  tabKey: string;
-}) {
-  return (
-    <div className="space-y-3">
-      <div className="flex gap-2 items-end">
-        {fields.map(f => (
-          <div key={f.key} className="flex-1">
-            <label className="text-[10px] text-slate-400">{f.label}</label>
-            <select className="w-full text-sm border rounded px-2 py-1"
-              value={addLink[`${tabKey}-${f.key}`] ?? ''}
-              onChange={e => setAddLink(prev => ({ ...prev, [`${tabKey}-${f.key}`]: e.target.value }))}>
-              <option value="">—</option>
-              {f.options.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-            </select>
-          </div>
-        ))}
-        <button
-          onClick={() => {
-            const v: Record<string, string> = {};
-            fields.forEach(f => { v[f.key] = addLink[`${tabKey}-${f.key}`] ?? ''; });
-            if (fields.every(f => v[f.key])) onAdd(v);
-          }}
-          className="text-sm bg-blue-500 text-white px-3 py-1 rounded">+</button>
-      </div>
-      <div className="space-y-1">
-        {links.map((l, i) => (
-          <div key={i} className="flex items-center gap-2 text-sm p-2 bg-slate-50 rounded">
-            <span className="flex-1">{display(l)}</span>
-            <button onClick={() => onRemove(l)} className="text-red-400 hover:text-red-600 text-xs">✕</button>
-          </div>
-        ))}
-        {links.length === 0 && <p className="text-sm text-slate-400">Нет связей</p>}
       </div>
     </div>
   );
