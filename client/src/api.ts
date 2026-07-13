@@ -4,6 +4,7 @@ import type {
   Problem, ProblemDetail, Solution, SolutionDetail, Widget, FsCatalogItem, FsCatalogGroup, FsCatalogItemsResponse, FsPhase, BriefingParams, CatalogLink,
   ProjectType, ProjectTypeRate, HeadcountCoefficient, BriefingAssessment,
   AssessmentScenarioSnapshot, FsNmdValue, HypothesisListItem, HypothesisDetail, ActivityType,
+  ExportBlocks, ImportMode, BriefingImportPreview, BriefingImportResult,
 } from './types';
 import type { CreateSnapshotPayload } from './scenarioCalc';
 
@@ -177,6 +178,45 @@ export const addBriefingFsCatalogItems = (id: number, fs_item_ids: number[]) =>
 export const calculateBriefing = (id: number) => req<BriefingCalcResult>(`/briefings/${id}/calculate`);
 export const generateProjectFromBriefing = (id: number, data: { name?: string; created_by?: number }) =>
   req<{ project_id: number }>(`/briefings/${id}/generate-project`, { method: 'POST', body: JSON.stringify(data) });
+
+export const exportBriefingHtml = async (id: number, blocks: ExportBlocks): Promise<void> => {
+  const r = await fetch(`${BASE}/briefings/${id}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ blocks }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  const blob = await r.blob();
+  const cd = r.headers.get('Content-Disposition') ?? '';
+  const match = cd.match(/filename="([^"]+)"/);
+  const filename = match?.[1] ?? `briefing-${id}-customer.html`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+export const previewBriefingHtmlImport = (
+  id: number,
+  html: string,
+  options: { mode: ImportMode; blocks?: Partial<ExportBlocks> },
+) =>
+  req<BriefingImportPreview>(`/briefings/${id}/import/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ html, ...options }),
+  });
+
+export const importBriefingHtml = (
+  id: number,
+  html: string,
+  options: { mode: ImportMode; blocks?: Partial<ExportBlocks> },
+) =>
+  req<BriefingImportResult>(`/briefings/${id}/import`, {
+    method: 'POST',
+    body: JSON.stringify({ html, ...options }),
+  });
 
 // === Catalog ===
 export const getIndustries = () => req<Industry[]>('/catalog/industries');

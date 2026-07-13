@@ -25,6 +25,9 @@ import {
   parsePhaseCalcParamsJson,
   type PhaseCalcParams,
 } from '../phaseCalcParams';
+import { buildBriefingHtmlExport } from '../export/briefingHtmlExport';
+import { applyBriefingHtmlImport, previewBriefingHtmlImport } from '../export/briefingHtmlImport';
+import { mergeExportBlocks, type ExportBlocks, type ImportOptions } from '../export/briefingExportTypes';
 
 export const briefingsRouter = Router();
 
@@ -273,7 +276,7 @@ function loadAssessmentSnapshots(briefingId: number) {
   }));
 }
 
-function getBriefingFull(id: number) {
+export function getBriefingFull(id: number) {
   const briefing = db.prepare(`
     SELECT b.*, i.name as industry_name, s.name as segment_name
     FROM briefings b
@@ -1119,4 +1122,48 @@ briefingsRouter.post('/:id/generate-project', (req, res) => {
   tx();
 
   res.json({ project_id: projectId });
+});
+
+function sanitizeExportFilename(name: string): string {
+  const cleaned = (name || 'briefing').replace(/[\\/:*?"<>|\r\n]/g, '_').trim().slice(0, 80);
+  return cleaned.replace(/[^\x20-\x7E]/g, '_') || 'briefing';
+}
+
+briefingsRouter.post('/:id/export', (req, res) => {
+  const id = Number(req.params.id);
+  const briefing = db.prepare(`SELECT id, name FROM briefings WHERE id=?`).get(id);
+  if (!briefing) return res.status(404).json({ error: 'not found' });
+
+  const blocks = mergeExportBlocks((req.body as { blocks?: Partial<ExportBlocks> }).blocks);
+  const html = buildBriefingHtmlExport(id, blocks);
+  if (!html) return res.status(404).json({ error: 'not found' });
+
+  const filename = `${sanitizeExportFilename((briefing as { name: string }).name)}-customer.html`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(html);
+});
+
+briefingsRouter.post('/:id/import/preview', (req, res) => {
+  const id = Number(req.params.id);
+  const { html, mode, blocks } = req.body as { html?: string; mode?: ImportOptions['mode']; blocks?: Partial<ExportBlocks> };
+  if (!html?.trim()) return res.status(400).json({ error: 'html required' });
+  try {
+    const preview = previewBriefingHtmlImport(id, html, { mode: mode ?? 'replace', blocks });
+    res.json(preview);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+briefingsRouter.post('/:id/import', (req, res) => {
+  const id = Number(req.params.id);
+  const { html, mode, blocks } = req.body as { html?: string; mode?: ImportOptions['mode']; blocks?: Partial<ExportBlocks> };
+  if (!html?.trim()) return res.status(400).json({ error: 'html required' });
+  try {
+    const result = applyBriefingHtmlImport(id, html, { mode: mode ?? 'replace', blocks });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });

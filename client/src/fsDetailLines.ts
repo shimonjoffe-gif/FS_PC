@@ -1,4 +1,5 @@
 import type { BriefingFsDetailLine, BriefingFsSel } from './types';
+import { isCustomerFsItem } from './fsCustomerItems';
 
 export function isNsiLineModified(line: BriefingFsDetailLine): boolean {
   if (line.source !== 'nsi') return false;
@@ -16,4 +17,14 @@ export function fsDetailLineFlags(item: BriefingFsSel): {
     modified: lines.some(isNsiLineModified),
     customerAdded: lines.some(l => l.source === 'customer'),
   };
+}
+
+/** Функции заказчика (10/11) и пункты с пользовательскими подпунктами расшифровки. */
+export function countGroupUserItems(items: BriefingFsSel[]): number {
+  let n = 0;
+  for (const item of items) {
+    if (isCustomerFsItem(item)) n++;
+    else if (fsDetailLineFlags(item).customerAdded) n++;
+  }
+  return n;
 }

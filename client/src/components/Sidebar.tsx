@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import type { Project, Briefing } from '../types';
 import { copyProject, deleteProject, createBriefing, deleteBriefing } from '../api';
+import BriefingExportImportModal from './BriefingExportImportModal';
 
 interface Props {
   projects: Project[];
@@ -14,6 +15,7 @@ interface Props {
   selectedBriefingId: number | null;
   onSelectBriefing: (id: number) => void;
   onRefreshBriefings: () => void;
+  onBriefingImported?: () => void;
   onNewProjectChoice: (choice: 'quick' | 'briefing') => void;
   onOpenBriefingAdmin: () => void;
 }
@@ -21,9 +23,10 @@ interface Props {
 export default function Sidebar({
   projects, selectedId, onSelect, onRefresh, currentUserId, mode,
   onOpenCatalog, briefings, selectedBriefingId, onSelectBriefing,
-  onRefreshBriefings, onNewProjectChoice, onOpenBriefingAdmin,
+  onRefreshBriefings, onBriefingImported, onNewProjectChoice, onOpenBriefingAdmin,
 }: Props) {
   const [showNewChoice, setShowNewChoice] = useState(false);
+  const [exportImport, setExportImport] = useState<{ mode: 'export' | 'import'; briefing: Briefing } | null>(null);
 
   const templates = projects.filter(p => p.is_template);
   const myProjects = projects.filter(p => !p.is_template);
@@ -96,6 +99,16 @@ export default function Sidebar({
             <span className="flex-1 text-xs truncate" title={b.name}>{b.name}</span>
             {b.project_id && <span className="text-[9px] text-green-500" title="Проект создан">✓</span>}
             <button
+              className="hidden group-hover:block text-slate-300 hover:text-purple-500 text-[10px] px-0.5"
+              title="Выгрузить для заказчика"
+              onClick={(e) => { e.stopPropagation(); setExportImport({ mode: 'export', briefing: b }); }}
+            >⬇</button>
+            <button
+              className="hidden group-hover:block text-slate-300 hover:text-purple-500 text-[10px] px-0.5"
+              title="Загрузить от заказчика"
+              onClick={(e) => { e.stopPropagation(); setExportImport({ mode: 'import', briefing: b }); }}
+            >⬆</button>
+            <button
               className="hidden group-hover:block text-slate-300 hover:text-red-400 text-xs px-1"
               onClick={(e) => handleDeleteBriefing(b, e)}
             >✕</button>
@@ -111,6 +124,16 @@ export default function Sidebar({
           + Новая предоценка
         </button>
       </div>
+
+      {exportImport && (
+        <BriefingExportImportModal
+          mode={exportImport.mode}
+          briefingId={exportImport.briefing.id}
+          briefingName={exportImport.briefing.name}
+          onClose={() => setExportImport(null)}
+          onImported={onBriefingImported ?? onRefreshBriefings}
+        />
+      )}
 
       {/* Шаблоны */}
       <div className="p-3 border-b border-slate-100">

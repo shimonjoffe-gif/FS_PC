@@ -16,12 +16,13 @@ function compareNumericPrefix(a: string | null | undefined, b: string | null | u
 }
 
 export function loadFsCatalogGroups(): FsCatalogGroupRow[] {
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT id, group_prefix, group_name, sort_order, published
     FROM fs_catalog
     WHERE item_type = 'group' AND ${FS_CATALOG_ACTIVE_SQL}
     ORDER BY sort_order, id
   `).all() as FsCatalogGroupRow[];
+  return rows.sort((a, b) => compareNumericPrefix(a.group_prefix, b.group_prefix) || a.id - b.id);
 }
 
 export function resolveGroupMarker(groupKey: string | number): FsCatalogGroupRow | undefined {

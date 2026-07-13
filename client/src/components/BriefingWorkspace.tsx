@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import type {
   BriefingFull, Industry, Segment, MaturityLevel, Problem, Solution, Widget,
   BriefingFsSel, BriefingParams, TeamProportions, BriefingFsDetailLine,
@@ -9,7 +9,7 @@ import {
   parseQueuesJson, parseQueueLabels, queueLabel,
   anyQueueEnabled, itemQueues,
 } from '../types';
-import { compareFsByGroupPrefix, compareFsPrefix } from '../utils/fsPrefixSort';
+import { groupFsItemsSorted } from '../utils/fsDisplayGroups';
 import {
   getBriefing, updateBriefing, saveBriefingProblems, saveBriefingSolutions,
   saveBriefingWidgets, saveBriefingFs, saveBriefingParams, deriveBriefingFs,
@@ -48,7 +48,7 @@ import AssessmentTab from './AssessmentTab';
 import PhaseCalcTable from './PhaseCalcTable';
 import PhaseCalcParamsPanel from './PhaseCalcParamsPanel';
 import FsItemCardModal from './FsItemCardModal';
-import { fsDetailLineFlags } from '../fsDetailLines';
+import { countGroupUserItems, fsDetailLineFlags } from '../fsDetailLines';
 import {
   buildFsItemOptions,
   countCustomerDetailLines,
@@ -340,23 +340,7 @@ function buildFsSavePayload(allItems: BriefingFsSel[]) {
 }
 
 function groupFsItems(items: BriefingFsSel[]): { group: string; groupPrefix: string | null; items: BriefingFsSel[] }[] {
-  const map = new Map<string, BriefingFsSel[]>();
-  for (const item of items) {
-    const g = item.group_name || item.phase || 'Прочее';
-    const list = map.get(g) ?? [];
-    list.push(item);
-    map.set(g, list);
-  }
-  return [...map.entries()]
-    .map(([group, groupItems]) => ({
-      group,
-      groupPrefix: groupItems.find(i => i.group_prefix)?.group_prefix ?? null,
-      items: [...groupItems].sort(compareFsPrefix),
-    }))
-    .sort((a, b) => compareFsByGroupPrefix(
-      { group_prefix: a.groupPrefix },
-      { group_prefix: b.groupPrefix },
-    ));
+  return groupFsItemsSorted(items);
 }
 
 function itemQueueFlags(item: BriefingFsSel): { allOn: boolean; byQueue: Record<FsQueueKey, boolean> } {
@@ -416,16 +400,7 @@ function FsCatalogAddModal({
     });
   }
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, FsCatalogItem[]>();
-    for (const item of items) {
-      const g = item.group_name || item.phase || 'Прочее';
-      const list = map.get(g) ?? [];
-      list.push(item);
-      map.set(g, list);
-    }
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ru'));
-  }, [items]);
+  const grouped = useMemo(() => groupFsItemsSorted(items), [items]);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
@@ -441,7 +416,7 @@ function FsCatalogAddModal({
             <p className="text-slate-400">Нет доступных пунктов для добавления</p>
           ) : (
             <div className="space-y-3">
-              {grouped.map(([group, groupItems]) => (
+              {grouped.map(({ group, items: groupItems }) => (
                 <div key={group}>
                   <div className="font-semibold text-slate-700 mb-1">{group}</div>
                   <div className="space-y-1">
@@ -625,6 +600,8 @@ function FsQueueTable({
     target: BriefingFsSel;
     targetPatch: Partial<BriefingFsSel>;
   } | null>(null);
+  const fsScrollRef = useRef<HTMLDivElement>(null);
+  const fsScrollAnchorRef = useRef<{ group: string; offsetInView: number } | null>(null);
   const moveTargets = useMemo(() => buildFsItemOptions(items), [items]);
   const groups = groupFsItems(items);
   const displayGroups = useMemo(() => {
@@ -818,12 +795,28 @@ function FsQueueTable({
     const hasComment = hasFsItemQueueComment(row, q);
     const isCommentDropTarget = dragPayload?.kind === 'comment'
       && (dragPayload.fsItemId !== item.fs_item_id || dragPayload.fromQueue !== q);
+    const cellClass = `p-1 border text-center align-middle w-9 ${
+      isCommentDropTarget ? 'bg-amber-50 ring-2 ring-inset ring-amber-300' : ''
+    }`;
+    if (!hasComment) {
+      return (
+        <td
+          key={`${item.fs_item_id}-${q}-comment`}
+          className={`${cellClass} cursor-pointer`}
+          onClick={() => setCommentModal({ item: row, q })}
+          onDragOver={e => {
+            if (dragPayload?.kind === 'comment') e.preventDefault();
+          }}
+          onDrop={e => handleCommentDrop(e, item, q)}
+          title="Добавить комментарий"
+          aria-label="Добавить комментарий"
+        />
+      );
+    }
     return (
       <td
         key={`${item.fs_item_id}-${q}-comment`}
-        className={`p-1 border text-center align-middle w-9 ${
-          isCommentDropTarget ? 'bg-amber-50 ring-2 ring-inset ring-amber-300' : ''
-        }`}
+        className={cellClass}
         onDragOver={e => {
           if (dragPayload?.kind === 'comment') e.preventDefault();
         }}
@@ -831,23 +824,17 @@ function FsQueueTable({
       >
         <button
           type="button"
-          draggable={hasComment}
-          onDragStart={hasComment ? e => startCommentDrag(e, row, q) : undefined}
+          draggable
+          onDragStart={e => startCommentDrag(e, row, q)}
           onDragEnd={endQueueDrag}
           onClick={() => setCommentModal({ item: row, q })}
-          className={`w-7 h-7 mx-auto rounded inline-flex items-center justify-center ${
-            hasComment
-              ? 'text-amber-700 bg-amber-100 hover:bg-amber-200 ring-1 ring-amber-300/60 cursor-grab active:cursor-grabbing'
-              : 'hover:bg-slate-100'
-          }`}
-          title={hasComment ? 'Перетащите на комментарий другого пункта или клик — открыть' : 'Добавить комментарий'}
-          aria-label={hasComment ? 'Есть комментарий' : 'Добавить комментарий'}
+          className="w-7 h-7 mx-auto rounded inline-flex items-center justify-center text-amber-700 bg-amber-100 hover:bg-amber-200 ring-1 ring-amber-300/60 cursor-grab active:cursor-grabbing"
+          title="Перетащите на комментарий другого пункта или клик — открыть"
+          aria-label="Есть комментарий"
         >
-          {hasComment && (
-            <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 fill-current" aria-hidden>
-              <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v5A1.5 1.5 0 0 1 12.5 10H9l-2.5 2.5V10H3.5A1.5 1.5 0 0 1 2 8.5v-5Z" />
-            </svg>
-          )}
+          <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 fill-current" aria-hidden>
+            <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v5A1.5 1.5 0 0 1 12.5 10H9l-2.5 2.5V10H3.5A1.5 1.5 0 0 1 2 8.5v-5Z" />
+          </svg>
         </button>
       </td>
     );
@@ -875,7 +862,17 @@ function FsQueueTable({
     setExpandedGroups(new Set());
   }
 
-  function toggleGroup(group: string) {
+  function captureFsScrollAnchor(group: string, row: HTMLElement | null) {
+    const container = fsScrollRef.current;
+    if (!container || !row) return;
+    fsScrollAnchorRef.current = {
+      group,
+      offsetInView: row.getBoundingClientRect().top - container.getBoundingClientRect().top,
+    };
+  }
+
+  function toggleGroup(group: string, row: HTMLElement | null) {
+    captureFsScrollAnchor(group, row);
     setExpandedGroups(prev => {
       const next = new Set(prev);
       if (next.has(group)) next.delete(group);
@@ -883,6 +880,18 @@ function FsQueueTable({
       return next;
     });
   }
+
+  useLayoutEffect(() => {
+    const anchor = fsScrollAnchorRef.current;
+    const container = fsScrollRef.current;
+    if (!anchor || !container) return;
+    fsScrollAnchorRef.current = null;
+    const row = Array.from(container.querySelectorAll<HTMLElement>('tr[data-fs-group]'))
+      .find(r => r.getAttribute('data-fs-group') === anchor.group);
+    if (!row) return;
+    const delta = row.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offsetInView;
+    container.scrollTop += delta;
+  }, [expandedGroups]);
 
   function patchQueues(item: BriefingFsSel, queues: FsQueuesMap) {
     const primary = FS_QUEUE_KEYS.find(k => queues[k] === 1) ?? item.queue ?? '1';
@@ -1057,7 +1066,7 @@ function FsQueueTable({
           {showNsiColumns ? 'Скрыть НСИ' : 'Показать НСИ'}
         </button>
       </div>
-      <div className="overflow-auto max-h-[calc(100vh-220px)] border border-slate-200 rounded">
+      <div ref={fsScrollRef} className="overflow-auto max-h-[calc(100vh-220px)] border border-slate-200 rounded">
       {commentModal && (
         <FsQueueCommentModal
           item={commentModal.item}
@@ -1135,7 +1144,7 @@ function FsQueueTable({
       <table className={`w-full text-xs border-collapse ${showNsiColumns ? 'min-w-[1100px]' : 'min-w-[900px]'}`}>
         <thead className="sticky top-0 z-20">
           <tr className="bg-slate-50 text-slate-600">
-            <th rowSpan={2} className="text-left p-2 border w-14 bg-slate-50">№</th>
+            <th rowSpan={2} className="text-left p-2 border min-w-[5rem] bg-slate-50">№</th>
             <th rowSpan={2} className="text-left p-2 border min-w-[200px] bg-slate-50">Пункт ФС / Расшифровка</th>
             <th rowSpan={2} className="text-left p-2 border w-28 bg-slate-50">Тип функционала</th>
             {showNsiColumns && (
@@ -1226,14 +1235,16 @@ function FsQueueTable({
             const isExpanded = expandedGroups.has(group);
             const rowItems = yesFilter ? visibleItems : groupItems;
             const groupQueues = aggregateGroupQueues(rowItems);
+            const userItemsCount = countGroupUserItems(groupItems);
             return (
             <React.Fragment key={group}>
-              <tr className="bg-amber-50 font-semibold">
-                <td className="p-2 border text-[11px] text-slate-500 whitespace-nowrap align-top">
+              <tr className="bg-amber-50 font-semibold" data-fs-group={group}>
+                <td className="p-2 border text-[11px] text-slate-500 whitespace-nowrap align-top min-w-[5rem]">
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
-                      onClick={() => toggleGroup(group)}
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={e => toggleGroup(group, e.currentTarget.closest('tr'))}
                       className="text-slate-600 hover:text-slate-900 w-6 h-6 leading-none shrink-0"
                       title={isExpanded ? 'Свернуть группу' : 'Развернуть группу'}
                     >
@@ -1247,6 +1258,14 @@ function FsQueueTable({
                   <span className="ml-2 text-[10px] font-normal text-slate-500">
                     ({rowItems.length}{yesFilter && rowItems.length !== groupItems.length ? ` / ${groupItems.length}` : ''})
                   </span>
+                  {userItemsCount > 0 && (
+                    <span
+                      className="ml-2 inline-flex items-center rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700"
+                      title={`Добавлены пользовательские пункты (${userItemsCount})`}
+                    >
+                      +{userItemsCount} пользовательских
+                    </span>
+                  )}
                   {isCustomerFsGroupPrefix(groupPrefix) && onAddCustomerItem && (
                     <button
                       type="button"
@@ -1316,13 +1335,13 @@ function FsQueueTable({
                       key={item.fs_item_id}
                       className={`hover:bg-slate-50 ${customerItem ? 'bg-emerald-50/40' : ''} ${unmatched ? 'bg-red-50/30' : ''} ${inactive ? 'opacity-50' : ''}`}
                     >
-                      <td className="p-2 border text-[11px] text-slate-500 whitespace-nowrap align-top">
+                      <td className="p-2 border text-[11px] text-slate-500 whitespace-nowrap align-top min-w-[5rem]">
                         <div className="flex items-start gap-1">
-                          <span>{item.prefix || '—'}</span>
+                          <span className="shrink-0">{item.prefix || '—'}</span>
                           {customerItem && onDeleteCustomerItem && (
                             <button
                               type="button"
-                              className="text-red-500 hover:text-red-700 text-xs leading-none"
+                              className="text-red-500 hover:text-red-700 text-xs leading-none shrink-0"
                               title="Удалить функцию заказчика"
                               onClick={() => onDeleteCustomerItem(item)}
                             >
@@ -1347,8 +1366,17 @@ function FsQueueTable({
                             {inactive && (
                               <span className="ml-1 text-[10px] font-normal text-slate-400">(не актуален)</span>
                             )}
-                            {(detailFlags.modified || detailFlags.customerAdded) && (
+                            {(detailFlags.modified || detailFlags.customerAdded || customerItem) && (
                               <span className="ml-1.5 inline-flex items-center gap-0.5 align-middle">
+                                {customerItem && (
+                                  <span
+                                    className="inline-flex h-4 w-4 items-center justify-center rounded bg-emerald-100 text-[10px] font-bold text-emerald-700"
+                                    title="Функция заказчика"
+                                    aria-label="Функция заказчика"
+                                  >
+                                    З
+                                  </span>
+                                )}
                                 {detailFlags.modified && (
                                   <span
                                     className="inline-flex h-4 w-4 items-center justify-center rounded bg-amber-100 text-[10px] text-amber-700"
@@ -1361,8 +1389,8 @@ function FsQueueTable({
                                 {detailFlags.customerAdded && (
                                   <span
                                     className="inline-flex h-4 w-4 items-center justify-center rounded bg-emerald-100 text-[10px] font-bold text-emerald-700"
-                                    title="Добавлены подпункты расшифровки"
-                                    aria-label="Добавлены подпункты расшифровки"
+                                    title="Добавлены пользовательские подпункты"
+                                    aria-label="Добавлены пользовательские подпункты"
                                   >
                                     +
                                   </span>
@@ -1575,6 +1603,7 @@ function TabSaveBar({
 
 interface Props {
   briefingId: number;
+  reloadToken?: number;
   currentUserId: number | null;
   onProjectGenerated: (projectId: number) => void;
 }
@@ -1585,7 +1614,7 @@ function parseJson<T>(val: string | T | null | undefined, fallback: T): T {
   try { return JSON.parse(val) as T; } catch { return fallback; }
 }
 
-export default function BriefingWorkspace({ briefingId, currentUserId, onProjectGenerated }: Props) {
+export default function BriefingWorkspace({ briefingId, reloadToken = 0, currentUserId, onProjectGenerated }: Props) {
   const [tab, setTab] = useState<Tab>('customer');
   const [data, setData] = useState<BriefingFull | null>(null);
   const [industries, setIndustries] = useState<Industry[]>([]);
@@ -1624,7 +1653,7 @@ export default function BriefingWorkspace({ briefingId, currentUserId, onProject
     }
   }, [briefingId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, reloadToken]);
 
   useEffect(() => {
     let cancelled = false;

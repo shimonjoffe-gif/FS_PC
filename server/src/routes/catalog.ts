@@ -215,12 +215,15 @@ catalogRouter.get('/fs-catalog/items', (_req, res) => {
     detailsByParent.set(d.parent_id, list);
   }
 
-  res.json({
-    groups,
-    items: items.map(item => ({
+  const enrichedItems = items.map(item => ({
       ...item,
       details: detailsByParent.get(item.id) ?? [],
-    })),
+    }));
+  enrichedItems.sort(compareFsByGroupThenPrefix as (a: typeof enrichedItems[0], b: typeof enrichedItems[0]) => number);
+
+  res.json({
+    groups,
+    items: enrichedItems,
   });
 });
 

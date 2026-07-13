@@ -2,6 +2,7 @@ import type { BriefingFsDetailLine, BriefingFsSel, FsQueueKey, FsQueuesMap } fro
 import { FS_QUEUE_KEYS } from './types';
 import { itemQueues } from './types';
 import { effectiveFsItemCommentForQueue, patchFsItemQueueComment } from './fsSpCalc';
+import { compareFsByGroupThenPrefix } from './utils/fsPrefixSort';
 
 export function countCustomerDetailLines(lines: BriefingFsDetailLine[] | undefined): number {
   return (lines ?? []).filter(l => l.source === 'customer').length;
@@ -136,7 +137,9 @@ export function buildFsItemOptions(items: BriefingFsSel[], excludeId?: number): 
     .map(i => ({
       fs_item_id: i.fs_item_id,
       group: i.group_name || i.phase || 'Прочее',
+      group_prefix: i.group_prefix ?? null,
+      prefix: i.prefix ?? null,
       label: `${i.prefix ? `${i.prefix} · ` : ''}${i.name}`,
     }))
-    .sort((a, b) => a.group.localeCompare(b.group, 'ru') || a.label.localeCompare(b.label, 'ru'));
+    .sort((a, b) => compareFsByGroupThenPrefix(a, b));
 }

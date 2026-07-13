@@ -16,7 +16,7 @@ seed();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 const UPLOADS_DIR = path.join(process.cwd(), '..', 'data', 'uploads');
 app.use('/api/uploads', express.static(UPLOADS_DIR));

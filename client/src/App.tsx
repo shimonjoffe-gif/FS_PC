@@ -41,6 +41,7 @@ export default function App() {
   const [nameValue, setNameValue] = useState('');
   const [newUserName, setNewUserName] = useState('');
   const [addingUser, setAddingUser] = useState(false);
+  const [briefingReloadToken, setBriefingReloadToken] = useState(0);
 
   const selectedProject = projects.find(p => p.id === selectedId) ?? null;
 
@@ -79,6 +80,11 @@ export default function App() {
   const refreshBriefings = useCallback(() => {
     getBriefings().then(setBriefings);
   }, []);
+
+  const handleBriefingImported = useCallback(() => {
+    refreshBriefings();
+    setBriefingReloadToken(t => t + 1);
+  }, [refreshBriefings]);
 
   const handleSelectProject = useCallback((id: number) => {
     setSelectedId(id);
@@ -156,6 +162,7 @@ export default function App() {
         selectedBriefingId={selectedBriefingId}
         onSelectBriefing={handleSelectBriefing}
         onRefreshBriefings={refreshBriefings}
+        onBriefingImported={handleBriefingImported}
         onNewProjectChoice={handleNewProjectChoice}
         onOpenBriefingAdmin={() => setMode('briefing-admin')}
       />
@@ -251,6 +258,7 @@ export default function App() {
         ) : mode === 'briefing' && selectedBriefingId ? (
           <BriefingWorkspace
             briefingId={selectedBriefingId}
+            reloadToken={briefingReloadToken}
             currentUserId={currentUserId}
             onProjectGenerated={handleProjectGenerated}
           />
