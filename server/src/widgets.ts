@@ -65,6 +65,8 @@ export interface WidgetRow {
   description: string;
   type: string;
   image_path: string | null;
+  data_slice_id: number | null;
+  data_slice_name: string | null;
 }
 
 export interface WidgetSolutionRef {
@@ -97,7 +99,11 @@ export interface WidgetDetail extends WidgetRow {
 
 export function loadWidgetById(id: number): WidgetDetail | null {
   const raw = db.prepare(`
-    SELECT id, name, description, type, image_path FROM widgets WHERE id=?
+    SELECT w.id, w.name, w.description, w.type, w.image_path, w.data_slice_id,
+           ds.name as data_slice_name
+    FROM widgets w
+    LEFT JOIN data_slices ds ON ds.id = w.data_slice_id
+    WHERE w.id=?
   `).get(id) as WidgetRow | undefined;
   if (!raw) return null;
 
@@ -202,7 +208,14 @@ export function getWidgetFsItemIds(widgetId: number): number[] {
 export function syncWidgetFsLinks(widgetId: number, fsItemIds: number[]): number[] {
   const existing = db.prepare(`SELECT id FROM widgets WHERE id=?`).get(widgetId);
   if (!existing) throw new Error('not found');
-  const unique = [...new Set(fsItemIds.filter(id => id > 0))];
+  const unique = [...new Set(fsItemIds.filter(id => id > 0))].filter(id => {
+    const row = db.prepare(`
+      SELECT id FROM fs_catalog
+      WHERE id=? AND published=1 AND COALESCE(is_deleted, 0)=0
+        AND (item_type IS NULL OR item_type='item')
+    `).get(id);
+    return Boolean(row);
+  });
   const tx = db.transaction(() => {
     db.prepare(`DELETE FROM widget_fs_map WHERE widget_id=?`).run(widgetId);
     const ins = db.prepare(`INSERT OR IGNORE INTO widget_fs_map(widget_id, fs_item_id) VALUES (?,?)`);

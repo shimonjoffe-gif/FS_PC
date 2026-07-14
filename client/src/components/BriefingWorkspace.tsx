@@ -64,6 +64,7 @@ import {
   WidgetSolutionsPickModal,
 } from './CustomerWidgetsPanel';
 import { WidgetImageThumbnail } from './WidgetImagePreview';
+import { WidgetGroupedSections } from './WidgetGroupedList';
 import { countGroupUserItems, fsDetailLineFlags } from '../fsDetailLines';
 import {
   buildFsItemOptions,
@@ -707,13 +708,13 @@ function ChipMultiSelect({
 function ProblemsSelectTable({
   units,
   selectedIds,
-  isUnmatched,
+  getFilterMismatchHint,
   solutionsByProblemId,
   onProblemsChange,
 }: {
   units: ProblemDisplayUnit[];
   selectedIds: Set<number>;
-  isUnmatched: (problemId: number) => boolean;
+  getFilterMismatchHint: (problemId: number) => string | null;
   solutionsByProblemId: Map<number, ProblemSolutionUsage[]>;
   onProblemsChange: (changes: { problemId: number; selected: boolean }[]) => void;
 }) {
@@ -786,7 +787,8 @@ function ProblemsSelectTable({
       ? aggregateProblemGroupSelected(groupMembers, selectedIds)
       : selectedIds.has(problem.id);
     const isYes = groupSelected;
-    const unmatched = isUnmatched(problem.id);
+    const mismatchHint = getFilterMismatchHint(problem.id);
+    const unmatched = mismatchHint != null;
     const titleClass = opts.variant === 'parent'
       ? 'text-sm font-semibold text-slate-800'
       : opts.variant === 'child'
@@ -835,9 +837,9 @@ function ProblemsSelectTable({
                 {problem.name}
               </div>
               {renderProblemMeta(problem)}
-              {unmatched && (
+              {mismatchHint && (
                 <div className="text-[10px] text-slate-400 italic mt-0.5">
-                  не подходит под виды деятельности/сегмент
+                  {mismatchHint}
                 </div>
               )}
               {solutionsExpanded && solutions.length > 0 && (
@@ -1143,8 +1145,10 @@ function SolutionsQueueTable({
             <span className="text-[10px] text-slate-400">Нет виджетов</span>
           )}
           {isSelected && widgets.length > 0 && (
-            <div className="space-y-1">
-              {widgets.map(w => (
+            <WidgetGroupedSections
+              widgets={widgets}
+              className="space-y-1"
+              renderWidget={w => (
                 <label key={w.id} className="flex items-start gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -1163,8 +1167,8 @@ function SolutionsQueueTable({
                     <div className="text-xs">{w.name}</div>
                   </div>
                 </label>
-              ))}
-            </div>
+              )}
+            />
           )}
         </td>
         {FS_QUEUE_KEYS.flatMap(q => {
@@ -1324,7 +1328,6 @@ function FsQueueTable({
   const [expandedQueues, setExpandedQueues] = useState<Set<FsQueueKey>>(() => new Set());
   const [yesFilter, setYesFilter] = useState<FsYesFilter>(null);
   const [showNsiColumns, setShowNsiColumns] = useState(false);
-  const [showInactiveFs, setShowInactiveFs] = useState(true);
   const [cardModalItem, setCardModalItem] = useState<BriefingFsSel | null>(null);
   const [commentModal, setCommentModal] = useState<{ item: BriefingFsSel; q: FsQueueKey } | null>(null);
   const [commentMergePrompt, setCommentMergePrompt] = useState<{
@@ -1601,6 +1604,14 @@ function FsQueueTable({
     setExpandedGroups(new Set());
   }
 
+  function expandAllSections() {
+    setExpandedGroups(new Set(displayGroups.map(g => g.group)));
+  }
+
+  const allFsGroupsCollapsed =
+    displayGroups.length > 0
+    && displayGroups.every(({ group }) => !expandedGroups.has(group));
+
   function captureFsScrollAnchor(group: string, row: HTMLElement | null) {
     const container = fsScrollRef.current;
     if (!container || !row) return;
@@ -1799,10 +1810,11 @@ function FsQueueTable({
       <div className="flex flex-wrap justify-end gap-2">
         <button
           type="button"
-          onClick={collapseAllSections}
+          onClick={() => (allFsGroupsCollapsed ? expandAllSections() : collapseAllSections())}
           className="text-xs text-slate-600 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-50"
+          disabled={displayGroups.length === 0}
         >
-          Свернуть разделы
+          {allFsGroupsCollapsed ? 'Развернуть все группы' : 'Свернуть все группы'}
         </button>
         {yesFilter && (
           <button
@@ -1813,13 +1825,6 @@ function FsQueueTable({
             Сбросить фильтр «Да»
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => setShowInactiveFs(v => !v)}
-          className="text-xs text-slate-600 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-50"
-        >
-          {showInactiveFs ? 'Скрыть неактуальные' : 'Показать неактуальные'}
-        </button>
         <button
           type="button"
           onClick={() => setShowNsiColumns(v => !v)}
@@ -2077,13 +2082,11 @@ function FsQueueTable({
                 })}
               </tr>
               {isExpanded && rowItems
-                .filter(item => showInactiveFs || !item.inactive_for_customer)
                 .map(item => {
                 const queues = itemQueues(item);
                 const allOn = anyQueueEnabled(queues);
                 const customerItem = isCustomerFsItem(item);
                 const unmatched = !customerItem && item.matched === false;
-                const inactive = item.inactive_for_customer === true;
                 const detailFlags = customerItem
                   ? {
                     modified: false,
@@ -2096,7 +2099,7 @@ function FsQueueTable({
                 return (
                     <tr
                       key={item.fs_item_id}
-                      className={`hover:bg-slate-50 ${customerItem ? 'bg-emerald-50/40' : ''} ${unmatched ? 'bg-red-50/30' : ''} ${inactive ? 'opacity-50' : ''}`}
+                      className={`hover:bg-slate-50 ${customerItem ? 'bg-emerald-50/40' : ''} ${unmatched ? 'bg-red-50/30' : ''}`}
                     >
                       <td className="p-2 border text-[11px] text-slate-500 whitespace-nowrap align-top min-w-[5rem]">
                         <div className="flex items-start gap-1">
@@ -2125,9 +2128,6 @@ function FsQueueTable({
                           }`}>
                             {item.name?.trim() || (
                               <span className="text-slate-400 font-normal italic">Новая функция заказчика…</span>
-                            )}
-                            {inactive && (
-                              <span className="ml-1 text-[10px] font-normal text-slate-400">(не актуален)</span>
                             )}
                             {(detailFlags.modified || detailFlags.customerAdded || customerItem) && (
                               <span className="ml-1.5 inline-flex items-center gap-0.5 align-middle">
@@ -2499,21 +2499,6 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     return collectProblemWithAncestors(allProblemsCatalog, filteredProblemIds);
   }, [allProblemsCatalog, filteredProblemIds, customerProblemFilterActive]);
 
-  const baseVisibleProblemIds = useMemo(() => {
-    if (!customerProblemFilterActive || showAllProblems) {
-      return new Set(allProblemsCatalog.map(p => p.id));
-    }
-    const visibleIds = new Set(strictFilterPoolIds);
-    for (const id of selectedProblemIds) visibleIds.add(id);
-    return visibleIds;
-  }, [
-    allProblemsCatalog,
-    strictFilterPoolIds,
-    showAllProblems,
-    customerProblemFilterActive,
-    selectedProblemIds,
-  ]);
-
   const availableHypothesesForFilter = useMemo(() => {
     if (!customerProblemFilterActive) return [];
     const namesInPool = new Set<string>();
@@ -2531,50 +2516,79 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     setHypothesisFilterIds(prev => prev.filter(id => available.has(id)));
   }, [availableHypothesesForFilter]);
 
-  const problemDisplayUnits = useMemo(() => {
+  const problemCustomerFilter = useMemo(() => {
     const hypByName = new Map(hypothesesCatalog.map(h => [h.name, h.id]));
     const selectedHyp = new Set(hypothesisFilterIds);
+    const activityFilterActive = customerProblemFilterActive;
+    const hypothesisFilterActive = hypothesisFilterIds.length > 0;
+    const anyFilterActive = activityFilterActive || hypothesisFilterActive;
 
-    let visibleIds = baseVisibleProblemIds;
-    if (selectedHyp.size > 0) {
-      const matched = new Set<number>();
-      for (const p of allProblemsCatalog) {
-        if (!visibleIds.has(p.id)) continue;
-        const linked = p.used_in_hypotheses ?? [];
-        if (linked.some(name => {
-          const hid = hypByName.get(name);
-          return hid != null && selectedHyp.has(hid);
-        })) {
-          matched.add(p.id);
-        }
-      }
-      visibleIds = collectProblemWithAncestors(allProblemsCatalog, matched);
-      for (const id of selectedProblemIds) {
-        const p = allProblemsCatalog.find(x => x.id === id);
-        if (!p) continue;
-        const linked = p.used_in_hypotheses ?? [];
-        if (linked.some(name => {
-          const hid = hypByName.get(name);
-          return hid != null && selectedHyp.has(hid);
-        })) {
-          visibleIds.add(id);
-        }
-      }
+    function matchesActivity(problemId: number): boolean {
+      if (!activityFilterActive) return true;
+      return filteredProblemIds.has(problemId);
     }
 
-    const visible = allProblemsCatalog.filter(p => visibleIds.has(p.id));
-    return buildProblemDisplayUnits(visible);
+    function matchesHypothesis(problem: Problem): boolean {
+      if (!hypothesisFilterActive) return true;
+      const linked = problem.used_in_hypotheses ?? [];
+      return linked.some(name => {
+        const hid = hypByName.get(name);
+        return hid != null && selectedHyp.has(hid);
+      });
+    }
+
+    function matchesAllFilters(problem: Problem): boolean {
+      return matchesActivity(problem.id) && matchesHypothesis(problem);
+    }
+
+    const matchingIds = new Set<number>();
+    for (const p of allProblemsCatalog) {
+      if (matchesAllFilters(p)) matchingIds.add(p.id);
+    }
+
+    let visibleIds: Set<number>;
+    if (!anyFilterActive || showAllProblems) {
+      visibleIds = new Set(allProblemsCatalog.map(p => p.id));
+    } else {
+      visibleIds = collectProblemWithAncestors(allProblemsCatalog, matchingIds);
+      for (const id of selectedProblemIds) visibleIds.add(id);
+      visibleIds = collectProblemWithAncestors(allProblemsCatalog, visibleIds);
+    }
+
+    function getFilterMismatchHint(problemId: number): string | null {
+      if (!anyFilterActive) return null;
+      const problem = allProblemsCatalog.find(p => p.id === problemId);
+      if (!problem) return null;
+      const activityFail = activityFilterActive && !matchesActivity(problemId);
+      const hypothesisFail = hypothesisFilterActive && !matchesHypothesis(problem);
+      if (!activityFail && !hypothesisFail) return null;
+      if (activityFail && hypothesisFail) {
+        return 'не подходит под виды деятельности/сегмент и гипотезы';
+      }
+      if (activityFail) return 'не подходит под виды деятельности/сегмент';
+      return 'не подходит под выбранные гипотезы';
+    }
+
+    return { visibleIds, getFilterMismatchHint };
   }, [
     allProblemsCatalog,
-    baseVisibleProblemIds,
+    customerProblemFilterActive,
+    filteredProblemIds,
     hypothesisFilterIds,
     hypothesesCatalog,
     selectedProblemIds,
+    showAllProblems,
   ]);
 
-  const isProblemUnmatched = useCallback((problemId: number) => {
-    return customerProblemFilterActive && showAllProblems && !filteredProblemIds.has(problemId);
-  }, [customerProblemFilterActive, showAllProblems, filteredProblemIds]);
+  const problemDisplayUnits = useMemo(() => {
+    const visible = allProblemsCatalog.filter(p => problemCustomerFilter.visibleIds.has(p.id));
+    return buildProblemDisplayUnits(visible);
+  }, [allProblemsCatalog, problemCustomerFilter.visibleIds]);
+
+  const getProblemFilterMismatchHint = useCallback(
+    (problemId: number) => problemCustomerFilter.getFilterMismatchHint(problemId),
+    [problemCustomerFilter],
+  );
 
   useEffect(() => {
     getSolutions().then(setAllSolutionsCatalog);
@@ -3835,7 +3849,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
               <ProblemsSelectTable
                 units={problemDisplayUnits}
                 selectedIds={selectedProblemIds}
-                isUnmatched={isProblemUnmatched}
+                getFilterMismatchHint={getProblemFilterMismatchHint}
                 onProblemsChange={updateProblemSelections}
                 solutionsByProblemId={solutionsByProblemId}
               />

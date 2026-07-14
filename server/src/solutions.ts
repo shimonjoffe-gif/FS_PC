@@ -200,10 +200,19 @@ function normalizeSolutionFsLinks(links: SolutionFsLink[]): SolutionFsLink[] {
     .map(([fs_item_id, link_type]) => ({ fs_item_id, link_type }));
 }
 
+function isPublishedFsItem(fsItemId: number): boolean {
+  const row = db.prepare(`
+    SELECT id FROM fs_catalog
+    WHERE id=? AND published=1 AND COALESCE(is_deleted, 0)=0
+      AND (item_type IS NULL OR item_type='item')
+  `).get(fsItemId);
+  return Boolean(row);
+}
+
 export function syncSolutionFsLinks(solutionId: number, links: SolutionFsLink[]): SolutionFsLink[] {
   const existing = db.prepare(`SELECT id FROM solutions WHERE id=?`).get(solutionId);
   if (!existing) throw new Error('not found');
-  const unique = normalizeSolutionFsLinks(links);
+  const unique = normalizeSolutionFsLinks(links).filter(link => isPublishedFsItem(link.fs_item_id));
   const tx = db.transaction(() => {
     db.prepare(`DELETE FROM solution_fs_map WHERE solution_id=?`).run(solutionId);
     const ins = db.prepare(`INSERT OR IGNORE INTO solution_fs_map(solution_id, fs_item_id, link_type) VALUES (?,?,?)`);

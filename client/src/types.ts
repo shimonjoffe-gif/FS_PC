@@ -249,12 +249,19 @@ export interface HypothesisProblemDraft {
   new_solution_name: string;
 }
 
+export interface DataSlice {
+  id: number;
+  name: string;
+}
+
 export interface Widget {
   id: number;
   name: string;
   description: string;
   type: string;
   image_path?: string | null;
+  data_slice_id?: number | null;
+  data_slice_name?: string | null;
   linked_solution_count?: number;
   linked_fs_count?: number;
 }

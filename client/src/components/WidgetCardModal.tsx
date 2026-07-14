@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { FsCatalogGroup, FsCatalogItem, SolutionFsLinkType, WidgetDetail } from '../types';
+import type { DataSlice, FsCatalogGroup, FsCatalogItem, SolutionFsLinkType, WidgetDetail } from '../types';
+import { createDataSlice, getDataSlices } from '../api';
+import { widgetDataSliceLabel } from '../utils/widgetDisplayGroups';
 import SolutionFsPanel from './SolutionFsPanel';
 import { WidgetImageThumbnail } from './WidgetImagePreview';
 
@@ -11,6 +13,7 @@ export type WidgetDraft = {
   name: string;
   description: string;
   type: string;
+  data_slice_id: number | null;
 };
 
 export function widgetToDraft(widget: WidgetDetail): WidgetDraft {
@@ -18,11 +21,12 @@ export function widgetToDraft(widget: WidgetDetail): WidgetDraft {
     name: widget.name,
     description: widget.description ?? '',
     type: widget.type ?? 'dashboard',
+    data_slice_id: widget.data_slice_id ?? null,
   };
 }
 
 export function emptyWidgetDraft(): WidgetDraft {
-  return { name: '', description: '', type: 'dashboard' };
+  return { name: '', description: '', type: 'dashboard', data_slice_id: null };
 }
 
 const MAX_WIDGET_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -279,6 +283,32 @@ export default function WidgetCardModal({
   const [imageBusy, setImageBusy] = useState(false);
   const [fsIds, setFsIds] = useState<Set<number>>(() => new Set());
   const [fsDraft, setFsDraft] = useState<Set<number>>(() => new Set());
+  const [dataSlices, setDataSlices] = useState<DataSlice[]>([]);
+  const [extraDataSlices, setExtraDataSlices] = useState<DataSlice[]>([]);
+  const [newDataSliceName, setNewDataSliceName] = useState('');
+
+  useEffect(() => {
+    getDataSlices().then(setDataSlices).catch(() => setDataSlices([]));
+  }, []);
+
+  const dataSlicesList = React.useMemo(() => {
+    const map = new Map<number, DataSlice>();
+    for (const item of [...dataSlices, ...extraDataSlices]) map.set(item.id, item);
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [dataSlices, extraDataSlices]);
+
+  async function addDataSlice() {
+    const trimmed = newDataSliceName.trim();
+    if (!trimmed) return;
+    try {
+      const created = await createDataSlice(trimmed);
+      setExtraDataSlices(prev => [...prev, created]);
+      setDraft(d => ({ ...d, data_slice_id: created.id }));
+      setNewDataSliceName('');
+    } catch {
+      // ignore
+    }
+  }
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -417,6 +447,38 @@ export default function WidgetCardModal({
                   </select>
                 </div>
                 <div>
+                  <label className="text-[10px] text-slate-400">Разрез данных</label>
+                  <select
+                    className="w-full text-xs border rounded px-2 py-1 mb-2"
+                    value={draft.data_slice_id ?? ''}
+                    onChange={e => setDraft(d => ({
+                      ...d,
+                      data_slice_id: e.target.value ? Number(e.target.value) : null,
+                    }))}
+                  >
+                    <option value="">— не выбран —</option>
+                    {dataSlicesList.map(slice => (
+                      <option key={slice.id} value={slice.id}>{slice.name}</option>
+                    ))}
+                  </select>
+                  <div className="flex gap-2">
+                    <input
+                      className="flex-1 text-xs border rounded px-2 py-1"
+                      placeholder="Новый разрез данных"
+                      value={newDataSliceName}
+                      onChange={e => setNewDataSliceName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void addDataSlice(); } }}
+                    />
+                    <button
+                      type="button"
+                      className="text-xs px-2 py-1 rounded border border-slate-200 hover:bg-slate-100"
+                      onClick={() => void addDataSlice()}
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div>
                   <label className="text-[10px] text-slate-400">Описание</label>
                   <textarea
                     className="w-full text-xs border rounded px-2 py-1 min-h-[80px]"
@@ -443,7 +505,10 @@ export default function WidgetCardModal({
                 ) : null}
                 <div className="min-w-0">
                   <div className="text-sm font-semibold text-slate-800">{widget?.name}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">{widget?.type}</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">
+                    {widget?.type}
+                    {widget ? ` · ${widgetDataSliceLabel(widget)}` : ''}
+                  </div>
                   {widget?.description ? (
                     <div className="text-xs text-slate-600 mt-2 whitespace-pre-wrap">{widget.description}</div>
                   ) : null}

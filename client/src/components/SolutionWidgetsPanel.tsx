@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import type { Widget } from '../types';
 import { yesNoClass, yesNoLabel } from '../utils/yesNoBadge';
+import { matchesWidgetSearch } from '../utils/widgetDisplayGroups';
+import { WidgetGroupedTableBody, WidgetGroupCollapseAllButton, useWidgetGroupCollapse } from './WidgetGroupedList';
 import { WidgetImageThumbnail } from './WidgetImagePreview';
 
 function YesNoBadge({
@@ -44,19 +46,14 @@ export default function SolutionWidgetsPanel({
 }) {
   const [search, setSearch] = useState('');
   const [onlyYes, setOnlyYes] = useState(false);
+  const groupCollapse = useWidgetGroupCollapse();
 
   const list = useMemo(() => {
     const q = search.trim().toLowerCase();
     let filtered = widgets;
-    if (q) {
-      filtered = widgets.filter(w =>
-        w.name.toLowerCase().includes(q)
-        || (w.description?.toLowerCase().includes(q) ?? false)
-        || (w.type?.toLowerCase().includes(q) ?? false),
-      );
-    }
+    if (q) filtered = widgets.filter(w => matchesWidgetSearch(w, q));
     if (onlyYes) filtered = filtered.filter(w => selectedIds.has(w.id));
-    return [...filtered].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    return filtered;
   }, [widgets, search, onlyYes, selectedIds]);
 
   function toggle(id: number) {
@@ -71,7 +68,7 @@ export default function SolutionWidgetsPanel({
       <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
         <input
           className="flex-1 min-w-[120px] text-xs border rounded px-2 py-1"
-          placeholder="Поиск виджета…"
+          placeholder="Поиск виджета, разреза…"
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
@@ -83,6 +80,7 @@ export default function SolutionWidgetsPanel({
           />
           Только «Да»
         </label>
+        <WidgetGroupCollapseAllButton widgets={list} collapse={groupCollapse} />
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto border border-slate-100 rounded-lg">
         {list.length === 0 ? (
@@ -97,33 +95,38 @@ export default function SolutionWidgetsPanel({
               </tr>
             </thead>
             <tbody>
-              {list.map(w => {
-                const on = selectedIds.has(w.id);
-                return (
-                  <tr key={w.id} className={on ? 'bg-blue-50/30' : 'hover:bg-slate-50/80'}>
-                    <td className="p-2 border-b align-middle">
-                      <WidgetImageThumbnail
-                        imagePath={w.image_path}
-                        name={w.name}
-                        className="w-12 h-8 object-contain bg-white border border-slate-100 rounded cursor-pointer hover:border-slate-400"
-                      />
-                    </td>
-                    <td className="p-2 border-b align-top">
-                      <div className="font-medium text-slate-800">{w.name}</div>
-                      {w.description ? (
-                        <div className="text-[10px] text-slate-500 line-clamp-2 mt-0.5">{w.description}</div>
-                      ) : null}
-                    </td>
-                    <td className="p-2 border-b align-middle text-center">
-                      <YesNoBadge
-                        value={on}
-                        editing={editing}
-                        onToggle={() => toggle(w.id)}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
+              <WidgetGroupedTableBody
+                widgets={list}
+                colSpan={3}
+                collapse={groupCollapse}
+                renderRow={w => {
+                  const on = selectedIds.has(w.id);
+                  return (
+                    <tr key={w.id} className={on ? 'bg-blue-50/30' : 'hover:bg-slate-50/80'}>
+                      <td className="p-2 border-b align-middle">
+                        <WidgetImageThumbnail
+                          imagePath={w.image_path}
+                          name={w.name}
+                          className="w-12 h-8 object-contain bg-white border border-slate-100 rounded cursor-pointer hover:border-slate-400"
+                        />
+                      </td>
+                      <td className="p-2 border-b align-top">
+                        <div className="font-medium text-slate-800">{w.name}</div>
+                        {w.description ? (
+                          <div className="text-[10px] text-slate-500 line-clamp-2 mt-0.5">{w.description}</div>
+                        ) : null}
+                      </td>
+                      <td className="p-2 border-b align-middle text-center">
+                        <YesNoBadge
+                          value={on}
+                          editing={editing}
+                          onToggle={() => toggle(w.id)}
+                        />
+                      </td>
+                    </tr>
+                  );
+                }}
+              />
             </tbody>
           </table>
         )}

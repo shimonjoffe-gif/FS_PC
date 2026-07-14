@@ -112,13 +112,26 @@ export function createFsCatalogItem(input: CreateFsCatalogItemInput): {
   return { id, prefix };
 }
 
-export function publishFsCatalogItem(id: number): boolean {
+export function isPublishedFsCatalogItem(fsItemId: number): boolean {
+  const row = db.prepare(`
+    SELECT id FROM fs_catalog
+    WHERE id=? AND published=1 AND COALESCE(is_deleted, 0)=0
+      AND (item_type IS NULL OR item_type='item')
+  `).get(fsItemId);
+  return Boolean(row);
+}
+
+export function setFsCatalogItemPublished(id: number, published: boolean): boolean {
   const row = db.prepare(`
     SELECT id FROM fs_catalog WHERE id=? AND (item_type IS NULL OR item_type = 'item') AND ${FS_CATALOG_ACTIVE_SQL}
   `).get(id);
   if (!row) return false;
-  db.prepare(`UPDATE fs_catalog SET published=1 WHERE id=?`).run(id);
+  db.prepare(`UPDATE fs_catalog SET published=? WHERE id=?`).run(published ? 1 : 0, id);
   return true;
+}
+
+export function publishFsCatalogItem(id: number): boolean {
+  return setFsCatalogItemPublished(id, true);
 }
 
 export function loadFsCatalogItemById(id: number) {

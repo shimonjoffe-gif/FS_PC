@@ -101,10 +101,6 @@ export default function SolutionFsPanel({
     });
   }
 
-  function collapseAllSections() {
-    setExpanded(new Set());
-  }
-
   const visibleGroups = useMemo(() => {
     return displayGroups
       .map(group => ({
@@ -118,6 +114,18 @@ export default function SolutionFsPanel({
       }))
       .filter(({ visibleItems }) => visibleItems.length > 0 || (!q && !filterOnlyYes));
   }, [displayGroups, filterOnlyYes, q, fsLinks]);
+
+  function collapseAllSections() {
+    setExpanded(new Set());
+  }
+
+  function expandAllSections() {
+    setExpanded(new Set(visibleGroups.map(({ group }) => group.group_name)));
+  }
+
+  const allFsGroupsCollapsed =
+    visibleGroups.length > 0
+    && visibleGroups.every(({ group }) => !expanded.has(group.group_name));
 
   const selectedCount = fsLinks.size;
 
@@ -136,10 +144,11 @@ export default function SolutionFsPanel({
         <div className="flex justify-end mb-1.5">
           <button
             type="button"
-            onClick={collapseAllSections}
+            onClick={() => (allFsGroupsCollapsed ? expandAllSections() : collapseAllSections())}
             className="text-[10px] text-slate-600 border border-slate-200 px-2 py-0.5 rounded hover:bg-slate-50"
+            disabled={visibleGroups.length === 0}
           >
-            Свернуть разделы
+            {allFsGroupsCollapsed ? 'Развернуть все группы' : 'Свернуть все группы'}
           </button>
         </div>
       ) : (
@@ -164,10 +173,11 @@ export default function SolutionFsPanel({
           )}
           <button
             type="button"
-            onClick={collapseAllSections}
+            onClick={() => (allFsGroupsCollapsed ? expandAllSections() : collapseAllSections())}
             className="text-[10px] text-slate-600 border border-slate-200 px-2 py-1 rounded hover:bg-slate-50"
+            disabled={visibleGroups.length === 0}
           >
-            Свернуть разделы
+            {allFsGroupsCollapsed ? 'Развернуть все группы' : 'Свернуть все группы'}
           </button>
         </div>
       )}

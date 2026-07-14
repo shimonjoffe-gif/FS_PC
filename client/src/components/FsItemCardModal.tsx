@@ -90,7 +90,6 @@ export default function FsItemCardModal({
   const customerItem = isCustomerFsItem(item);
   const [name, setName] = useState(item.name ?? '');
   const [breakdown, setBreakdown] = useState(() => initialCustomerBreakdown(item));
-  const [inactive, setInactive] = useState(item.inactive_for_customer ?? false);
   const [detailLines, setDetailLines] = useState<BriefingFsDetailLine[]>(
     () => buildInitialDetailLines(item),
   );
@@ -141,7 +140,6 @@ export default function FsItemCardModal({
     if (customerItem && !trimmedName) return;
     onSave({
       ...(customerItem ? { name: trimmedName, description: breakdown.trim() || null } : {}),
-      inactive_for_customer: inactive,
       detail_lines: detailLines
         .filter(l => l.name.trim())
         .map((l, i) => ({
@@ -372,10 +370,6 @@ export default function FsItemCardModal({
             </section>
           )}
 
-          <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-            <input type="checkbox" checked={inactive} onChange={e => setInactive(e.target.checked)} />
-            Не актуален для этого заказчика
-          </label>
         </div>
 
         <div className="px-4 py-3 border-t border-slate-100 flex justify-end gap-2">

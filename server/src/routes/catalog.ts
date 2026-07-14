@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db';
 import { compareFsByGroupThenPrefix } from '../fsPrefixSort';
-import { createFsCatalogItem, loadFsCatalogItemById, publishFsCatalogItem } from '../fsCatalogNsi';
+import { createFsCatalogItem, loadFsCatalogItemById, publishFsCatalogItem, setFsCatalogItemPublished, isPublishedFsCatalogItem } from '../fsCatalogNsi';
 import { FS_CATALOG_ACTIVE_SQL } from '../fsCatalogActive';
 import { softDeleteFsCatalogGroup, softDeleteFsCatalogItem } from '../fsCatalogDelete';
 import {
@@ -9,6 +9,7 @@ import {
   listHypotheses, loadHypothesisById, saveHypothesis,
 } from '../hypotheses';
 import { createActivityType, listActivityTypes } from '../activityTypes';
+import { createDataSlice, listDataSlices } from '../dataSlices';
 import {
   applyFsCatalogReorder,
   copyFsCatalogGroup,
@@ -211,19 +212,23 @@ catalogRouter.put('/solutions/:id/widget-links', (req, res) => {
 catalogRouter.get('/widgets', (_req, res) => {
   res.json(db.prepare(`
     SELECT w.*,
+      ds.name AS data_slice_name,
       (SELECT COUNT(*) FROM solution_widget_map swm WHERE swm.widget_id = w.id) AS linked_solution_count,
       (SELECT COUNT(*) FROM widget_fs_map wfm WHERE wfm.widget_id = w.id) AS linked_fs_count
     FROM widgets w
-    ORDER BY w.name
+    LEFT JOIN data_slices ds ON ds.id = w.data_slice_id
+    ORDER BY ds.name, w.name
   `).all());
 });
 
 catalogRouter.get('/widgets-by-solution/:solutionId', (req, res) => {
   res.json(db.prepare(`
-    SELECT w.* FROM widgets w
+    SELECT w.*, ds.name AS data_slice_name
+    FROM widgets w
     JOIN solution_widget_map swm ON swm.widget_id = w.id
+    LEFT JOIN data_slices ds ON ds.id = w.data_slice_id
     WHERE swm.solution_id=?
-    ORDER BY w.name
+    ORDER BY ds.name, w.name
   `).all(req.params.solutionId));
 });
 
@@ -483,6 +488,16 @@ catalogRouter.post('/fs-catalog/:id/publish', (req, res) => {
   res.json(item);
 });
 
+catalogRouter.put('/fs-catalog/:id/published', (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body as { published?: boolean | number };
+  const published = body.published === true || body.published === 1;
+  const ok = setFsCatalogItemPublished(id, published);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  const item = loadFsCatalogItemById(id);
+  res.json(item);
+});
+
 catalogRouter.put('/fs-catalog/:id/details', (req, res) => {
   const id = Number(req.params.id);
   const parent = db.prepare(`
@@ -540,20 +555,36 @@ catalogRouter.get('/fs-phases', (_req, res) => {
 // --- Admin CRUD for links ---
 
 catalogRouter.post('/widgets', (req, res) => {
-  const { name, description, type, image_path } = req.body as {
-    name: string; description?: string; type?: string; image_path?: string;
+  const { name, description, type, image_path, data_slice_id } = req.body as {
+    name: string; description?: string; type?: string; image_path?: string; data_slice_id?: number | null;
   };
-  const r = db.prepare(`INSERT INTO widgets(name, description, type, image_path) VALUES (?,?,?,?)`)
-    .run(name, description ?? '', type ?? 'dashboard', image_path ?? null);
+  const r = db.prepare(`INSERT INTO widgets(name, description, type, image_path, data_slice_id) VALUES (?,?,?,?,?)`)
+    .run(name, description ?? '', type ?? 'dashboard', image_path ?? null, data_slice_id ?? null);
   res.json({ id: r.lastInsertRowid });
 });
 
 catalogRouter.patch('/widgets/:id', (req, res) => {
-  const { name, description, type, image_path } = req.body as {
-    name?: string; description?: string; type?: string; image_path?: string | null;
+  const id = Number(req.params.id);
+  const { name, description, type, image_path, data_slice_id } = req.body as {
+    name?: string; description?: string; type?: string; image_path?: string | null; data_slice_id?: number | null;
   };
-  db.prepare(`UPDATE widgets SET name=COALESCE(?,name), description=COALESCE(?,description), type=COALESCE(?,type), image_path=COALESCE(?,image_path) WHERE id=?`)
-    .run(name ?? null, description ?? null, type ?? null, image_path ?? null, req.params.id);
+  db.prepare(`
+    UPDATE widgets SET
+      name=COALESCE(?,name),
+      description=COALESCE(?,description),
+      type=COALESCE(?,type),
+      image_path=COALESCE(?,image_path),
+      data_slice_id=CASE WHEN ? THEN ? ELSE data_slice_id END
+    WHERE id=?
+  `).run(
+    name ?? null,
+    description ?? null,
+    type ?? null,
+    image_path ?? null,
+    data_slice_id !== undefined ? 1 : 0,
+    data_slice_id ?? null,
+    id,
+  );
   res.json({ ok: true });
 });
 
@@ -690,6 +721,19 @@ catalogRouter.post('/activity-types', (req, res) => {
   }
 });
 
+catalogRouter.get('/data-slices', (_req, res) => {
+  res.json(listDataSlices());
+});
+
+catalogRouter.post('/data-slices', (req, res) => {
+  const { name } = req.body as { name?: string };
+  try {
+    res.status(201).json(createDataSlice(name ?? ''));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
+});
+
 catalogRouter.get('/links/problem-solution', (_req, res) => {
   res.json(db.prepare(`
     SELECT psm.*, p.name as problem_name, s.name as solution_name
@@ -748,6 +792,9 @@ catalogRouter.post('/links/solution-fs', (req, res) => {
   const { solution_id, fs_item_id, link_type } = req.body as {
     solution_id: number; fs_item_id: number; link_type?: string;
   };
+  if (!isPublishedFsCatalogItem(fs_item_id)) {
+    return res.status(400).json({ error: 'fs item is draft or not found' });
+  }
   db.prepare(`
     INSERT OR IGNORE INTO solution_fs_map(solution_id, fs_item_id, link_type) VALUES (?,?,?)
   `).run(solution_id, fs_item_id, link_type === 'optional' ? 'optional' : 'required');
@@ -772,6 +819,9 @@ catalogRouter.get('/links/widget-fs', (_req, res) => {
 
 catalogRouter.post('/links/widget-fs', (req, res) => {
   const { widget_id, fs_item_id } = req.body as { widget_id: number; fs_item_id: number };
+  if (!isPublishedFsCatalogItem(fs_item_id)) {
+    return res.status(400).json({ error: 'fs item is draft or not found' });
+  }
   db.prepare(`INSERT OR IGNORE INTO widget_fs_map(widget_id, fs_item_id) VALUES (?,?)`).run(widget_id, fs_item_id);
   res.json({ ok: true });
 });

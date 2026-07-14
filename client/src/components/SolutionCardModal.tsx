@@ -4,6 +4,7 @@ import { YES_NO_BADGE_CLASS, yesNoClass, yesNoLabel } from '../utils/yesNoBadge'
 import { fsLinksFromMap, fsLinksToMap } from '../utils/fsLinkBadge';
 import SolutionFsPanel from './SolutionFsPanel';
 import SolutionWidgetsPanel from './SolutionWidgetsPanel';
+import { WidgetGroupedSections } from './WidgetGroupedList';
 import { WidgetImageThumbnail } from './WidgetImagePreview';
 
 export type SolutionDraft = {
@@ -76,9 +77,11 @@ function SelectedWidgetsList({ widgets }: { widgets: Widget[] }) {
     return <p className="text-xs text-slate-400">Нет сопоставленных виджетов</p>;
   }
   return (
-    <ul className="space-y-1.5">
-      {widgets.map(w => (
-        <li key={w.id} className="flex items-start gap-2 text-xs">
+    <WidgetGroupedSections
+      widgets={widgets}
+      className="space-y-2"
+      renderWidget={w => (
+        <div key={w.id} className="flex items-start gap-2 text-xs px-1">
           <WidgetImageThumbnail
             imagePath={w.image_path}
             name={w.name}
@@ -90,9 +93,9 @@ function SelectedWidgetsList({ widgets }: { widgets: Widget[] }) {
               <div className="text-[10px] text-slate-500 line-clamp-2">{w.description}</div>
             ) : null}
           </div>
-        </li>
-      ))}
-    </ul>
+        </div>
+      )}
+    />
   );
 }
 

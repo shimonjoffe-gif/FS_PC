@@ -51,7 +51,7 @@ export default function FsNsiTable({
   onSaveCard,
   onCreateCard,
   onOpenUsage,
-  onPublish,
+  onSetPublished,
   onCreateGroup,
   onCopyItem,
   onCopyGroup,
@@ -76,7 +76,7 @@ export default function FsNsiTable({
     patch: { prefix: string | null; name: string; details: FsCatalogDetailLine[] },
   ) => void | Promise<void>;
   onOpenUsage: (item: FsCatalogItem) => void;
-  onPublish: (id: number) => void | Promise<void>;
+  onSetPublished: (id: number, published: boolean) => void | Promise<void>;
   onCreateGroup: (name: string) => void | Promise<void>;
   onCopyItem: (id: number) => void | Promise<void>;
   onCopyGroup: (groupKey: string | number) => void | Promise<void>;
@@ -104,6 +104,22 @@ export default function FsNsiTable({
       else next.add(groupKey);
       return next;
     });
+  }
+
+  const groupKeys = useMemo(
+    () => displayGroups.map(g => g.group_prefix || String(g.id)),
+    [displayGroups],
+  );
+
+  const allFsGroupsCollapsed =
+    groupKeys.length > 0 && groupKeys.every(key => !expandedGroups.has(key));
+
+  function collapseAllGroups() {
+    setExpandedGroups(new Set());
+  }
+
+  function expandAllGroups() {
+    setExpandedGroups(new Set(groupKeys));
   }
 
   const latestItem = (item: FsCatalogItem) =>
@@ -209,7 +225,7 @@ export default function FsNsiTable({
         />
       )}
 
-      <div className="flex gap-2 items-end">
+      <div className="flex gap-2 items-end flex-wrap">
         <div className="flex-1 max-w-xs">
           <label className="text-[10px] text-slate-400">Новая группа</label>
           <input
@@ -241,6 +257,14 @@ export default function FsNsiTable({
         >
           + Добавить группу
         </button>
+        <button
+          type="button"
+          disabled={groupKeys.length === 0}
+          className="text-xs text-slate-600 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-50 disabled:opacity-50"
+          onClick={() => (allFsGroupsCollapsed ? expandAllGroups() : collapseAllGroups())}
+        >
+          {allFsGroupsCollapsed ? 'Развернуть все группы' : 'Свернуть все группы'}
+        </button>
       </div>
 
       <div className="overflow-auto max-h-[calc(100vh-260px)] border border-slate-200 rounded">
@@ -252,7 +276,7 @@ export default function FsNsiTable({
               <th className="text-left p-2 border w-28 bg-slate-50">Тип функционала</th>
               <th className="text-right p-2 border w-14 bg-slate-50" title="Нормативный SP из НСИ">НСИ</th>
               <th className="text-left p-2 border min-w-[100px] bg-slate-50" title="Требование НМД из НСИ">НМД НСИ</th>
-              <th className="text-left p-2 border w-36 bg-slate-50">Статус</th>
+              <th className="text-center p-2 border w-24 bg-slate-50" title="Черновики не попадают в бриф и недоступны для связей с решениями и виджетами">Черновик</th>
               <th className="text-left p-2 border w-28 bg-slate-50">Действия</th>
             </tr>
           </thead>
@@ -470,16 +494,22 @@ export default function FsNsiTable({
                             ))}
                           </select>
                         </td>
-                        <td className="p-2 border align-top">
-                          {isDraft && (
-                            <button
-                              type="button"
-                              className="text-[10px] px-2 py-1 rounded bg-blue-500 text-white hover:bg-blue-600 whitespace-nowrap"
-                              onClick={() => void onPublish(item.id)}
-                            >
-                              Опубликовать
-                            </button>
-                          )}
+                        <td className="p-2 border align-top text-center" onClick={e => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            className={`inline-block px-2 py-0.5 rounded min-w-[36px] text-[10px] cursor-pointer ${
+                              isDraft
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}
+                            title={isDraft
+                              ? 'Черновик: не в брифе, нельзя связать. Клик — опубликовать'
+                              : 'Опубликован. Клик — вернуть в черновик'}
+                            disabled={busy}
+                            onClick={() => void onSetPublished(item.id, isDraft)}
+                          >
+                            {isDraft ? 'Да' : 'Нет'}
+                          </button>
                         </td>
                         <td className="p-2 border align-top" onClick={e => e.stopPropagation()}>
                           <div className="flex flex-col gap-1">

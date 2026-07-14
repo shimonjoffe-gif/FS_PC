@@ -3,7 +3,7 @@ import type {
   Briefing, BriefingFull, BriefingCalcResult, Industry, Segment, MaturityLevel,
   Problem, ProblemDetail, Solution, SolutionDetail, SolutionFsLink, Widget, WidgetDetail, FsCatalogItem, FsCatalogGroup, FsCatalogItemsResponse, FsPhase, BriefingParams, CatalogLink,
   ProjectType, ProjectTypeRate, HeadcountCoefficient, BriefingAssessment,
-  AssessmentScenarioSnapshot, FsNmdValue, HypothesisListItem, HypothesisDetail, ActivityType,
+  AssessmentScenarioSnapshot, FsNmdValue, HypothesisListItem, HypothesisDetail, ActivityType, DataSlice,
   ExportBlocks, ImportMode, BriefingImportPreview, BriefingImportResult,
 } from './types';
 import type { CreateSnapshotPayload } from './scenarioCalc';
@@ -356,6 +356,10 @@ export const deleteHypothesis = (id: number) =>
 export const getActivityTypes = () => req<ActivityType[]>('/catalog/activity-types');
 export const createActivityType = (name: string) =>
   req<ActivityType>('/catalog/activity-types', { method: 'POST', body: JSON.stringify({ name }) });
+
+export const getDataSlices = () => req<DataSlice[]>('/catalog/data-slices');
+export const createDataSlice = (name: string) =>
+  req<DataSlice>('/catalog/data-slices', { method: 'POST', body: JSON.stringify({ name }) });
 export const getWidgets = () => req<Widget[]>('/catalog/widgets');
 export const getWidget = (id: number) => req<WidgetDetail>(`/catalog/widgets/${id}`);
 export const getWidgetsBySolution = (solutionId: number) => req<Widget[]>(`/catalog/widgets-by-solution/${solutionId}`);
@@ -420,11 +424,20 @@ export const deleteFsCatalogItem = (id: number) =>
   req<{ ok: boolean }>(`/catalog/fs-catalog/${id}`, { method: 'DELETE' });
 export const deleteFsCatalogGroup = (groupKey: string | number) =>
   req<{ ok: boolean; groups: FsCatalogGroup[] }>(`/catalog/fs-catalog/groups/${groupKey}`, { method: 'DELETE' });
-export const publishFsCatalogItem = (id: number) =>
-  req<FsCatalogItem>(`/catalog/fs-catalog/${id}/publish`, { method: 'POST' });
+export const setFsCatalogItemPublished = (id: number, published: boolean) =>
+  req<FsCatalogItem>(`/catalog/fs-catalog/${id}/published`, {
+    method: 'PUT',
+    body: JSON.stringify({ published }),
+  });
+export const publishFsCatalogItem = (id: number) => setFsCatalogItemPublished(id, true);
 export const getFsPhases = () => req<FsPhase[]>('/catalog/fs-phases');
 
-export const createWidget = (data: { name: string; description?: string; type?: string }) =>
+export const createWidget = (data: {
+  name: string;
+  description?: string;
+  type?: string;
+  data_slice_id?: number | null;
+}) =>
   req<{ id: number }>('/catalog/widgets', { method: 'POST', body: JSON.stringify(data) });
 export const updateWidget = (id: number, data: Partial<Widget>) =>
   req<{ ok: boolean }>(`/catalog/widgets/${id}`, { method: 'PATCH', body: JSON.stringify(data) });

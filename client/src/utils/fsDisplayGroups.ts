@@ -67,5 +67,8 @@ export function buildFsDisplayGroups(groups: FsCatalogGroup[], items: FsCatalogI
 }
 
 export function filterFsCatalogItems(items: FsCatalogItem[]): FsCatalogItem[] {
-  return items.filter(item => !item.item_type || item.item_type === 'item');
+  return items.filter(item =>
+    (!item.item_type || item.item_type === 'item')
+    && Number(item.published ?? 1) === 1,
+  );
 }

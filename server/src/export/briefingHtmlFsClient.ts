@@ -8,7 +8,6 @@ export function getFsClientJs(): string {
 
   function ensureFsUiState(){
     data.ui_state=data.ui_state||{};
-    if(data.ui_state.fs_show_inactive===undefined) data.ui_state.fs_show_inactive=true;
     if(data.ui_state.fs_show_nsi===undefined) data.ui_state.fs_show_nsi=false;
     if(!data.ui_state.fs_groups) data.ui_state.fs_groups={};
     if(!data.ui_state.fs_queue_cols) data.ui_state.fs_queue_cols={};
@@ -16,7 +15,6 @@ export function getFsClientJs(): string {
 
   function fsQueueExpanded(q){ ensureFsUiState(); return !!data.ui_state.fs_queue_cols[String(q)]; }
   function fsYesFilter(){ ensureFsUiState(); return data.ui_state.fs_yes_filter||null; }
-  function fsShowInactive(){ ensureFsUiState(); return data.ui_state.fs_show_inactive!==false; }
   function fsShowNsi(){ ensureFsUiState(); return !!data.ui_state.fs_show_nsi; }
   function fsCardId(){ ensureFsUiState(); return data.ui_state.fs_card!=null?Number(data.ui_state.fs_card):null; }
   function fsCommentKey(){ ensureFsUiState(); return data.ui_state.fs_comment||null; }
@@ -309,12 +307,10 @@ export function getFsClientJs(): string {
 
   function renderFsToolbar(){
     var yf=fsYesFilter();
-    var showInact=fsShowInactive();
     var showNsi=fsShowNsi();
     return '<div class="fs-toolbar">'+
       '<button type="button" data-fs-collapse-sections>Свернуть разделы</button>'+
       (yf?'<button type="button" class="fs-filter-reset" data-fs-reset-yes-filter>Сбросить фильтр «Да»</button>':'')+
-      '<button type="button" data-fs-toggle-inactive>'+(showInact?'Скрыть неактуальные':'Показать неактуальные')+'</button>'+
       '<button type="button" data-fs-toggle-nsi>'+(showNsi?'Скрыть НСИ':'Показать НСИ')+'</button>'+
       '</div>';
   }
@@ -337,7 +333,6 @@ export function getFsClientJs(): string {
     });
     var rows='';
     var yesFilter=fsYesFilter();
-    var showInactive=fsShowInactive();
     groupItems(data.fs.items).forEach(function(grp){
       var gKey=grp.group;
       var gEnc=encodeURIComponent(gKey);
@@ -367,15 +362,13 @@ export function getFsClientJs(): string {
       rows+='</tr>';
       if(!gOpen) return;
       rowItems.forEach(function(it){
-        if(!showInactive&&it.inactive_for_customer) return;
         var fid=it.fs_item_id;
         var queues=itemQueues(it);
         var allOn=anyQueueEnabled(queues);
         var customerItem=isCustomerFsItem(it);
         var unmatched=!customerItem&&it.matched===false;
-        var inactive=!!it.inactive_for_customer;
         var flags=fsDetailLineFlags(it);
-        var rowCls='fs-row'+(customerItem?' fs-row-customer':'')+(unmatched?' fs-row-unmatched':'')+(inactive?' fs-row-inactive':'');
+        var rowCls='fs-row'+(customerItem?' fs-row-customer':'')+(unmatched?' fs-row-unmatched':'');
         var widgets=(it.matched_widgets||[]).length>0?it.matched_widgets.length+' выбрано':'—';
         var funcCell=customerItem?
           '<select class="fs-func-select" data-fs-func-type="'+fid+'">'+
@@ -402,7 +395,7 @@ export function getFsClientJs(): string {
           '</td>'+
           '<td><button type="button" class="fs-name-btn'+(customerItem?' fs-name-customer':'')+'" data-fs-card="'+fid+'" title="Открыть карточку">'+
           nameHtml+
-          (inactive?'<span class="fs-inactive-tag"> (не актуален)</span>':'')+badges+'</button></td>'+
+          badges+'</button></td>'+
           '<td>'+funcCell+'</td>'+
           fsNsiCells(it,false)+
           '<td class="fs-widgets-cell">'+esc(widgets)+'</td>'+
@@ -477,7 +470,6 @@ export function getFsClientJs(): string {
     return {
       name:it.customer_name||it.name||'',
       breakdown:breakdown,
-      inactive:!!it.inactive_for_customer,
       func_type:it.func_type||'ПРОФ',
       detailLines:lines
     };
@@ -522,7 +514,7 @@ export function getFsClientJs(): string {
     }
     return '<div class="fs-modal-overlay" data-fs-modal="card"><div class="fs-modal fs-modal-lg" onclick="event.stopPropagation()">'+
       '<div class="fs-modal-hd"><div style="flex:1;min-width:0">'+title+
-      '<label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px"><input type="checkbox" data-fs-card-inactive'+(draft.inactive?' checked':'')+'> Не актуален для заказчика</label></div>'+
+      '</div>'+
       '<button type="button" data-fs-modal-close style="background:none;border:none;font-size:18px;color:#94a3b8;cursor:pointer">✕</button></div>'+
       '<div class="fs-modal-bd">'+body+'</div>'+
       '<div class="fs-modal-ft"><button type="button" data-fs-modal-close>Отмена</button><button type="button" class="fs-modal-save" data-fs-card-save>Сохранить</button></div></div></div>';
@@ -573,8 +565,6 @@ export function getFsClientJs(): string {
     if(nameEl) draft.name=nameEl.value;
     var brEl=document.querySelector('[data-fs-card-breakdown]');
     if(brEl) draft.breakdown=brEl.value;
-    var inactEl=document.querySelector('[data-fs-card-inactive]');
-    if(inactEl) draft.inactive=inactEl.checked;
     var lines=[];
     document.querySelectorAll('[data-fs-card-line-name]').forEach(function(inp){
       var idx=Number(inp.getAttribute('data-fs-card-line-name'));
@@ -606,7 +596,7 @@ export function getFsClientJs(): string {
       it.customer_description=draft.breakdown.trim()||null;
       if(draft.func_type) it.func_type=draft.func_type;
     }
-    it.inactive_for_customer=!!draft.inactive;
+    it.inactive_for_customer=false;
     if(draft.detailLines){
       it.detail_lines=draft.detailLines
         .filter(function(l){return (l.name||'').trim();})
@@ -821,12 +811,6 @@ export function getFsClientJs(): string {
     if(resetFilterBtn) resetFilterBtn.addEventListener('click',function(){
       ensureFsUiState();
       data.ui_state.fs_yes_filter=null;
-      fsRerender();
-    });
-    var toggleInactiveBtn=document.querySelector('[data-fs-toggle-inactive]');
-    if(toggleInactiveBtn) toggleInactiveBtn.addEventListener('click',function(){
-      ensureFsUiState();
-      data.ui_state.fs_show_inactive=!fsShowInactive();
       fsRerender();
     });
     var toggleNsiBtn=document.querySelector('[data-fs-toggle-nsi]');

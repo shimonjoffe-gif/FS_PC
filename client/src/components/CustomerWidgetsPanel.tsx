@@ -2,16 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { BriefingCustomerWidgetSel, Solution, Widget } from '../types';
 import { buildSolutionDisplayUnits } from '../utils/solutionDisplayGroups';
 import { yesNoClass, yesNoLabel } from '../utils/yesNoBadge';
+import { matchesWidgetSearch } from '../utils/widgetDisplayGroups';
+import { WidgetGroupedTableBody, WidgetGroupCollapseAllButton, useWidgetGroupCollapse } from './WidgetGroupedList';
 import { WidgetImageThumbnail } from './WidgetImagePreview';
-
-function matchesWidgetSearch(w: Widget, q: string): boolean {
-  if (!q) return true;
-  return (
-    w.name.toLowerCase().includes(q)
-    || (w.description?.toLowerCase().includes(q) ?? false)
-    || (w.type?.toLowerCase().includes(q) ?? false)
-  );
-}
 
 function matchesSolutionSearch(s: Solution, q: string): boolean {
   if (!q) return true;
@@ -206,6 +199,7 @@ export function CustomerWidgetsPanel({
   onRequestToggle: (widget: Widget, enable: boolean) => void;
 }) {
   const [search, setSearch] = useState('');
+  const groupCollapse = useWidgetGroupCollapse();
   const selectedIds = useMemo(
     () => new Set(selected.map(s => s.widget_id)),
     [selected],
@@ -214,7 +208,7 @@ export function CustomerWidgetsPanel({
   const list = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filtered = q ? catalog.filter(w => matchesWidgetSearch(w, q)) : catalog;
-    return [...filtered].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    return filtered;
   }, [catalog, search]);
 
   return (
@@ -225,12 +219,15 @@ export function CustomerWidgetsPanel({
         решение убирается только если оно было добавлено исключительно этим виджетом. ФС также
         берётся напрямую из связей виджета.
       </p>
-      <input
-        className="w-full max-w-md text-sm border rounded px-2 py-1.5"
-        placeholder="Поиск виджета…"
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="w-full max-w-md text-sm border rounded px-2 py-1.5"
+          placeholder="Поиск виджета, разреза…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <WidgetGroupCollapseAllButton widgets={list} collapse={groupCollapse} />
+      </div>
       {list.length === 0 ? (
         <p className="text-sm text-slate-400">
           Нет виджетов со связями на решения или ФС. Настройте связи в справочниках (Виджет→решение / Виджет→ФС).
@@ -247,47 +244,52 @@ export function CustomerWidgetsPanel({
               </tr>
             </thead>
             <tbody>
-              {list.map(w => {
-                const on = selectedIds.has(w.id);
-                const linked = solutionsByWidgetId.get(w.id) ?? [];
-                return (
-                  <tr key={w.id} className={on ? 'bg-blue-50/30' : 'hover:bg-slate-50/80'}>
-                    <td className="p-2 border-b align-middle">
-                      <WidgetImageThumbnail
-                        imagePath={w.image_path}
-                        name={w.name}
-                        className="w-14 h-10 object-contain bg-white border border-slate-100 rounded cursor-pointer hover:border-slate-400"
-                      />
-                    </td>
-                    <td className="p-2 border-b align-top">
-                      <div className="text-sm font-medium text-slate-800">{w.name}</div>
-                      {w.description ? (
-                        <div className="text-[11px] text-slate-500 line-clamp-2 mt-0.5">{w.description}</div>
-                      ) : null}
-                      {w.type ? (
-                        <div className="text-[10px] text-slate-400 mt-0.5">{w.type}</div>
-                      ) : null}
-                    </td>
-                    <td className="p-2 border-b align-middle text-slate-500">
-                      {linked.length === 0
-                        ? 'нет решений'
-                        : linked.length === 1
-                          ? '→ 1 решение'
-                          : `→ ${linked.length} решений`}
-                    </td>
-                    <td className="p-2 border-b align-middle text-center">
-                      <button
-                        type="button"
-                        className={`px-2 py-0.5 rounded min-w-[36px] text-xs cursor-pointer ${yesNoClass(on)}`}
-                        title={on ? 'Клик — снять' : 'Клик — выбрать'}
-                        onClick={() => onRequestToggle(w, !on)}
-                      >
-                        {yesNoLabel(on)}
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              <WidgetGroupedTableBody
+                widgets={list}
+                colSpan={4}
+                collapse={groupCollapse}
+                renderRow={w => {
+                  const on = selectedIds.has(w.id);
+                  const linked = solutionsByWidgetId.get(w.id) ?? [];
+                  return (
+                    <tr key={w.id} className={on ? 'bg-blue-50/30' : 'hover:bg-slate-50/80'}>
+                      <td className="p-2 border-b align-middle">
+                        <WidgetImageThumbnail
+                          imagePath={w.image_path}
+                          name={w.name}
+                          className="w-14 h-10 object-contain bg-white border border-slate-100 rounded cursor-pointer hover:border-slate-400"
+                        />
+                      </td>
+                      <td className="p-2 border-b align-top">
+                        <div className="text-sm font-medium text-slate-800">{w.name}</div>
+                        {w.description ? (
+                          <div className="text-[11px] text-slate-500 line-clamp-2 mt-0.5">{w.description}</div>
+                        ) : null}
+                        {w.type ? (
+                          <div className="text-[10px] text-slate-400 mt-0.5">{w.type}</div>
+                        ) : null}
+                      </td>
+                      <td className="p-2 border-b align-middle text-slate-500">
+                        {linked.length === 0
+                          ? 'нет решений'
+                          : linked.length === 1
+                            ? '→ 1 решение'
+                            : `→ ${linked.length} решений`}
+                      </td>
+                      <td className="p-2 border-b align-middle text-center">
+                        <button
+                          type="button"
+                          className={`px-2 py-0.5 rounded min-w-[36px] text-xs cursor-pointer ${yesNoClass(on)}`}
+                          title={on ? 'Клик — снять' : 'Клик — выбрать'}
+                          onClick={() => onRequestToggle(w, !on)}
+                        >
+                          {yesNoLabel(on)}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }}
+              />
             </tbody>
           </table>
         </div>

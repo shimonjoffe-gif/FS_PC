@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { Widget, Solution, Problem, FsCatalogItem, FsCatalogGroup, ProjectType, ProjectTypeRate, HeadcountCoefficient, HypothesisListItem, HypothesisProblemDraft, ActivityType } from '../types';
 import {
   getWidgets, createWidget, updateWidget, deleteWidget, getWidget,
   uploadWidgetImage, removeWidgetImage,
-  getSolutions, getProblems, getProblem, createProblemCatalog, saveProblem, deleteProblem, deleteProblemsByHypothesis, getMaturityLevels, getActivityTypes, getFsCatalog, getFsCatalogItems, createFsCatalogItem, patchFsCatalogItem, saveFsCatalogDetails, getFsCatalogUsage, publishFsCatalogItem,
+  getSolutions, getProblems, getProblem, createProblemCatalog, saveProblem, deleteProblem, deleteProblemsByHypothesis, getMaturityLevels, getActivityTypes, getFsCatalog, getFsCatalogItems, createFsCatalogItem, patchFsCatalogItem, saveFsCatalogDetails, getFsCatalogUsage,
   createFsCatalogGroup, copyFsCatalogItem, copyFsCatalogGroup, reorderFsCatalog, moveFsCatalogItemToGroup,
   deleteFsCatalogItem, deleteFsCatalogGroup,
   getHypotheses, getHypothesis, createHypothesis, saveHypothesis, deleteHypothesis,
@@ -11,9 +11,11 @@ import {
   getSolutionFsLinks, saveSolutionFsLinks,
   getSolutionWidgetLinksForSolution, saveSolutionWidgetLinksForSolution,
   getWidgetFsLinksForWidget, saveWidgetFsLinksForWidget,
+  setFsCatalogItemPublished,
   getProjectTypes, createProjectType, updateProjectType, deleteProjectType,
   getProjectTypeRates, addProjectTypeRate, getProjectTypeCoefficients, saveProjectTypeCoefficients,
 } from '../api';
+import { filterFsCatalogItems } from '../utils/fsDisplayGroups';
 import FsNsiTable from './FsNsiTable';
 import HypothesesNsi from './HypothesesNsi';
 import ProblemsNsi from './ProblemsNsi';
@@ -55,6 +57,10 @@ export default function CatalogLinks() {
 
   const [fsNsiGroups, setFsNsiGroups] = useState<FsCatalogGroup[]>([]);
   const [fsNsiItems, setFsNsiItems] = useState<FsCatalogItem[]>([]);
+  const publishedFsNsiItems = useMemo(
+    () => filterFsCatalogItems(fsNsiItems),
+    [fsNsiItems],
+  );
   const [usageModal, setUsageModal] = useState<{ id: number; name: string } | null>(null);
   const [usageRows, setUsageRows] = useState<FsCatalogUsageRow[]>([]);
   const [usageLoading, setUsageLoading] = useState(false);
@@ -107,8 +113,8 @@ export default function CatalogLinks() {
     await reloadFsNsi();
   }
 
-  async function publishFsNsiItem(id: number) {
-    await publishFsCatalogItem(id);
+  async function setFsNsiPublished(id: number, published: boolean) {
+    await setFsCatalogItemPublished(id, published);
     await reloadFsNsi();
   }
 
@@ -254,7 +260,7 @@ export default function CatalogLinks() {
               onSaveCard={saveFsNsiCard}
               onCreateCard={createFsNsiCard}
               onOpenUsage={openUsage}
-              onPublish={publishFsNsiItem}
+              onSetPublished={setFsNsiPublished}
               onCreateGroup={createFsNsiGroup}
               onCopyItem={copyFsNsiItem}
               onCopyGroup={copyFsNsiGroup}
@@ -274,10 +280,11 @@ export default function CatalogLinks() {
             <WidgetsNsi
               items={widgets}
               fsGroups={fsNsiGroups}
-              fsItems={fsNsiItems}
+              fsItems={publishedFsNsiItems}
               onLoadFsLinks={async id => (await getWidgetFsLinksForWidget(id)).fs_item_ids}
               onSaveFsLinks={async (id, ids) => (await saveWidgetFsLinksForWidget(id, ids)).fs_item_ids}
               onOpen={id => getWidget(id)}
+              onReload={reload}
               onCreate={async data => {
                 const { id } = await createWidget(data);
                 await reload();
@@ -390,7 +397,7 @@ export default function CatalogLinks() {
               items={solutions}
               hypothesisOptions={hypotheses.map(h => h.name).sort((a, b) => a.localeCompare(b, 'ru'))}
               fsGroups={fsNsiGroups}
-              fsItems={fsNsiItems}
+              fsItems={publishedFsNsiItems}
               widgets={widgets}
               onLoadFsLinks={async id => (await getSolutionFsLinks(id)).fs_links}
               onSaveFsLinks={async (id, links) => (await saveSolutionFsLinks(id, links)).fs_links}

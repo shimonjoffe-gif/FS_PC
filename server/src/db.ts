@@ -172,6 +172,11 @@ export function initDB() {
       name TEXT NOT NULL UNIQUE
     );
 
+    CREATE TABLE IF NOT EXISTS data_slices (
+      id   INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE
+    );
+
     CREATE TABLE IF NOT EXISTS hypothesis_activity_types (
       hypothesis_id    INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
       activity_type_id INTEGER NOT NULL REFERENCES activity_types(id) ON DELETE CASCADE,
@@ -186,11 +191,12 @@ export function initDB() {
     );
 
     CREATE TABLE IF NOT EXISTS widgets (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL,
-      description TEXT,
-      type        TEXT DEFAULT 'dashboard',
-      image_path  TEXT
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      name          TEXT NOT NULL,
+      description   TEXT,
+      type          TEXT DEFAULT 'dashboard',
+      image_path    TEXT,
+      data_slice_id INTEGER REFERENCES data_slices(id)
     );
 
     CREATE TABLE IF NOT EXISTS solution_widget_map (
@@ -356,9 +362,19 @@ export function initDB() {
     db.exec(`ALTER TABLE briefing_queue_calc ADD COLUMN technology_manual INTEGER DEFAULT 0`);
   }
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS data_slices (
+      id   INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE
+    );
+  `);
+
   const widgetCols = db.prepare(`PRAGMA table_info(widgets)`).all() as { name: string }[];
   if (!widgetCols.some(c => c.name === 'image_path')) {
     db.exec(`ALTER TABLE widgets ADD COLUMN image_path TEXT`);
+  }
+  if (!widgetCols.some(c => c.name === 'data_slice_id')) {
+    db.exec(`ALTER TABLE widgets ADD COLUMN data_slice_id INTEGER REFERENCES data_slices(id)`);
   }
 
   const solutionFsCols = db.prepare(`PRAGMA table_info(solution_fs_map)`).all() as { name: string }[];
