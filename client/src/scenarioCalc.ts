@@ -261,18 +261,35 @@ export function setScenarioQueueTechnology(
   };
 }
 
-/** Effective ФС for scenario: excluded items treated as off all queues (base catalog unchanged). */
+/** Effective ФС for scenario: exclusions + queue overrides (base catalog unchanged). */
 export function resolveScenarioFsItems(
   fsItems: BriefingFsSel[],
   scenario: AssessmentScenario | null | undefined,
 ): BriefingFsSel[] {
   const excluded = new Set(scenario?.fs_excluded ?? []);
-  if (excluded.size === 0) return fsItems;
+  const overrides = scenario?.fs_queue_overrides ?? {};
+  const hasOverrides = Object.keys(overrides).length > 0;
+  if (excluded.size === 0 && !hasOverrides) return fsItems;
 
   const offQueues = Object.fromEntries(FS_QUEUE_KEYS.map(q => [q, 0])) as FsQueuesMap;
   return fsItems.map(item => {
-    if (!excluded.has(item.fs_item_id)) return item;
-    return { ...item, enabled: 0, queues_json: offQueues };
+    if (excluded.has(item.fs_item_id)) {
+      return { ...item, enabled: 0, queues_json: offQueues };
+    }
+
+    const itemOverride = overrides[item.fs_item_id];
+    if (!itemOverride) return item;
+
+    const baseQueues = itemQueues(item);
+    const merged: FsQueuesMap = { ...baseQueues };
+    for (const q of FS_QUEUE_KEYS) {
+      if (itemOverride[q] !== undefined) merged[q] = itemOverride[q]!;
+    }
+    return {
+      ...item,
+      queues_json: merged,
+      enabled: anyQueueEnabled(merged) ? 1 : 0,
+    };
   });
 }
 
@@ -299,11 +316,100 @@ export function toggleScenarioFsExcluded(
   if (excluded) next.add(fsItemId);
   else next.delete(fsItemId);
   const fs_excluded = [...next];
+
+  const nextOverrides = { ...(scenario.fs_queue_overrides ?? {}) };
+  if (excluded) delete nextOverrides[fsItemId];
+
+  const hasOverrides = Object.keys(nextOverrides).length > 0;
   return {
     ...scenario,
     fs_excluded: fs_excluded.length > 0 ? fs_excluded : undefined,
+    fs_queue_overrides: hasOverrides ? nextOverrides : undefined,
     updated_at: new Date().toISOString(),
   };
+}
+
+export function getScenarioItemQueueEnabled(
+  item: BriefingFsSel,
+  scenario: AssessmentScenario | null | undefined,
+  queue: FsQueueKey,
+): boolean {
+  if (isFsExcludedInScenario(scenario, item.fs_item_id)) return false;
+  const override = scenario?.fs_queue_overrides?.[item.fs_item_id]?.[queue];
+  if (override !== undefined) return override === 1;
+  return itemQueues(item)[queue] === 1;
+}
+
+export function hasScenarioItemQueueDiff(
+  item: BriefingFsSel,
+  scenario: AssessmentScenario | null | undefined,
+): boolean {
+  if (isFsExcludedInScenario(scenario, item.fs_item_id)) return true;
+  const itemOverride = scenario?.fs_queue_overrides?.[item.fs_item_id];
+  if (!itemOverride) return false;
+  const base = itemQueues(item);
+  return FS_QUEUE_KEYS.some(q => itemOverride[q] !== undefined && itemOverride[q] !== base[q]);
+}
+
+export function countScenarioFsQueueOverrides(
+  scenario: AssessmentScenario | null | undefined,
+): number {
+  return Object.keys(scenario?.fs_queue_overrides ?? {}).length;
+}
+
+/** Persist full queue map as diffs vs base queues_json. */
+export function setScenarioItemQueues(
+  scenario: AssessmentScenario,
+  item: BriefingFsSel,
+  nextQueues: FsQueuesMap,
+): AssessmentScenario {
+  const base = itemQueues(item);
+  const nextOverrides = { ...(scenario.fs_queue_overrides ?? {}) };
+  const itemId = item.fs_item_id;
+  const itemOverride: Partial<FsQueuesMap> = {};
+
+  for (const q of FS_QUEUE_KEYS) {
+    const nextOn = nextQueues[q] === 1;
+    const baseOn = base[q] === 1;
+    if (nextOn !== baseOn) itemOverride[q] = nextOn ? 1 : 0;
+  }
+
+  if (Object.keys(itemOverride).length === 0) {
+    delete nextOverrides[itemId];
+  } else {
+    nextOverrides[itemId] = itemOverride;
+  }
+
+  const hasDiffs = Object.keys(nextOverrides).length > 0;
+  return {
+    ...scenario,
+    fs_queue_overrides: hasDiffs ? nextOverrides : undefined,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+export function setScenarioItemQueue(
+  scenario: AssessmentScenario,
+  item: BriefingFsSel,
+  queue: FsQueueKey,
+  enabled: boolean,
+): AssessmentScenario {
+  const current = Object.fromEntries(
+    FS_QUEUE_KEYS.map(q => [q, getScenarioItemQueueEnabled(item, scenario, q) ? 1 : 0]),
+  ) as FsQueuesMap;
+  current[queue] = enabled ? 1 : 0;
+  return setScenarioItemQueues(scenario, item, current);
+}
+
+/** Move item to a single queue (как D&D в брифе): только target = Да. */
+export function moveScenarioItemToQueue(
+  scenario: AssessmentScenario,
+  item: BriefingFsSel,
+  targetQueue: FsQueueKey,
+): AssessmentScenario {
+  const nextQueues = Object.fromEntries(FS_QUEUE_KEYS.map(q => [q, 0])) as FsQueuesMap;
+  nextQueues[targetQueue] = 1;
+  return setScenarioItemQueues(scenario, item, nextQueues);
 }
 
 export interface ScenarioSpDelta {
@@ -328,11 +434,31 @@ const FS_DEPENDENT_PHASE_IDS = ['r76', 'r77', 'r78', 'r80', 'r81', 'r82'];
 export function scenarioFsExclusionWarnings(
   scenario: AssessmentScenario | null | undefined,
 ): string[] {
-  if (!scenario?.fs_excluded?.length) return [];
-  return [
-    `Исключено пунктов ФС: ${scenario.fs_excluded.length}. Пересчитываются SP (C20/C21/D20) и фазы, зависящие от объёма.`,
-    `Затронуты в том числе: ${FS_DEPENDENT_PHASE_IDS.join(', ')} (и др. при наличии SP).`,
-  ];
+  const warnings: string[] = [];
+  const excluded = scenario?.fs_excluded?.length ?? 0;
+  const redistributed = countScenarioFsQueueOverrides(scenario);
+
+  if (excluded > 0) {
+    warnings.push(
+      `Исключено пунктов ФС: ${excluded}. Пересчитываются SP (C20/C21/D20) и фазы, зависящие от объёма.`,
+    );
+    warnings.push(
+      `Затронуты в том числе: ${FS_DEPENDENT_PHASE_IDS.join(', ')} (и др. при наличии SP).`,
+    );
+  }
+  if (redistributed > 0) {
+    warnings.push(
+      `Перераспределено между очередями: ${redistributed} пункт(ов). SP по очередям и зависимые фазы пересчитываются; база на «ФС + очереди» не меняется.`,
+    );
+  }
+  return warnings;
+}
+
+export function hasScenarioFsChanges(
+  scenario: AssessmentScenario | null | undefined,
+): boolean {
+  return (scenario?.fs_excluded?.length ?? 0) > 0
+    || countScenarioFsQueueOverrides(scenario) > 0;
 }
 
 export function setScenarioPhaseEnabled(

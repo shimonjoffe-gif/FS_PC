@@ -730,6 +730,8 @@ export interface AssessmentScenario {
   phase_enabled?: Partial<Record<FsQueueKey, Record<string, boolean>>>;
   /** fs_item_id excluded from scenario (base ФС unchanged). */
   fs_excluded?: number[];
+  /** fs_item_id → queue diffs from base queues_json (only changed queues stored). */
+  fs_queue_overrides?: Partial<Record<number, Partial<FsQueuesMap>>>;
   /** Technology / rate overrides per queue (diffs from base queue_calcs). */
   queue_technology?: Partial<Record<FsQueueKey, ScenarioQueueTechnologyOverride>>;
 }

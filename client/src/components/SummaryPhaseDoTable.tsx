@@ -16,7 +16,7 @@ export default function SummaryPhaseDoTable({ data, queueLabels }: Props) {
   if (activeQueues.length === 0) {
     return (
       <p className="text-sm text-slate-500">
-        Нет оцененных очередей. Включите очереди на вкладке «Параметры оценки» → организационный объём.
+        Нет оцененных очередей. Включите «Оценивать» на вкладке «Оценка РП».
       </p>
     );
   }

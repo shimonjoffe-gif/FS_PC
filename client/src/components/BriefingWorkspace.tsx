@@ -95,8 +95,8 @@ import {
 import CollapsibleSection from './CollapsibleSection';
 import QueueSwitcher from './QueueSwitcher';
 import AssessmentScenariosTab from './AssessmentScenariosTab';
-import SummaryPhaseDoTable from './SummaryPhaseDoTable';
-import { computeSummaryPhaseDoTable } from '../summaryPhaseCalc';
+import SummaryScenarioMatrixTable from './SummaryScenarioMatrixTable';
+import { computeSummaryScenarioMatrix } from '../summaryScenarioMatrix';
 import {
   mergePhaseCalcParams,
   resetQueuePhaseParamToAuto,
@@ -2527,7 +2527,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
       );
       return { ...d, assessment };
     });
-  }, [assessmentNsi]);
+  }, [assessmentNsi, data?.id, data?.updated_at, assessmentRecalcFlash]);
 
   useEffect(() => {
     getIndustries().then(setIndustries);
@@ -2830,17 +2830,34 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     }
   }, [data?.solutions]);
 
-  const summaryPhaseDo = useMemo(() => {
+  const summaryScenarioMatrix = useMemo(() => {
     if (!data?.assessment) return null;
-    const p = data.params;
-    const t = parseJson<TeamProportions>(p.team_json, DEFAULT_TEAM);
-    return computeSummaryPhaseDoTable(
-      data.assessment,
-      data.fs_items,
-      p.accuracy ?? 0,
-      t,
-    );
-  }, [data, assessmentRecalcFlash]);
+    try {
+      const p = data.params;
+      const t = parseJson<TeamProportions>(p.team_json, DEFAULT_TEAM);
+      const nsi: AssessmentNsiCache = assessmentNsi ?? {
+        projectTypes: data.assessment.project_types ?? [],
+        ratesByTypeId: new Map(),
+        coeffsByTypeId: new Map(),
+      };
+      const assessment = recomputeAssessmentDerived(
+        data.assessment,
+        { headcount: data.headcount, fs_items: data.fs_items },
+        nsi,
+      );
+      return computeSummaryScenarioMatrix(
+        assessment,
+        data.fs_items,
+        assessment.assessment_scenarios ?? [],
+        p.accuracy ?? 0,
+        t,
+        assessmentNsi ?? undefined,
+      );
+    } catch (err) {
+      console.error('computeSummaryScenarioMatrix failed', err);
+      return null;
+    }
+  }, [data, assessmentRecalcFlash, assessmentNsi]);
 
   async function runTabSave(tabId: Tab, fn: () => Promise<void>) {
     setSavingTab(tabId);
@@ -4502,10 +4519,23 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
 
         {tab === 'summary' && (
           <div className="space-y-4">
-            {summaryPhaseDo ? (
-              <SummaryPhaseDoTable data={summaryPhaseDo} queueLabels={queueLabels} />
+            {summaryScenarioMatrix ? (
+              <SummaryScenarioMatrixTable
+                data={summaryScenarioMatrix}
+                queueLabels={queueLabels}
+              />
             ) : (
-              <p className="text-sm text-slate-400">Нет данных для расчёта</p>
+              <p className="text-sm text-slate-400">
+                {!data.assessment
+                  ? 'Нет данных оценки.'
+                  : getEvaluatedQueueKeys(
+                    data.assessment.org_volume?.queues
+                      ? data.assessment.org_volume
+                      : data.assessment.auto_org_volume,
+                  ).length === 0
+                    ? 'Нет оцениваемых очередей — включите «Оценивать» на вкладке «Оценка РП».'
+                    : 'Нет данных для сводки ДО. Проверьте включение фаз на вкладке «Оценка РП».'}
+              </p>
             )}
             {data.project_id ? (
               <p className="text-sm text-green-600">Проект уже создан (ID: {data.project_id})</p>

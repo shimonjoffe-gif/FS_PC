@@ -10,7 +10,6 @@ import {
   QUEUE_TECHNOLOGY_OPTIONS, getEvaluatedQueueKeys,
 } from '../assessmentCalc';
 import {
-  baseEnabledFsItems,
   buildScenarioSnapshotPayload,
   computeScenarioComparison,
   computeScenarioSpDelta,
@@ -20,15 +19,22 @@ import {
   getScenarioPhaseEnabled,
   getScenarioQueueRate,
   getScenarioQueueTechnologyLabel,
+  hasScenarioFsChanges,
+  getScenarioItemQueueEnabled,
   isFsExcludedInScenario,
+  moveScenarioItemToQueue,
   phaseRowsForComparison,
   scenarioFsExclusionWarnings,
+  setScenarioItemQueue,
   setScenarioPhaseEnabled,
   setScenarioQueueTechnology,
   toggleScenarioFsExcluded,
 } from '../scenarioCalc';
 import { formatMoneyRub } from '../utils/formatNumber';
 import ScenarioDetailComparisonTable from './ScenarioDetailComparisonTable';
+import ScenarioFsQueueTable from './ScenarioFsQueueTable';
+
+type ScenarioEditorTab = 'phases' | 'technology' | 'fs';
 
 type Props = {
   briefingId: number;
@@ -66,6 +72,7 @@ export default function AssessmentScenariosTab({
   const scenarios = assessment.assessment_scenarios ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(scenarios[0]?.id ?? null);
   const [activeQueue, setActiveQueue] = useState<FsQueueKey>('1');
+  const [editorTab, setEditorTab] = useState<ScenarioEditorTab>('phases');
   const [freezeOpen, setFreezeOpen] = useState(false);
   const [freezeName, setFreezeName] = useState('');
   const [freezeSent, setFreezeSent] = useState(false);
@@ -92,8 +99,6 @@ export default function AssessmentScenariosTab({
     () => phaseRowsForComparison(assessment.phase_calc_defs ?? []),
     [assessment.phase_calc_defs],
   );
-
-  const enabledFsItems = useMemo(() => baseEnabledFsItems(fsItems), [fsItems]);
 
   const fsWarnings = useMemo(
     () => (selected ? scenarioFsExclusionWarnings(selected) : []),
@@ -133,6 +138,9 @@ export default function AssessmentScenariosTab({
         ? JSON.parse(JSON.stringify(src.phase_enabled))
         : undefined,
       fs_excluded: src.fs_excluded ? [...src.fs_excluded] : undefined,
+      fs_queue_overrides: src.fs_queue_overrides
+        ? JSON.parse(JSON.stringify(src.fs_queue_overrides))
+        : undefined,
       queue_technology: src.queue_technology
         ? JSON.parse(JSON.stringify(src.queue_technology))
         : undefined,
@@ -163,7 +171,27 @@ export default function AssessmentScenariosTab({
     if (!selected) return;
     const excluded = !isFsExcludedInScenario(selected, fsItemId);
     const next = toggleScenarioFsExcluded(selected, fsItemId, excluded);
-    patchScenario(selected.id, { fs_excluded: next.fs_excluded });
+    patchScenario(selected.id, {
+      fs_excluded: next.fs_excluded,
+      fs_queue_overrides: next.fs_queue_overrides,
+    });
+  }
+
+  function toggleFsItemQueue(item: BriefingFsSel, queue: FsQueueKey) {
+    if (!selected) return;
+    const current = getScenarioItemQueueEnabled(item, selected, queue);
+    const next = setScenarioItemQueue(selected, item, queue, !current);
+    patchScenario(selected.id, { fs_queue_overrides: next.fs_queue_overrides });
+  }
+
+  function moveFsItemQueue(
+    item: BriefingFsSel,
+    _fromQueue: FsQueueKey,
+    targetQueue: FsQueueKey,
+  ) {
+    if (!selected) return;
+    const next = moveScenarioItemToQueue(selected, item, targetQueue);
+    patchScenario(selected.id, { fs_queue_overrides: next.fs_queue_overrides });
   }
 
   function setQueueTechnology(queue: FsQueueKey, technology: string) {
@@ -306,7 +334,28 @@ export default function AssessmentScenariosTab({
               </div>
             </div>
 
-            {comparison && (
+            <div className="flex gap-1 border-b border-slate-200">
+              {([
+                ['phases', 'Фазы и сравнение'],
+                ['technology', 'Технология'],
+                ['fs', 'ФС'],
+              ] as const).map(([tab, label]) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setEditorTab(tab)}
+                  className={`text-xs px-3 py-2 border-b-2 -mb-px ${
+                    editorTab === tab
+                      ? 'border-blue-500 text-blue-800 font-medium'
+                      : 'border-transparent text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {editorTab === 'phases' && comparison && (
               <div>
                 <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
                   <div className="flex items-center gap-3 flex-wrap">
@@ -354,9 +403,10 @@ export default function AssessmentScenariosTab({
               </div>
             )}
 
+            {editorTab === 'technology' && (
             <div>
               <div className="text-xs text-slate-500 mb-2">
-                Технология по очередям (отличия от базы «Оценка РП»; ФС без изменений)
+                Технология по очередям (отличия от базы «Оценка РП»)
               </div>
               <div className="border rounded overflow-auto">
                 <table className="w-full text-xs border-collapse">
@@ -411,64 +461,43 @@ export default function AssessmentScenariosTab({
                 </p>
               ) : null}
             </div>
+            )}
 
-            <div>
-              <div className="text-xs text-slate-500 mb-2">
-                Исключения ФС (сокращение объёма; база на «ФС + очереди» не меняется)
+            {editorTab === 'fs' && (
+            <div className="space-y-3">
+              <div className="text-xs text-slate-500">
+                ФС в варианте — только пункты с «Да» в базе; D&D между очередями; исключение — справа
               </div>
               {fsWarnings.length > 0 && (
-                <div className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2 space-y-1">
+                <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2 space-y-1">
                   {fsWarnings.map((w, i) => <p key={i}>{w}</p>)}
                 </div>
               )}
-              {spDelta && (selected.fs_excluded?.length ?? 0) > 0 && (
-                <p className="text-xs text-slate-600 mb-2">
-                  SP функционала (все очереди): база {spDelta.base.all_queues} → сценарий{' '}
-                  <span className="font-medium">{spDelta.scenario.all_queues}</span>
-                </p>
+              {spDelta && hasScenarioFsChanges(selected) && (
+                <div className="text-xs text-slate-600 space-y-0.5">
+                  <p>
+                    SP функционала (все очереди): база {spDelta.base.all_queues} → сценарий{' '}
+                    <span className="font-medium">{spDelta.scenario.all_queues}</span>
+                  </p>
+                  <div className="flex flex-wrap gap-x-4">
+                    {activeQueues.map(q => (
+                      <span key={q}>
+                        {FS_QUEUE_LABELS[q]}: {spDelta.base.functional_sp[q]} →{' '}
+                        <span className="font-medium">{spDelta.scenario.functional_sp[q]}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
               )}
-              <div className="border rounded overflow-auto max-h-48">
-                <table className="w-full text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 text-slate-500">
-                      <th className="text-left p-2 border w-12">№</th>
-                      <th className="text-left p-2 border">Пункт ФС</th>
-                      <th className="text-right p-2 border w-14">SP</th>
-                      <th className="text-center p-2 border w-28">Исключить</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {enabledFsItems.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="p-3 text-slate-400 text-center">
-                          Нет включённых пунктов ФС в базе
-                        </td>
-                      </tr>
-                    ) : enabledFsItems.map(item => {
-                      const excluded = isFsExcludedInScenario(selected, item.fs_item_id);
-                      const prefix = item.prefix ?? item.code ?? '';
-                      return (
-                        <tr key={item.fs_item_id} className={excluded ? 'bg-amber-50/60' : ''}>
-                          <td className="p-2 border text-slate-500">{prefix}</td>
-                          <td className="p-2 border text-slate-700">{item.name}</td>
-                          <td className="p-2 border text-right tabular-nums">
-                            {item.story_points ?? 0}
-                          </td>
-                          <td className="p-2 border text-center">
-                            <input
-                              type="checkbox"
-                              checked={excluded}
-                              onChange={() => toggleFsExcluded(item.fs_item_id)}
-                              title="Исключить из расчёта сценария"
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <ScenarioFsQueueTable
+                items={fsItems}
+                scenario={selected}
+                onToggleQueue={toggleFsItemQueue}
+                onMoveToQueue={moveFsItemQueue}
+                onToggleExcluded={toggleFsExcluded}
+              />
             </div>
+            )}
 
             <div className="border-t border-slate-200 pt-4">
               <div className="text-xs font-medium text-slate-600 mb-2">Снимки КП</div>
