@@ -53,6 +53,8 @@ import AssessmentTab from './AssessmentTab';
 import PhaseCalcTable from './PhaseCalcTable';
 import PhaseCalcParamsPanel from './PhaseCalcParamsPanel';
 import FsItemCardModal from './FsItemCardModal';
+import BriefingSolutionCardModal from './BriefingSolutionCardModal';
+import BriefingWidgetCardModal from './BriefingWidgetCardModal';
 import {
   CustomProblemCards,
   CustomProblemLinkModal,
@@ -73,6 +75,15 @@ import {
   moveCustomerDetailLine,
   patchAllQueuesNo,
 } from '../fsRelocation';
+import {
+  effectiveSolutionCommentForQueue,
+  hasSolutionQueueComment,
+  makeSolutionSelection,
+  moveSolutionCommentBetween,
+  patchSolutionQueueComment,
+  serializeSolutionQueueCommentForSave,
+  withSolutionGroupParentOnQueue,
+} from '../solutionCommentRelocation';
 import {
   createCustomerFsItem,
   isCustomerFsGroupPrefix,
@@ -330,31 +341,6 @@ function serializeQueueCommentForSave(item: BriefingFsSel): Record<string, strin
   return parseJsonRecord<Record<string, string>>(item.queue_comment_json);
 }
 
-function solutionQueueComments(sel: BriefingSolutionSel): Record<string, string> {
-  return parseJsonRecord<Record<string, string>>(sel.queue_comment_json) ?? {};
-}
-
-function hasSolutionQueueComment(sel: BriefingSolutionSel, q: FsQueueKey): boolean {
-  return !!solutionQueueComments(sel)[q]?.trim();
-}
-
-function effectiveSolutionCommentForQueue(sel: BriefingSolutionSel, q: FsQueueKey): string {
-  return solutionQueueComments(sel)[q] ?? '';
-}
-
-function patchSolutionQueueComment(sel: BriefingSolutionSel, q: FsQueueKey, text: string): Partial<BriefingSolutionSel> {
-  const comments = { ...solutionQueueComments(sel) };
-  const trimmed = text.trim();
-  if (trimmed) comments[q] = trimmed;
-  else delete comments[q];
-  return { queue_comment_json: Object.keys(comments).length > 0 ? comments : null };
-}
-
-function serializeSolutionQueueCommentForSave(sel: BriefingSolutionSel): Record<string, string> | null {
-  const comments = solutionQueueComments(sel);
-  return Object.keys(comments).length > 0 ? comments : null;
-}
-
 function serializeDetailLines(item: BriefingFsSel) {
   const lines = item.detail_lines ?? [];
   return lines
@@ -466,6 +452,8 @@ function aggregateSolutionGroupQueues(
 type FsDragPayload =
   | { kind: 'queue'; fsItemId: number; fromQueue: FsQueueKey }
   | { kind: 'comment'; fsItemId: number; fromQueue: FsQueueKey };
+
+type SolutionDragPayload = { kind: 'comment'; solutionId: number; fromQueue: FsQueueKey };
 
 function FsCatalogAddModal({
   items,
@@ -940,6 +928,8 @@ function SolutionsQueueTable({
   onQueueLabelChange,
   onSolutionsChange,
   onToggleWidget,
+  onOpenSolution,
+  onOpenWidgetCard,
 }: {
   units: SolutionDisplayUnit[];
   isUnmatched: (solutionId: number) => boolean;
@@ -950,8 +940,17 @@ function SolutionsQueueTable({
   onQueueLabelChange: (q: FsQueueKey, label: string) => void;
   onSolutionsChange: (changes: { solutionId: number; next: BriefingSolutionSel | null }[]) => void;
   onToggleWidget: (solutionId: number, widgetId: number) => void;
+  onOpenSolution: (sol: Solution) => void;
+  onOpenWidgetCard: (widgetId: number) => void;
 }) {
   const [commentModal, setCommentModal] = useState<{ sol: BriefingSolutionSel; q: FsQueueKey } | null>(null);
+  const [dragPayload, setDragPayload] = useState<SolutionDragPayload | null>(null);
+  const [commentMergePrompt, setCommentMergePrompt] = useState<{
+    source: BriefingSolutionSel;
+    target: Solution;
+    fromQueue: FsQueueKey;
+    toQueue: FsQueueKey;
+  } | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(() => new Set());
 
   const solutionById = useMemo(() => {
@@ -969,21 +968,6 @@ function SolutionsQueueTable({
 
   function findSelected(solutionId: number): BriefingSolutionSel | undefined {
     return selected.find(s => s.id === solutionId);
-  }
-
-  function makeSolutionSelection(
-    sol: Solution,
-    q: FsQueueKey,
-    prev?: BriefingSolutionSel | null,
-  ): BriefingSolutionSel {
-    return {
-      ...(prev ?? sol),
-      id: sol.id,
-      name: sol.name,
-      description: sol.description,
-      queue: q,
-      queue_comment_json: prev?.queue_comment_json ?? null,
-    };
   }
 
   function toggleSolutionQueue(
@@ -1025,6 +1009,68 @@ function SolutionsQueueTable({
     setCommentModal({ sol: sel, q });
   }
 
+  function endCommentDrag() {
+    setDragPayload(null);
+  }
+
+  function startCommentDrag(e: React.DragEvent, sol: Solution, fromQueue: FsQueueKey) {
+    e.stopPropagation();
+    const payload: SolutionDragPayload = { kind: 'comment', solutionId: sol.id, fromQueue };
+    setDragPayload(payload);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-solution-comment', JSON.stringify(payload));
+  }
+
+  function applyCommentMove(
+    sourceSel: BriefingSolutionSel,
+    targetSol: Solution,
+    fromQueue: FsQueueKey,
+    toQueue: FsQueueKey,
+    mode: 'merge' | 'replace',
+  ) {
+    const targetSel = findSelected(targetSol.id);
+    let changes = moveSolutionCommentBetween(sourceSel, targetSol, targetSel, fromQueue, toQueue, mode);
+    changes = withSolutionGroupParentOnQueue(
+      changes,
+      targetSol,
+      toQueue,
+      [...solutionById.values()],
+      findSelected,
+    );
+    if (changes.length) onSolutionsChange(changes);
+  }
+
+  function handleCommentDrop(e: React.DragEvent, targetSol: Solution, targetQueue: FsQueueKey) {
+    e.preventDefault();
+    e.stopPropagation();
+    let payload = dragPayload?.kind === 'comment' ? dragPayload : null;
+    if (!payload) {
+      try {
+        payload = JSON.parse(e.dataTransfer.getData('application/x-solution-comment')) as SolutionDragPayload;
+        if (payload.kind !== 'comment') return;
+      } catch {
+        return;
+      }
+    }
+    setDragPayload(null);
+    if (payload.solutionId === targetSol.id && payload.fromQueue === targetQueue) return;
+
+    const sourceSel = findSelected(payload.solutionId);
+    if (!sourceSel) return;
+    const targetSel = findSelected(targetSol.id);
+    const existing = targetSel ? effectiveSolutionCommentForQueue(targetSel, targetQueue).trim() : '';
+    if (existing) {
+      setCommentMergePrompt({
+        source: sourceSel,
+        target: targetSol,
+        fromQueue: payload.fromQueue,
+        toQueue: targetQueue,
+      });
+      return;
+    }
+    applyCommentMove(sourceSel, targetSol, payload.fromQueue, targetQueue, 'replace');
+  }
+
   function renderCommentCell(sol: Solution, q: FsQueueKey, readOnly = false) {
     if (readOnly) {
       return <td key={`${sol.id}-${q}-comment`} className="p-1 border text-center align-middle w-9 min-h-[2rem]" />;
@@ -1032,15 +1078,11 @@ function SolutionsQueueTable({
     const sel = findSelected(sol.id);
     const canComment = !!sel && solutionSelectionQueue(sel) === q;
     const hasComment = canComment && hasSolutionQueueComment(sel, q);
+    const isCommentDropTarget = dragPayload?.kind === 'comment'
+      && (dragPayload.solutionId !== sol.id || dragPayload.fromQueue !== q);
     const cellClass = `p-1 border text-center align-middle w-9 min-h-[2rem] ${
-      canComment ? 'cursor-pointer hover:bg-slate-50' : ''
-    }`;
-
-    if (!canComment) {
-      return (
-        <td key={`${sol.id}-${q}-comment`} className={cellClass} />
-      );
-    }
+      isCommentDropTarget ? 'bg-amber-50 ring-2 ring-inset ring-amber-300' : ''
+    } ${canComment || isCommentDropTarget ? 'cursor-pointer hover:bg-slate-50' : ''}`;
 
     if (!hasComment) {
       return (
@@ -1048,19 +1090,33 @@ function SolutionsQueueTable({
           key={`${sol.id}-${q}-comment`}
           className={cellClass}
           onClick={() => openCommentModal(sol, q)}
-          title="Добавить комментарий"
-          aria-label="Добавить комментарий"
+          onDragOver={e => {
+            if (dragPayload?.kind === 'comment') e.preventDefault();
+          }}
+          onDrop={e => handleCommentDrop(e, sol, q)}
+          title={canComment ? 'Добавить комментарий' : 'Перетащите комментарий сюда'}
+          aria-label={canComment ? 'Добавить комментарий' : 'Принять комментарий'}
         />
       );
     }
 
     return (
-      <td key={`${sol.id}-${q}-comment`} className={cellClass}>
+      <td
+        key={`${sol.id}-${q}-comment`}
+        className={cellClass}
+        onDragOver={e => {
+          if (dragPayload?.kind === 'comment') e.preventDefault();
+        }}
+        onDrop={e => handleCommentDrop(e, sol, q)}
+      >
         <button
           type="button"
+          draggable
+          onDragStart={e => startCommentDrag(e, sol, q)}
+          onDragEnd={endCommentDrag}
           onClick={() => openCommentModal(sol, q)}
-          className="w-7 h-7 mx-auto rounded inline-flex items-center justify-center text-amber-700 bg-amber-100 hover:bg-amber-200 ring-1 ring-amber-300/60"
-          title="Клик — открыть комментарий"
+          className="w-7 h-7 mx-auto rounded inline-flex items-center justify-center text-amber-700 bg-amber-100 hover:bg-amber-200 ring-1 ring-amber-300/60 cursor-grab active:cursor-grabbing"
+          title="Перетащите на комментарий другого решения или клик — открыть"
           aria-label="Есть комментарий"
         >
           <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 fill-current" aria-hidden>
@@ -1125,9 +1181,17 @@ function SolutionsQueueTable({
               <span className="w-5 shrink-0" aria-hidden />
             )}
             <div className="min-w-0">
-              <div className={`${titleClass} ${unmatchedProblem ? 'italic text-slate-500' : ''}`}>
+              <button
+                type="button"
+                className={`text-left w-full hover:text-blue-700 ${titleClass} ${unmatchedProblem ? 'italic text-slate-500' : ''}`}
+                onClick={() => onOpenSolution(sol)}
+                title="Открыть карточку решения"
+              >
+                {sol.catalog_code ? (
+                  <span className="text-slate-400 font-normal mr-1 font-mono text-[11px]">{sol.catalog_code}</span>
+                ) : null}
                 {sol.name}
-              </div>
+              </button>
               {sol.description && (
                 <div className={`text-[10px] text-slate-500 mt-0.5 line-clamp-3 ${unmatchedProblem ? 'italic' : ''}`}>
                   {sol.description}
@@ -1159,6 +1223,9 @@ function SolutionsQueueTable({
                     onChange={() => onToggleWidget(sol.id, w.id)}
                   />
                   <WidgetImageThumbnail
+                    key={w.id}
+                    widgetId={w.id}
+                    onOpenWidgetCard={onOpenWidgetCard}
                     imagePath={w.image_path}
                     name={w.name}
                     className="w-12 h-8 object-contain bg-white border border-slate-100 rounded shrink-0 cursor-pointer hover:border-slate-400"
@@ -1230,6 +1297,28 @@ function SolutionsQueueTable({
               next: { ...cur, ...patchSolutionQueueComment(cur, commentModal.q, text) },
             }]);
             setCommentModal(null);
+          }}
+        />
+      )}
+      {commentMergePrompt && (
+        <FsChoiceModal
+          title="Комментарий у решения-цели"
+          message="У выбранного решения в этой очереди уже есть комментарий. Как перенести?"
+          options={[
+            { id: 'merge', label: 'Дописать' },
+            { id: 'replace', label: 'Заменить' },
+          ]}
+          onClose={choice => {
+            const pending = commentMergePrompt;
+            setCommentMergePrompt(null);
+            if (!choice || !pending) return;
+            applyCommentMove(
+              pending.source,
+              pending.target,
+              pending.fromQueue,
+              pending.toQueue,
+              choice === 'merge' ? 'merge' : 'replace',
+            );
           }}
         />
       )}
@@ -1312,6 +1401,7 @@ function FsQueueTable({
   onDeleteCustomerItem,
   fsTraceByItemId,
   requiredSolutionsByFsItemId,
+  onOpenWidgetCard,
 }: {
   items: BriefingFsSel[];
   onChange: (item: BriefingFsSel, patch: Partial<BriefingFsSel>) => void;
@@ -1322,6 +1412,7 @@ function FsQueueTable({
   onDeleteCustomerItem?: (item: BriefingFsSel) => void;
   fsTraceByItemId?: Map<number, FsItemTrace>;
   requiredSolutionsByFsItemId?: Map<number, { id: number; name: string }[]>;
+  onOpenWidgetCard: (widgetId: number) => void;
 }) {
   const [dragPayload, setDragPayload] = useState<FsDragPayload | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
@@ -1852,6 +1943,7 @@ function FsQueueTable({
           item={latestItem(cardModalItem)}
           moveTargets={moveTargets.filter(t => t.fs_item_id !== cardModalItem.fs_item_id)}
           fsTrace={fsTraceByItemId?.get(cardModalItem.fs_item_id)}
+          onOpenWidgetCard={onOpenWidgetCard}
           onClose={() => setCardModalItem(null)}
           onSave={patch => {
             const row = items.find(i => i.fs_item_id === cardModalItem.fs_item_id) ?? cardModalItem;
@@ -2197,6 +2289,8 @@ function FsQueueTable({
                             {item.matched_widgets!.map(w => (
                               <WidgetImageThumbnail
                                 key={w.id}
+                                widgetId={w.id}
+                                onOpenWidgetCard={onOpenWidgetCard}
                                 imagePath={w.image_path}
                                 name={w.name}
                                 className="w-10 h-7 object-contain bg-white border border-slate-100 rounded cursor-pointer hover:border-slate-400"
@@ -2344,6 +2438,8 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   const [problemSolutionLinks, setProblemSolutionLinks] = useState<CatalogLink[]>([]);
   const [matchedSolutionIds, setMatchedSolutionIds] = useState<Set<number>>(() => new Set());
   const [showAllSolutions, setShowAllSolutions] = useState(false);
+  const [solutionCardId, setSolutionCardId] = useState<number | null>(null);
+  const [widgetCardId, setWidgetCardId] = useState<number | null>(null);
   const [solutionWidgets, setSolutionWidgets] = useState<Record<number, Widget[]>>({});
   const [savingTab, setSavingTab] = useState<Tab | null>(null);
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
@@ -2696,15 +2792,14 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }, [data?.problems]);
 
   const solutionDisplayUnits = useMemo(() => {
-    const probIds = data?.problems.filter(p => p.problem_id).map(p => p.problem_id!) ?? [];
     let visibleIds: Set<number>;
     if (showAllSolutions) {
       visibleIds = new Set(allSolutionsCatalog.map(s => s.id));
-    } else if (probIds.length === 0) {
-      visibleIds = new Set(data?.solutions.map(s => s.id) ?? []);
     } else {
-      visibleIds = collectSolutionWithAncestors(allSolutionsCatalog, matchedSolutionIds);
-      for (const s of data?.solutions ?? []) visibleIds.add(s.id);
+      const seed = new Set<number>(matchedSolutionIds);
+      for (const s of data?.solutions ?? []) seed.add(s.id);
+      // Пункт 2-го уровня (4.1.) всегда тянет верхний (4.) по иерархии.
+      visibleIds = collectSolutionWithAncestors(allSolutionsCatalog, seed);
     }
     const visible = allSolutionsCatalog.filter(s => visibleIds.has(s.id));
     return buildSolutionDisplayUnits(visible);
@@ -3906,6 +4001,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
               selected={data.customer_widgets ?? []}
               solutionsByWidgetId={solutionsByWidgetId}
               onRequestToggle={requestToggleCustomerWidget}
+              onOpenWidgetCard={setWidgetCardId}
             />
             {widgetSolutionsModal && (
               <WidgetSolutionsPickModal
@@ -3946,7 +4042,18 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
               onQueueLabelChange={updateQueueLabel}
               onSolutionsChange={updateSolutionSelections}
               onToggleWidget={toggleWidget}
+              onOpenSolution={sol => setSolutionCardId(sol.id)}
+              onOpenWidgetCard={setWidgetCardId}
             />
+            {solutionCardId != null && (
+              <BriefingSolutionCardModal
+                solutionId={solutionCardId}
+                selectedProblemIds={selectedProblemIds}
+                problemsCatalog={allProblemsCatalog}
+                onOpenWidgetCard={setWidgetCardId}
+                onClose={() => setSolutionCardId(null)}
+              />
+            )}
           </div>
         )}
 
@@ -3987,6 +4094,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                 onDeleteCustomerItem={deleteCustomerFsItem}
                 fsTraceByItemId={fsTraceByItemId}
                 requiredSolutionsByFsItemId={requiredSolutionsByFsItemId}
+                onOpenWidgetCard={setWidgetCardId}
               />
             )}
           </div>
@@ -4369,6 +4477,15 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
           </div>
         )}
       </div>
+
+      {widgetCardId != null && (
+        <BriefingWidgetCardModal
+          widgetId={widgetCardId}
+          selectedProblemIds={selectedProblemIds}
+          problemsCatalog={allProblemsCatalog}
+          onClose={() => setWidgetCardId(null)}
+        />
+      )}
     </div>
   );
 }

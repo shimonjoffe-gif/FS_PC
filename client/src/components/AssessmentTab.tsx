@@ -1,17 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import type {
   BriefingAssessment, RisksC51C57,
-  FsQueueKey, SellerCriteriaDef, CriteriaGroupState, CriteriaGroups,
+  FsQueueKey, SellerCriteriaDef,
 } from '../types';
 import { FS_QUEUE_KEYS, FS_QUEUE_LABELS } from '../types';
 import {
-  typeImpactLabel, ensureCriteriaGroups, resolveGroupRp, resolveGroupOp,
-  isGroupRpOverridden, isGroupOpOverridden, newCustomRowId,
-  rollupGroupRp, rollupGroupOp,
-  ensureContractParams, computeAdvanceDeferralOk, contractCriteriaValue,
+  typeImpactLabel, ensureContractParams, computeAdvanceDeferralOk, contractCriteriaValue,
   formatAdvancePctDisplay, parseAdvancePctInput,
   CONTRACT_FORMULA_ROW,
 } from '../sellerCriteria';
+import {
+  activeStandardDocuments,
+  applyDocumentExclusions,
+  defaultStandardEnabled,
+  hasStandardMatrixEntry,
+  isAdditionalCatalogDoc,
+  newExtraCustomDocId,
+  normalizeProjectTypeCode,
+  resolveDocumentRow,
+  techLabel,
+  type DocumentTech,
+  type ExtraCustomDocument,
+  type StandardDocumentRowState,
+} from '../standardDocuments';
+import { ensureExtraCustomDocuments } from '../sellerCriteria';
 import {
   applyOrgQueueFieldPatch, applyOrgQueueCascade, buildOrgQueueCascadeConfirmMessage,
   applyOrgBreakdownCascade, buildOrgBreakdownCascadeConfirmMessage,
@@ -37,13 +49,14 @@ import type { OrgVolumeBreakdownRow } from '../types';
 import { yesNoLabel, yesNoClass, YES_NO_BADGE_CLASS } from '../utils/yesNoBadge';
 import { numericInputHandlers } from '../utils/numericInputHandlers';
 
+const DOC_TECH_OPTIONS = ['CASE', 'BZ', 'PROF_MINI', 'PROF', 'KORP'] as const;
 const OVERRIDE_CLASS = 'bg-amber-50 border-amber-300';
 const ORG_EMPTY_CLASS = 'border-red-400 bg-red-50';
 const RECALC_FLASH_CLASS = 'ring-2 ring-inset ring-emerald-300/70';
 
 const PROF_CLASS = 'bg-amber-100 text-amber-800';
 const KORP_CLASS = 'bg-red-100 text-red-800';
-const DISCREPANCY_CLASS = 'ring-2 ring-violet-400';
+const DISCREPANCY_CLASS = 'outline outline-2 outline-violet-400 -outline-offset-1';
 
 function useRecalcFlash(flashKey: number): boolean {
   const [flash, setFlash] = useState(false);
@@ -91,72 +104,200 @@ export default function AssessmentTab({ assessment, recalcFlash = 0, onChange }:
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [advancePctDraft, setAdvancePctDraft] = useState<string | null>(null);
   const [riskDrafts, setRiskDrafts] = useState<Partial<Record<keyof RisksC51C57, string>>>({});
-  const groups = ensureCriteriaGroups(a.criteria);
+  const extraCustomDocs = ensureExtraCustomDocuments(a.criteria);
 
-  function patchGroups(nextGroups: CriteriaGroups) {
-    onChange({ criteria: { ...a.criteria, groups: nextGroups } });
+  function patchExtraCustomDocuments(next: ExtraCustomDocument[]) {
+    onChange({ criteria: { ...a.criteria, extra_custom_documents: next } });
   }
 
-  function patchGroup(groupKey: string, patch: Partial<CriteriaGroupState>) {
-    const g = groups[groupKey];
-    if (!g) return;
-    patchGroups({ ...groups, [groupKey]: { ...g, ...patch } });
+  function patchExtraCustomDoc(id: string, patch: Partial<ExtraCustomDocument>) {
+    patchExtraCustomDocuments(extraCustomDocs.map(d => d.id === id ? { ...d, ...patch } : d));
   }
 
-  function setChildValue(groupKey: string, childKey: string, field: 'rp_value' | 'op_value', value: boolean) {
-    const g = groups[groupKey];
-    if (!g) return;
-    const child = g.children[childKey] ?? { rp_value: false, op_value: false };
-    patchGroup(groupKey, {
-      children: {
-        ...g.children,
-        [childKey]: { ...child, [field]: value },
+  function addExtraCustomDoc() {
+    patchExtraCustomDocuments([
+      ...extraCustomDocs,
+      { id: newExtraCustomDocId(), label: '', rp_value: false, op_value: false, tech: 'CASE' },
+    ]);
+  }
+
+  function removeExtraCustomDoc(id: string) {
+    patchExtraCustomDocuments(extraCustomDocs.filter(d => d.id !== id));
+  }
+
+  const stdCatalog = activeStandardDocuments(a.standard_documents_catalog ?? []);
+  const stdExclusions = a.standard_document_exclusions ?? [];
+  const stdState = a.criteria.standard_documents ?? {};
+  const effectiveTypeCode = normalizeProjectTypeCode(
+    a.project_types.find(pt => pt.id === a.project_type_id)?.code ?? a.auto_project_type?.code ?? null,
+  );
+
+  const standardDocs = stdCatalog.filter(hasStandardMatrixEntry);
+  const additionalDocs = stdCatalog.filter(isAdditionalCatalogDoc);
+
+  function patchStandardDocuments(next: Record<string, StandardDocumentRowState>) {
+    onChange({ criteria: { ...a.criteria, standard_documents: next } });
+  }
+
+  function setStdDocValue(
+    docId: number,
+    field: 'rp_value' | 'op_value',
+    value: boolean,
+    opts?: { extra?: boolean },
+  ) {
+    const key = String(docId);
+    const row = stdState[key] ?? { rp_value: false, op_value: false };
+    const manualField = field === 'rp_value' ? 'rp_manual' : 'op_manual';
+    let next = {
+      ...stdState,
+      [key]: {
+        ...row,
+        [field]: value,
+        [manualField]: true,
+        extra: field === 'rp_value' && opts?.extra ? value === true : row.extra,
       },
-      group_rp_override: null,
-      group_op_override: null,
+    };
+    if (field === 'rp_value') {
+      next = applyDocumentExclusions(stdCatalog, stdExclusions, next, docId, value);
+    }
+    patchStandardDocuments(next);
+  }
+
+  function resetStdDocValue(docId: number, field: 'rp_value' | 'op_value', isExtra: boolean) {
+    const doc = stdCatalog.find(d => d.id === docId);
+    if (!doc) return;
+    const key = String(docId);
+    const row = stdState[key] ?? { rp_value: false, op_value: false };
+    const def = isExtra ? false : defaultStandardEnabled(doc, effectiveTypeCode);
+    const manualField = field === 'rp_value' ? 'rp_manual' : 'op_manual';
+    patchStandardDocuments({
+      ...stdState,
+      [key]: { ...row, [field]: def, [manualField]: false, extra: isExtra ? false : row.extra },
     });
   }
 
-  function setCustomRow(groupKey: string, rowId: string, patch: Partial<{ label: string; rp_value: boolean; op_value: boolean }>) {
-    const g = groups[groupKey];
-    if (!g) return;
-    patchGroup(groupKey, {
-      custom_rows: g.custom_rows.map(r => r.id === rowId ? { ...r, ...patch } : r),
-      group_rp_override: null,
-      group_op_override: null,
-    });
+  function renderDocumentRow(doc: typeof stdCatalog[0], opts: { isExtra: boolean }) {
+    const row = resolveDocumentRow(doc, stdState, effectiveTypeCode);
+    const rpDefault = opts.isExtra ? false : defaultStandardEnabled(doc, effectiveTypeCode);
+    const rpOverridden = row.rp_manual === true && row.rp_value !== rpDefault;
+    const opOverridden = row.op_manual === true && row.op_value !== rpDefault;
+    const rpVsOp = row.rp_value !== row.op_value;
+    return (
+      <tr key={`${opts.isExtra ? 'extra' : 'std'}-doc-${doc.id}`} className="bg-white h-9">
+        <td className="px-2 py-1 border text-left pl-4 text-xs text-slate-700 align-middle overflow-hidden">
+          <span className="block truncate leading-5">
+            {doc.label}
+            {doc.excel_ref ? (
+              <span className="ml-1 text-[10px] text-slate-400">({doc.excel_ref})</span>
+            ) : null}
+          </span>
+        </td>
+        <td className="px-1 py-1 border text-center align-middle">
+          <div className="inline-flex h-7 items-center justify-center gap-0.5">
+            {renderBoolCell(row.rp_value === true, () => setStdDocValue(doc.id, 'rp_value', !row.rp_value, { extra: opts.isExtra }), { overridden: rpOverridden, discrepancy: rpVsOp })}
+            {rpOverridden && (
+              <button type="button" className="text-[10px] text-blue-600 hover:underline shrink-0" title="Сбросить к авто"
+                onClick={() => resetStdDocValue(doc.id, 'rp_value', opts.isExtra)}>↺</button>
+            )}
+          </div>
+        </td>
+        <td className="px-1 py-1 border text-center align-middle">
+          <div className="inline-flex h-7 items-center justify-center gap-0.5">
+            {renderBoolCell(row.op_value === true, () => setStdDocValue(doc.id, 'op_value', !row.op_value, { extra: opts.isExtra }), { overridden: opOverridden, discrepancy: rpVsOp })}
+            {opOverridden && (
+              <button type="button" className="text-[10px] text-blue-600 hover:underline shrink-0" title="Сбросить к авто"
+                onClick={() => resetStdDocValue(doc.id, 'op_value', opts.isExtra)}>↺</button>
+            )}
+          </div>
+        </td>
+        <td className="px-1 py-1 border text-center text-xs text-slate-600 align-middle truncate">
+          {techLabel(doc.tech)}
+        </td>
+      </tr>
+    );
   }
 
-  function addCustomRow(groupKey: string) {
-    const g = groups[groupKey];
-    if (!g) return;
-    patchGroup(groupKey, {
-      custom_rows: [...g.custom_rows, { id: newCustomRowId(), label: '', rp_value: false, op_value: false }],
-    });
-    setExpanded(prev => ({ ...prev, [groupKey]: true }));
+  function renderExtraCustomDocRow(row: ExtraCustomDocument) {
+    const rpVsOp = row.rp_value !== row.op_value;
+    return (
+      <tr key={`extra-custom-${row.id}`} className="bg-amber-50/30 h-9">
+        <td className="px-2 py-1 border text-left pl-4 align-middle overflow-hidden">
+          <div className="flex h-7 items-center gap-1 overflow-hidden">
+            <span className="text-[10px] text-slate-400 shrink-0 leading-none">+</span>
+            <input
+              type="text"
+              className="h-7 min-w-0 flex-1 box-border text-xs border rounded px-1 leading-none"
+              placeholder="Свой документ…"
+              value={row.label}
+              onChange={e => patchExtraCustomDoc(row.id, { label: e.target.value })}
+            />
+            <button
+              type="button"
+              className="text-[10px] text-red-500 hover:underline shrink-0 leading-none"
+              onClick={() => removeExtraCustomDoc(row.id)}
+            >
+              ✕
+            </button>
+          </div>
+        </td>
+        <td className="px-1 py-1 border text-center align-middle">
+          <div className="inline-flex h-7 items-center justify-center">
+            {renderBoolCell(row.rp_value === true, () => patchExtraCustomDoc(row.id, { rp_value: !row.rp_value }), { discrepancy: rpVsOp })}
+          </div>
+        </td>
+        <td className="px-1 py-1 border text-center align-middle">
+          <div className="inline-flex h-7 items-center justify-center">
+            {renderBoolCell(row.op_value === true, () => patchExtraCustomDoc(row.id, { op_value: !row.op_value }), { discrepancy: rpVsOp })}
+          </div>
+        </td>
+        <td className="px-1 py-1 border text-center align-middle overflow-hidden">
+          <select
+            className="h-7 w-full max-w-full box-border text-xs border rounded px-0.5 leading-none"
+            value={row.tech}
+            onChange={e => patchExtraCustomDoc(row.id, { tech: e.target.value as DocumentTech })}
+          >
+            {DOC_TECH_OPTIONS.map(t => <option key={t} value={t}>{techLabel(t)}</option>)}
+          </select>
+        </td>
+      </tr>
+    );
   }
 
-  function removeCustomRow(groupKey: string, rowId: string) {
-    const g = groups[groupKey];
-    if (!g) return;
-    patchGroup(groupKey, {
-      custom_rows: g.custom_rows.filter(r => r.id !== rowId),
-      group_rp_override: null,
-      group_op_override: null,
-    });
-  }
-
-  function toggleGroupOverride(groupKey: string, field: 'group_rp_override' | 'group_op_override') {
-    const g = groups[groupKey];
-    if (!g) return;
-    const rollup = field === 'group_rp_override' ? rollupGroupRp(g) : rollupGroupOp(g);
-    const current = field === 'group_rp_override' ? resolveGroupRp(g) : resolveGroupOp(g);
-    const next = !current;
-    patchGroup(groupKey, { [field]: next === rollup ? null : next });
-  }
-
-  function resetGroupOverride(groupKey: string, field: 'group_rp_override' | 'group_op_override') {
-    patchGroup(groupKey, { [field]: null });
+  function renderStandardDocumentRows() {
+    const showAdditional = additionalDocs.length > 0 || extraCustomDocs.length > 0;
+    if (standardDocs.length === 0 && !showAdditional) return null;
+    return (
+      <>
+        {standardDocs.length > 0 && (
+          <>
+            <tr className="bg-slate-100/80 h-8">
+              <td colSpan={4} className="px-2 py-1 border text-left text-xs font-semibold text-slate-600">
+                Стандартный набор документов
+              </td>
+            </tr>
+            {standardDocs.map(doc => renderDocumentRow(doc, { isExtra: false }))}
+          </>
+        )}
+        {showAdditional && (
+          <>
+            <tr className="bg-slate-100/80 h-8">
+              <td colSpan={4} className="px-2 py-1 border text-left text-xs font-semibold text-slate-600">
+                Дополнительные документы (запрос заказчика)
+              </td>
+            </tr>
+            {additionalDocs.map(doc => renderDocumentRow(doc, { isExtra: true }))}
+            {extraCustomDocs.map(row => renderExtraCustomDocRow(row))}
+            <tr className="bg-slate-50/20 h-8">
+              <td colSpan={4} className="px-2 py-1 border pl-4">
+                <button type="button" className="text-xs text-blue-600 hover:underline" onClick={addExtraCustomDoc}>
+                  + Добавить свой документ
+                </button>
+              </td>
+            </tr>
+          </>
+        )}
+      </>
+    );
   }
 
   function setCriteria(key: string, value: boolean) {
@@ -616,7 +757,6 @@ export default function AssessmentTab({ assessment, recalcFlash = 0, onChange }:
     }));
   }
 
-  const typeCriteria = a.criteria_defs.filter(d => d.group === 'type');
   const contractCriteria = a.criteria_defs.filter(d => d.group === 'contract');
   const contractParams = ensureContractParams(a.criteria.contract_params);
   const advanceDeferralOk = computeAdvanceDeferralOk(contractParams);
@@ -631,160 +771,17 @@ export default function AssessmentTab({ assessment, recalcFlash = 0, onChange }:
     opts?: { overridden?: boolean; discrepancy?: boolean },
   ) {
     const extra = [
-      opts?.overridden ? 'ring-1 ring-amber-400' : '',
+      opts?.overridden ? 'outline outline-1 outline-amber-400 -outline-offset-1' : '',
       opts?.discrepancy ? DISCREPANCY_CLASS : '',
     ].filter(Boolean).join(' ');
     return (
-      <label className="inline-flex items-center gap-1 cursor-pointer">
-        <input type="checkbox" checked={value} onChange={onToggle} className="sr-only" />
-        <span className={`${YES_NO_BADGE_CLASS} min-w-[36px] ${yesNoClass(value)} ${extra}`}>
-          {yesNoLabel(value)}
-        </span>
-      </label>
-    );
-  }
-
-  function renderGroupOverrideCell(
-    groupKey: string,
-    field: 'group_rp_override' | 'group_op_override',
-    value: boolean,
-    overridden: boolean,
-    discrepancy: boolean,
-  ) {
-    return (
-      <div className="inline-flex items-center gap-0.5">
-        {renderBoolCell(value, () => toggleGroupOverride(groupKey, field), { overridden, discrepancy })}
-        {overridden && (
-          <button
-            type="button"
-            className="text-[10px] text-blue-600 hover:underline"
-            title="Сбросить к авто (rollup)"
-            onClick={() => resetGroupOverride(groupKey, field)}
-          >
-            ↺
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  function renderCriteriaGroup(c: SellerCriteriaDef) {
-    const group = groups[c.key];
-    if (!group) return null;
-
-    const rpValue = resolveGroupRp(group);
-    const opValue = resolveGroupOp(group);
-    const rpOverridden = isGroupRpOverridden(group);
-    const opOverridden = isGroupOpOverridden(group);
-    const rpVsOp = rpValue !== opValue;
-    const hasChildren = (c.childFields?.length ?? 0) > 0 || c.allowsCustomRows;
-    const isOpen = expanded[c.key] ?? false;
-
-    return (
-      <React.Fragment key={c.key}>
-        <tr className="bg-slate-50/40">
-          <td className="p-2 border text-left align-top">
-            {hasChildren && (
-              <button
-                type="button"
-                className="mr-1 text-slate-400 hover:text-slate-600"
-                onClick={() => toggleExpand(c.key)}
-                title="Подстроки"
-              >
-                {isOpen ? '▼' : '▶'}
-              </button>
-            )}
-            <span className="text-sm font-medium">{c.label}</span>
-          </td>
-          <td className="p-2 border text-center">
-            {renderGroupOverrideCell(c.key, 'group_rp_override', rpValue, rpOverridden, rpVsOp)}
-          </td>
-          <td className="p-2 border text-center">
-            {renderGroupOverrideCell(c.key, 'group_op_override', opValue, opOverridden, rpVsOp)}
-          </td>
-          <td className={`p-2 border text-center text-xs font-semibold ${typeImpactClass(c.typeImpact)}`}>
-            {typeImpactLabel(c.typeImpact)}
-          </td>
-        </tr>
-
-        {isOpen && c.childFields?.map(child => {
-          const state = group.children[child.key] ?? { rp_value: false, op_value: false };
-          return (
-            <tr key={`${c.key}-${child.key}`} className="bg-white">
-              <td className="p-2 border text-left pl-8 text-xs text-slate-600">
-                ↳ {child.label}
-                <span className="ml-1 text-[10px] text-slate-400">({child.excelRef})</span>
-              </td>
-              <td className="p-2 border text-center">
-                {renderBoolCell(
-                  state.rp_value === true,
-                  () => setChildValue(c.key, child.key, 'rp_value', !state.rp_value),
-                )}
-              </td>
-              <td className="p-2 border text-center">
-                {renderBoolCell(
-                  state.op_value === true,
-                  () => setChildValue(c.key, child.key, 'op_value', !state.op_value),
-                  { discrepancy: state.rp_value !== state.op_value },
-                )}
-              </td>
-              <td className="p-2 border" />
-            </tr>
-          );
-        })}
-
-        {isOpen && group.custom_rows.map(row => (
-          <tr key={`${c.key}-custom-${row.id}`} className="bg-amber-50/30">
-            <td className="p-2 border text-left pl-8">
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-slate-400 shrink-0">+</span>
-                <input
-                  type="text"
-                  className="flex-1 text-xs border rounded px-1 py-0.5"
-                  placeholder="Свой вариант…"
-                  value={row.label}
-                  onChange={e => setCustomRow(c.key, row.id, { label: e.target.value })}
-                />
-                <button
-                  type="button"
-                  className="text-[10px] text-red-500 hover:underline shrink-0"
-                  onClick={() => removeCustomRow(c.key, row.id)}
-                >
-                  ✕
-                </button>
-              </div>
-            </td>
-            <td className="p-2 border text-center">
-              {renderBoolCell(
-                row.rp_value === true,
-                () => setCustomRow(c.key, row.id, { rp_value: !row.rp_value }),
-              )}
-            </td>
-            <td className="p-2 border text-center">
-              {renderBoolCell(
-                row.op_value === true,
-                () => setCustomRow(c.key, row.id, { op_value: !row.op_value }),
-                { discrepancy: row.rp_value !== row.op_value },
-              )}
-            </td>
-            <td className="p-2 border" />
-          </tr>
-        ))}
-
-        {isOpen && c.allowsCustomRows && (
-          <tr className="bg-slate-50/20">
-            <td colSpan={4} className="p-1 border pl-8">
-              <button
-                type="button"
-                className="text-xs text-blue-600 hover:underline"
-                onClick={() => addCustomRow(c.key)}
-              >
-                + Добавить свой вариант
-              </button>
-            </td>
-          </tr>
-        )}
-      </React.Fragment>
+      <button
+        type="button"
+        onClick={onToggle}
+        className={`${YES_NO_BADGE_CLASS} w-9 h-6 leading-none text-center box-border shrink-0 cursor-pointer ${yesNoClass(value)} ${extra}`}
+      >
+        {yesNoLabel(value)}
+      </button>
     );
   }
 
@@ -793,21 +790,29 @@ export default function AssessmentTab({ assessment, recalcFlash = 0, onChange }:
       <section>
         <h3 className="text-sm font-semibold text-slate-700 mb-2">Требования к работам и результатам</h3>
         <div className="overflow-x-auto">
-          <table className="w-full text-xs border-collapse">
+          <table className="w-full text-xs border-collapse" style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: '58%' }} />
+              <col style={{ width: '14%' }} />
+              <col style={{ width: '14%' }} />
+              <col style={{ width: '14%' }} />
+            </colgroup>
             <thead>
-              <tr className="bg-slate-50 text-slate-500">
-                <th className="p-2 border text-left">Критерий</th>
-                <th className="p-2 border text-center w-24">РП</th>
-                <th className="p-2 border text-center w-24">ОП</th>
-                <th className="p-2 border text-center w-28">Влияние на тип</th>
+              <tr className="bg-slate-50 text-slate-500 h-8">
+                <th className="px-2 py-1 border text-left font-medium">Критерий</th>
+                <th className="px-1 py-1 border text-center font-medium">РП</th>
+                <th className="px-1 py-1 border text-center font-medium">ОП</th>
+                <th className="px-1 py-1 border text-center font-medium">Влияние на тип</th>
               </tr>
             </thead>
             <tbody>
-              {typeCriteria.map(c => renderCriteriaGroup(c))}
+              {renderStandardDocumentRows()}
             </tbody>
           </table>
         </div>
         <p className="text-[10px] text-slate-400 mt-1">
+          Стандартный набор — фиксированный список из НСИ (любая галочка в матрице Кейс/БЗ/мини/ПРОФ/КОРП); дефолт Да/Нет зависит от типа проекта.
+          Дополнительные — фиксированный список из НСИ (флаг «Сверх std.»), по умолчанию Нет, и свои строки (название в HTML/приложении; технологию задаёт РП/продавец).
           Подстроки — ДА/НЕТ для РП и ОП. Группа = rollup (любая подстрока ДА); ↺ сбрасывает ручное значение группы.
           Оценка типа проекта — по РП. Фиолетовая обводка — расхождение РП/ОП.
         </p>

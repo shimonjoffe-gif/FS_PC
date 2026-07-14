@@ -7,6 +7,17 @@ export const BRIEFING_HTML_EXPORT_CLIENT_JS = `
   var data = JSON.parse(dataEl.textContent);
   var blocks = data.blocks || {};
 
+  (function migrateLegacyPayload(){
+    if(data.solutions){
+      if(!data.solutions.selections && data.solutions.selected_ids){
+        data.solutions.selections=data.solutions.selected_ids.map(function(id){
+          return {solution_id:id,queue:'1',queue_comment_json:null};
+        });
+      }
+      if(!data.solutions.selections) data.solutions.selections=[];
+    }
+  })();
+
   function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function yesNoBtn(val, unmatched){ var c='yesno '+(val?'yes':'no')+(unmatched&&!val?' unmatched':''); return '<button type="button" class="'+c+'" data-val="'+(val?1:0)+'">'+(val?'Да':'Нет')+'</button>'; }
   function yesNoBadge(val){ return '<span class="yesno yesno-readonly '+(val?'yes':'no')+'">'+(val?'Да':'Нет')+'</span>'; }
@@ -507,24 +518,86 @@ export const BRIEFING_HTML_EXPORT_CLIENT_JS = `
 
 ${getFsClientJs()}
 
+  function typeImpactBadge(impact){
+    if(impact==='PROF') return '<span class="type-impact prof">ПРОФ</span>';
+    if(impact==='KORP') return '<span class="type-impact korp">КОРП</span>';
+    return '—';
+  }
+  function techLabelHtml(tech){
+    if(tech==='CASE') return 'Кейс';
+    if(tech==='BZ') return 'БЗ';
+    if(tech==='PROF_MINI') return 'Проф-мини';
+    if(tech==='PROF') return 'ПРОФ';
+    if(tech==='KORP') return 'КОРП';
+    return '—';
+  }
+  function stdMatrixDefault(doc,typeCode){
+    if(!typeCode) return false;
+    if(typeCode==='CASE') return !!doc.std_case;
+    if(typeCode==='BZ') return !!doc.std_bz;
+    if(typeCode==='PROF_MINI') return !!doc.std_prof_mini;
+    if(typeCode==='PROF') return !!doc.std_prof;
+    if(typeCode==='KORP') return !!doc.std_korp;
+    return false;
+  }
+  function hasStdMatrix(doc){
+    return doc.std_case||doc.std_bz||doc.std_prof_mini||doc.std_prof||doc.std_korp;
+  }
+  function critYesNoCell(val, dataAttr, opts){
+    opts=opts||{};
+    var cls=opts.discrepancy?' crit-discrepancy':'';
+    if(opts.overridden) cls+=' crit-overridden';
+    return '<td style="text-align:center" class="'+cls.trim()+'" '+dataAttr+'>'+yesNoBtn(!!val,false)+'</td>';
+  }
+  function renderDocRowHtml(doc, row, typeCode, isExtra){
+    var rpDef=isExtra?false:stdMatrixDefault(doc,typeCode);
+    var rpOver=row.rp_manual&&row.rp_value!==rpDef;
+    var opOver=row.op_manual&&row.op_value!==rpDef;
+    var disc=row.rp_value!==row.op_value;
+    var extraAttr=isExtra?' data-std-extra="1"':'';
+    return '<tr><td class="child-row">'+esc(doc.label)+(doc.excel_ref?' <span style="color:#94a3b8;font-size:10px">('+esc(doc.excel_ref)+')</span>':'')+'</td>'+
+      critYesNoCell(row.rp_value,'data-std-doc-rp="'+doc.id+'"'+extraAttr,{overridden:rpOver,discrepancy:disc})+
+      critYesNoCell(row.op_value,'data-std-doc-op="'+doc.id+'"'+extraAttr,{overridden:opOver,discrepancy:disc})+
+      '<td style="text-align:center;text-xs">'+techLabelHtml(doc.tech)+'</td></tr>';
+  }
+
+  function renderCustomExtraRowHtml(row){
+    return '<tr class="child-row extra-custom-row"><td><input type="text" data-extra-custom-label="'+esc(row.id)+'" value="'+esc(row.label)+'" style="width:100%" placeholder="Название документа"></td>'+
+      '<td style="text-align:center;color:#94a3b8">—</td>'+
+      critYesNoCell(row.op_value,'data-extra-custom-op="'+row.id+'"',{discrepancy:false})+
+      '<td></td></tr>';
+  }
+
   function renderCriteria(){
     var ac=data.assessment_criteria; if(!ac) return '';
+    if(!ac.standard_document_state) ac.standard_document_state={};
+    if(!ac.extra_custom_documents) ac.extra_custom_documents=[];
+    var typeCode=ac.project_type_code||null;
     var rows='';
-    (ac.criteria_defs||[]).forEach(function(def){
-      var g=ac.groups[def.key]||{children:{},custom_rows:[]};
-      var rp=typeof g.group_rp_override==='boolean'?g.group_rp_override:Object.values(g.children||{}).some(function(c){return c.rp_value;});
-      rows+='<tr><td>'+esc(def.label)+'</td><td style="text-align:center" data-crit-group="'+def.key+'">'+yesNoBtn(rp,false)+'</td></tr>';
-      (def.childFields||[]).forEach(function(ch){
-        var cv=(g.children&&g.children[ch.key])||{};
-        rows+='<tr class="child-row"><td>'+esc(ch.label)+'</td><td style="text-align:center" data-crit-child="'+def.key+'.'+ch.key+'">'+yesNoBtn(!!cv.rp_value,false)+'</td></tr>';
+    var allDocs=(ac.standard_documents||[]).filter(function(d){return d.is_active!==0;});
+    var stdDocs=allDocs.filter(hasStdMatrix);
+    var extraDocs=allDocs.filter(function(d){return d.can_extra;});
+    var customExtra=ac.extra_custom_documents||[];
+    if(stdDocs.length){
+      rows+='<tr class="crit-section-hdr"><td colspan="4">Стандартный набор документов</td></tr>';
+      stdDocs.forEach(function(doc){
+        var key=String(doc.id);
+        var row=ac.standard_document_state[key]||{rp_value:stdMatrixDefault(doc,typeCode),op_value:stdMatrixDefault(doc,typeCode)};
+        rows+=renderDocRowHtml(doc,row,typeCode,false);
       });
-      (g.custom_rows||[]).forEach(function(r){
-        rows+='<tr class="child-row"><td><input type="text" data-crit-custom="'+def.key+'.'+r.id+'" value="'+esc(r.label)+'" style="width:100%"></td>'+
-          '<td style="text-align:center" data-crit-custom-val="'+def.key+'.'+r.id+'">'+yesNoBtn(!!r.rp_value,false)+'</td></tr>';
+    }
+    if(extraDocs.length||customExtra.length){
+      rows+='<tr class="crit-section-hdr"><td colspan="4">Дополнительные документы (запрос заказчика)</td></tr>';
+      extraDocs.forEach(function(doc){
+        var key=String(doc.id);
+        var row=ac.standard_document_state[key]||{rp_value:false,op_value:false};
+        rows+=renderDocRowHtml(doc,row,typeCode,true);
       });
-    });
-    return sectionWrap('assessment_criteria', 'Параметры оценки',
-      '<table class="tbl"><thead><tr><th>Критерий</th><th>Заказчик</th></tr></thead><tbody>'+rows+'</tbody></table>'
+      customExtra.forEach(function(row){ rows+=renderCustomExtraRowHtml(row); });
+      rows+='<tr><td colspan="4" class="child-row"><button type="button" data-extra-custom-add class="link-btn">+ Добавить свой документ</button></td></tr>';
+    }
+    return sectionWrap('assessment_criteria', 'Требования к работам и результатам',
+      '<table class="tbl criteria-tbl"><thead><tr><th>Критерий</th><th style="text-align:center;width:96px">РП</th><th style="text-align:center;width:96px">ОП</th><th style="text-align:center;width:112px">Технология</th></tr></thead><tbody>'+rows+'</tbody></table>'
     );
   }
 
@@ -792,15 +865,6 @@ ${getFsClientJs()}
     );
   }
 
-  function renderSolutions(){
-    var sol=data.solutions; if(!sol) return '';
-    var sel=new Set(sol.selected_ids||[]);
-    var items=(sol.catalog||[]).map(function(s){
-      return '<label><input type="checkbox" data-solution="'+s.id+'"'+(sel.has(s.id)?' checked':'')+'> '+esc(s.name)+'</label>';
-    }).join('');
-    return sectionWrap('solutions', 'Решения', '<div class="chk-list">'+items+'</div>');
-  }
-
   function buildWidgetDisplayGroups(catalog){
     var groups=[];
     var map={};
@@ -821,6 +885,155 @@ ${getFsClientJs()}
     return groups;
   }
 
+  function widgetCatalogByKey(){
+    var map={};
+    if(!data.widgets||!data.widgets.catalog) return map;
+    data.widgets.catalog.forEach(function(wd){
+      map[wd.id+':'+wd.solution_id]=wd;
+    });
+    return map;
+  }
+
+  function selectedProblemIdSet(){
+    if(data.solutions && data.solutions.selected_problem_ids){
+      return new Set(data.solutions.selected_problem_ids);
+    }
+    var ids=(data.problems&&data.problems.selections||[])
+      .map(function(p){ return p.problem_id; })
+      .filter(function(id){ return id!=null; });
+    return new Set(ids);
+  }
+
+  function widgetCardContext(widgetId){
+    var ctx=(data.widget_context_by_id&&data.widget_context_by_id[String(widgetId)])||null;
+    if(!ctx) return null;
+    var selected=selectedProblemIdSet();
+    var hypothesis=(ctx.hypothesis_usages||[]).map(function(usage){
+      return {
+        hypothesis_id:usage.hypothesis_id,
+        hypothesis_name:usage.hypothesis_name,
+        problems:(usage.problems||[]).filter(function(p){ return selected.has(p.id); }).map(function(p){
+          return {
+            id:p.id,
+            name:p.name,
+            catalog_code:p.catalog_code,
+            lcm_code:p.lcm_code,
+            sort_order:p.sort_order,
+            solutions:p.solutions||[]
+          };
+        })
+      };
+    }).filter(function(usage){ return usage.problems.length>0; });
+    return {
+      widget:ctx,
+      hypothesis:hypothesis,
+      orphan_solutions:ctx.orphan_solutions||[],
+      fs:ctx.fs_items||[]
+    };
+  }
+
+  function renderWidgetCardHypothesis(hypothesis, orphanSolutions){
+    if(!hypothesis.length && !orphanSolutions.length){
+      return '<p class="solution-card-empty">Нет выбранных заказчиком проблематик, связанных с этим виджетом</p>';
+    }
+    var html=hypothesis.map(function(usage){
+      var blocks=usage.problems.map(function(problem){
+        var problemCode=problem.catalog_code||problem.lcm_code||'';
+        var problemHead=problemCode
+          ? '<div class="widget-card-hyp-problem"><span class="solution-card-code">'+esc(problemCode)+'</span><span>'+esc(problem.name)+'</span></div>'
+          : '<div class="widget-card-hyp-problem"><span>'+esc(problem.name)+'</span></div>';
+        var rows=(problem.solutions||[]).map(function(solution){
+          return '<tr><td class="solution-card-code">'+
+            esc(solution.catalog_code||solution.lcm_code||'—')+'</td><td>'+esc(solution.name)+'</td></tr>';
+        }).join('');
+        var table=rows
+          ? '<table class="widget-card-hyp-solutions"><thead><tr><th>Код</th><th>Решение</th></tr></thead><tbody>'+rows+'</tbody></table>'
+          : '';
+        return problemHead+table;
+      }).join('');
+      return '<section class="solution-card-hyp"><div class="solution-card-hyp-hd">'+esc(usage.hypothesis_name)+'</div>'+blocks+'</section>';
+    }).join('');
+    if(orphanSolutions.length){
+      var orphanRows=orphanSolutions.map(function(solution){
+        return '<tr><td class="solution-card-code">'+
+          esc(solution.catalog_code||solution.lcm_code||'—')+'</td><td>'+esc(solution.name)+'</td></tr>';
+      }).join('');
+      html+='<section class="solution-card-hyp"><div class="solution-card-hyp-hd">Решения без контекста гипотез</div>'+
+        '<table class="widget-card-hyp-solutions"><thead><tr><th>Код</th><th>Решение</th></tr></thead><tbody>'+
+        orphanRows+'</tbody></table></section>';
+    }
+    return html;
+  }
+
+  function renderWidgetCardFs(items){
+    if(!items.length) return '<p class="solution-card-empty">Нет сопоставленных пунктов ФС</p>';
+    var byGroup={};
+    items.forEach(function(it){
+      var g=it.group_name||'Прочее';
+      if(!byGroup[g]) byGroup[g]=[];
+      byGroup[g].push(it);
+    });
+    return Object.keys(byGroup).sort(function(a,b){ return a.localeCompare(b,'ru'); }).map(function(group){
+      var rows=byGroup[group].map(function(it){
+        return '<div class="solution-card-fs-row"><span class="solution-card-fs-badge yes">Да</span>'+
+          '<span class="solution-card-fs-name">'+(it.prefix?'<span class="solution-card-code">'+esc(it.prefix)+'</span> ':'')+
+          esc(it.name)+'</span></div>';
+      }).join('');
+      return '<div class="solution-card-fs-group"><div class="solution-card-fs-grp">'+esc(group)+'</div>'+rows+'</div>';
+    }).join('');
+  }
+
+  function ensureWidgetModal(){
+    var modal=document.getElementById('widget-modal');
+    if(modal) return modal;
+    modal=document.createElement('div');
+    modal.id='widget-modal';
+    modal.className='fs-modal-overlay';
+    modal.style.display='none';
+    modal.innerHTML='<div class="fs-modal widget-card-modal"><div class="fs-modal-hd"><div id="widget-card-title"></div>'+
+      '<button type="button" class="widget-modal-close" data-widget-modal-close aria-label="Закрыть">✕</button></div>'+
+      '<div class="fs-modal-bd solution-card-bd" id="widget-card-body"></div>'+
+      '<div class="fs-modal-ft"><button type="button" data-widget-modal-close>Закрыть</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelectorAll('[data-widget-modal-close]').forEach(function(btn){
+      btn.addEventListener('click',closeWidgetModal);
+    });
+    modal.addEventListener('click',function(e){ if(e.target===modal) closeWidgetModal(); });
+    return modal;
+  }
+
+  function openWidgetModal(widgetIdOrKey){
+    var widgetId=String(widgetIdOrKey);
+    if(widgetId.indexOf(':')>=0) widgetId=widgetId.split(':')[0];
+    widgetId=Number(widgetId);
+    if(!widgetId) return;
+    var ctx=widgetCardContext(widgetId);
+    if(!ctx) return;
+    ensureWidgetModal();
+    var wd=ctx.widget;
+    var meta=[wd.type||'', wd.data_slice_name||''].filter(Boolean).join(' · ');
+    document.getElementById('widget-card-title').innerHTML=
+      '<strong>'+esc(wd.name)+'</strong>'+
+      (meta?'<div class="widget-card-meta">'+esc(meta)+'</div>':'');
+    document.getElementById('widget-card-body').innerHTML=
+      '<div class="widget-card-grid">'+
+      '<div class="widget-card-cell widget-card-img">'+(wd.image_base64?'<img src="'+wd.image_base64+'" alt="'+esc(wd.name)+'">':'<span class="solution-card-empty">Нет изображения</span>')+'</div>'+
+      '<div class="widget-card-cell"><div class="solution-card-section-title">Описание</div>'+
+      (wd.description?'<div class="widget-card-desc">'+esc(wd.description)+'</div>':'<p class="solution-card-empty">Описание не указано</p>')+
+      '</div>'+
+      '<div class="widget-card-cell"><div class="solution-card-section-title">Гипотезы, проблематики и решения</div>'+
+      renderWidgetCardHypothesis(ctx.hypothesis, ctx.orphan_solutions)+
+      '</div>'+
+      '<div class="widget-card-cell"><div class="solution-card-section-title">Пункты ФС ('+ctx.fs.length+')</div>'+
+      renderWidgetCardFs(ctx.fs)+'</div></div>';
+    document.getElementById('widget-modal').style.display='flex';
+  }
+
+  function closeWidgetModal(){
+    var modal=document.getElementById('widget-modal');
+    if(modal) modal.style.display='none';
+  }
+
   function renderWidgets(){
     var w=data.widgets; if(!w) return '';
     var sel=new Set((w.selections||[]).map(function(s){return s.widget_id+':'+s.solution_id;}));
@@ -833,20 +1046,674 @@ ${getFsClientJs()}
       var open=uiOpen('widget_groups',group.key,true);
       body+='<div class="widget-group'+(open?' open':'')+'" data-widget-group="'+esc(group.key)+'">'+
         '<div class="widget-group-hd" data-widget-group-toggle="'+esc(group.key)+'">'+
-        '<span class="arrow">'+(open?'▼':'▶')+'</span><span>'+esc(group.label)+' <span style="font-weight:400;color:#94a3b8">('+group.items.length+')</span></span></div>';
-      if(open){
-        body+='<div class="widget-grid">';
+        '<span class="arrow">'+(open?'▼':'▶')+'</span><span>'+esc(group.label)+' <span style="font-weight:400;color:#94a3b8">('+group.items.length+')</span></span></div>'+
+        '<div class="widget-grid">';
         group.items.forEach(function(wd){
           var k=wd.id+':'+wd.solution_id;
-          var img=wd.image_base64?'<img src="'+wd.image_base64+'" alt="">':'';
-          body+='<label class="widget-card"><input type="checkbox" data-widget="'+k+'"'+(sel.has(k)?' checked':'')+'>'+img+
-            '<div style="font-size:11px;margin-top:4px">'+esc(wd.solution_name)+'</div><div>'+esc(wd.name)+'</div></label>';
+          var img=wd.image_base64?'<img src="'+wd.image_base64+'" alt="">':'<div style="height:80px;background:#f8fafc;border-radius:4px"></div>';
+          body+='<div class="widget-card">'+
+            '<label class="widget-card-check"><input type="checkbox" data-widget="'+k+'"'+(sel.has(k)?' checked':'')+'> Нужен</label>'+
+            '<button type="button" class="widget-card-preview" data-widget-view="'+k+'">'+img+
+            '<div class="widget-card-name">'+esc(wd.name)+'</div></button></div>';
         });
-        body+='</div>';
-      }
-      body+='</div>';
+        body+='</div></div>';
     });
     return sectionWrap('widgets', 'Виджеты', toolbar+body);
+  }
+
+  function solutionQueueLabel(q){
+    var sol=data.solutions;
+    var labels=(sol&&sol.queue_labels)||(data.fs&&data.fs.queue_labels)||{};
+    var defs=(data.fs&&data.fs.queue_defaults)||{};
+    return labels[q]||defs[q]||q;
+  }
+
+  function parseSolutionComments(raw){
+    if(!raw) return {};
+    if(typeof raw==='object') return raw;
+    try{ return JSON.parse(String(raw)); }catch(e){ return {}; }
+  }
+
+  function collectSolutionWithAncestors(catalog, matchIds){
+    var byId={};
+    (catalog||[]).forEach(function(s){ byId[s.id]=s; });
+    var result=new Set();
+    matchIds.forEach(function(id){
+      var cursor=id;
+      while(cursor){
+        if(result.has(cursor)) break;
+        result.add(cursor);
+        var row=byId[cursor];
+        cursor=row&&row.parent_id?row.parent_id:null;
+      }
+    });
+    return result;
+  }
+
+  function buildSolutionDisplayUnits(items){
+    var units=[];
+    var consumed=new Set();
+    var byId={};
+    (items||[]).forEach(function(s){ byId[s.id]=s; });
+    var roots=(items||[]).filter(function(s){ return !s.parent_id||!byId[s.parent_id]; })
+      .sort(compareCatalogCode);
+    roots.forEach(function(root){
+      var children=(items||[]).filter(function(c){ return c.parent_id===root.id; })
+        .sort(compareCatalogCode);
+      if(children.length>0){
+        units.push({kind:'group',parent:root,children:children});
+        consumed.add(root.id);
+        children.forEach(function(c){ consumed.add(c.id); });
+      }
+    });
+    (items||[]).forEach(function(item){
+      if(!consumed.has(item.id)) units.push({kind:'standalone',item:item});
+    });
+    units.sort(function(a,b){
+      var itemA=a.kind==='group'?a.parent:a.item;
+      var itemB=b.kind==='group'?b.parent:b.item;
+      return compareCatalogCode(itemA,itemB);
+    });
+    return units;
+  }
+
+  function findSolutionSelection(solutionId){
+    return (data.solutions&&data.solutions.selections||[]).find(function(s){ return s.solution_id===solutionId; });
+  }
+
+  function solutionSelectionQueue(sel){
+    var q=String(sel.queue||'1');
+    return FS_QUEUE_KEYS.indexOf(q)>=0?q:'1';
+  }
+
+  function aggregateSolutionGroupQueues(members){
+    var byQueue={};
+    FS_QUEUE_KEYS.forEach(function(q){ byQueue[q]=false; });
+    var allOn=false;
+    members.forEach(function(member){
+      var sel=findSolutionSelection(member.id);
+      if(!sel) return;
+      allOn=true;
+      byQueue[solutionSelectionQueue(sel)]=true;
+    });
+    return {allOn:allOn,byQueue:byQueue};
+  }
+
+  function getMatchedSolutionIds(){
+    var sol=data.solutions;
+    if(!sol) return new Set();
+    if(sol.matched_solution_ids&&sol.matched_solution_ids.length)
+      return new Set(sol.matched_solution_ids);
+    var selected=new Set(sol.selected_problem_ids||[]);
+    var matched=new Set();
+    (sol.problem_solution_links||[]).forEach(function(link){
+      if(selected.has(link.problem_id)) matched.add(link.solution_id);
+    });
+    return matched;
+  }
+
+  function getVisibleSolutionCatalog(){
+    var sol=data.solutions;
+    if(!sol||!sol.catalog) return [];
+    var matched=getMatchedSolutionIds();
+    var visibleIds;
+    if(sol.show_all_solutions){
+      visibleIds=new Set(sol.catalog.map(function(s){ return s.id; }));
+    } else {
+      var seed=new Set(matched);
+      (sol.selections||[]).forEach(function(s){ seed.add(s.solution_id); });
+      // Пункт 2-го уровня (4.1.) всегда тянет верхний (4.).
+      visibleIds=collectSolutionWithAncestors(sol.catalog, seed);
+    }
+    return sol.catalog.filter(function(s){ return visibleIds.has(s.id); });
+  }
+
+  function isSolutionUnmatched(solutionId){
+    var sol=data.solutions;
+    return !!(sol&&sol.show_all_solutions&&!getMatchedSolutionIds().has(solutionId));
+  }
+
+  function solutionWidgetsFor(solutionId){
+    var sol=data.solutions;
+    if(!sol||!sol.widgets_by_solution) return [];
+    return sol.widgets_by_solution[String(solutionId)]||[];
+  }
+
+  function isSolutionWidgetSelected(solutionId, widgetId){
+    return (data.widgets&&data.widgets.selections||[]).some(function(s){
+      return s.solution_id===solutionId&&s.widget_id===widgetId;
+    });
+  }
+
+  function toggleSolutionWidget(solutionId, widgetId, checked){
+    if(!data.widgets) data.widgets={catalog:[],selections:[]};
+    var sel=(data.widgets.selections||[]).slice();
+    if(checked){
+      if(!sel.some(function(s){ return s.solution_id===solutionId&&s.widget_id===widgetId; }))
+        sel.push({solution_id:solutionId,widget_id:widgetId});
+    } else {
+      sel=sel.filter(function(s){ return !(s.solution_id===solutionId&&s.widget_id===widgetId); });
+    }
+    data.widgets.selections=sel;
+  }
+
+  function toggleSolutionQueue(sol, q, groupCtx){
+    if(!data.solutions) return;
+    var selections=(data.solutions.selections||[]).slice();
+    function upsert(id, next){
+      selections=selections.filter(function(s){ return s.solution_id!==id; });
+      if(next) selections.push(next);
+    }
+    var cur=findSolutionSelection(sol.id);
+    if(cur&&solutionSelectionQueue(cur)===String(q)){
+      upsert(sol.id,null);
+      if(groupCtx){
+        var anySibling=groupCtx.siblings.some(function(s){
+          return s.id!==sol.id&&!!findSolutionSelection(s.id);
+        });
+        if(!anySibling) upsert(groupCtx.parentId,null);
+      }
+    } else {
+      upsert(sol.id,{
+        solution_id:sol.id,
+        queue:String(q),
+        queue_comment_json:cur?cur.queue_comment_json:null
+      });
+      if(groupCtx){
+        var parent=(data.solutions.catalog||[]).find(function(s){ return s.id===groupCtx.parentId; });
+        if(parent){
+          var pcur=findSolutionSelection(parent.id);
+          upsert(parent.id,{
+            solution_id:parent.id,
+            queue:String(q),
+            queue_comment_json:pcur?pcur.queue_comment_json:null
+          });
+        }
+      }
+    }
+    data.solutions.selections=selections;
+  }
+
+  function patchSolutionComment(solutionId, q, text){
+    if(!data.solutions) return;
+    var sel=findSolutionSelection(solutionId);
+    if(!sel) return;
+    var comments=parseSolutionComments(sel.queue_comment_json);
+    var trimmed=String(text||'').trim();
+    if(trimmed) comments[String(q)]=trimmed;
+    else delete comments[String(q)];
+    sel.queue_comment_json=Object.keys(comments).length?comments:null;
+  }
+
+  function effectiveSolutionComment(sel, q){
+    return String(parseSolutionComments(sel.queue_comment_json)[String(q)]||'').trim();
+  }
+
+  function makeSolutionSelectionRow(sol, q, prev){
+    return {
+      solution_id:sol.id,
+      queue:String(q),
+      queue_comment_json:prev?prev.queue_comment_json:null
+    };
+  }
+
+  function withSolutionGroupParent(changes, targetSol, toQ){
+    if(!targetSol.parent_id||!data.solutions) return changes;
+    if(changes.some(function(c){ return c.solution_id===targetSol.parent_id; })) return changes;
+    var parent=(data.solutions.catalog||[]).find(function(s){ return s.id===targetSol.parent_id; });
+    if(!parent) return changes;
+    var pcur=findSolutionSelection(parent.id);
+    return changes.concat([{
+      solution_id:parent.id,
+      next:makeSolutionSelectionRow(parent,toQ,pcur)
+    }]);
+  }
+
+  function applySolutionCommentChanges(changes){
+    if(!data.solutions||!changes.length) return;
+    var selections=(data.solutions.selections||[]).slice();
+    changes.forEach(function(change){
+      selections=selections.filter(function(s){ return s.solution_id!==change.solution_id; });
+      if(change.next) selections.push(change.next);
+    });
+    data.solutions.selections=selections;
+  }
+
+  function moveSolutionCommentBetween(sourceSel, targetSol, fromQ, toQ, mode){
+    var movedText=effectiveSolutionComment(sourceSel, fromQ);
+    if(!movedText) return [];
+    var targetSel=findSolutionSelection(targetSol.id);
+    var sameItem=sourceSel.solution_id===targetSol.id;
+    var existing=targetSel?effectiveSolutionComment(targetSel, toQ):'';
+    var targetText=movedText;
+    if(existing) targetText=mode==='merge'?existing+'\\n'+movedText:movedText;
+    if(sameItem){
+      var comments=parseSolutionComments(sourceSel.queue_comment_json);
+      if(targetText) comments[String(toQ)]=targetText;
+      else delete comments[String(toQ)];
+      delete comments[String(fromQ)];
+      return [{
+        solution_id:sourceSel.solution_id,
+        next:{
+          solution_id:sourceSel.solution_id,
+          queue:String(toQ),
+          queue_comment_json:Object.keys(comments).length?comments:null
+        }
+      }];
+    }
+    var sourceComments=parseSolutionComments(sourceSel.queue_comment_json);
+    delete sourceComments[String(fromQ)];
+    var targetComments=targetSel?parseSolutionComments(targetSel.queue_comment_json):{};
+    if(targetText) targetComments[String(toQ)]=targetText;
+    else delete targetComments[String(toQ)];
+    return [
+      {
+        solution_id:sourceSel.solution_id,
+        next:{
+          solution_id:sourceSel.solution_id,
+          queue:sourceSel.queue,
+          queue_comment_json:Object.keys(sourceComments).length?sourceComments:null
+        }
+      },
+      {
+        solution_id:targetSol.id,
+        next:{
+          solution_id:targetSol.id,
+          queue:String(toQ),
+          queue_comment_json:Object.keys(targetComments).length?targetComments:null
+        }
+      }
+    ];
+  }
+
+  var solutionDragPayload=null;
+
+  function isSolutionCommentDragActive(e){
+    if(solutionDragPayload&&solutionDragPayload.kind==='comment') return true;
+    if(!e||!e.dataTransfer||!e.dataTransfer.types) return false;
+    return Array.prototype.indexOf.call(e.dataTransfer.types,'application/x-solution-comment')>=0;
+  }
+
+  function parseSolutionCommentPayload(e){
+    var payload=solutionDragPayload;
+    if(!payload||payload.kind!=='comment'){
+      try{
+        payload=JSON.parse(e.dataTransfer.getData('application/x-solution-comment'));
+      }catch(err){ return null; }
+    }
+    if(!payload||payload.kind!=='comment') return null;
+    return payload;
+  }
+
+  function clearSolutionCommentDropTargets(){
+    document.querySelectorAll('[data-solution-comment-cell].fs-drop-target').forEach(function(c){
+      c.classList.remove('fs-drop-target');
+    });
+  }
+
+  function endSolutionDrag(){
+    solutionDragPayload=null;
+    clearSolutionCommentDropTargets();
+  }
+
+  function renderSolutionCommentBtn(solutionId, q){
+    return '<button type="button" class="fs-comment-btn has-comment" data-solution-comment-drag="'+solutionId+':'+q+'" draggable="true" data-q="'+q+'" title="Перетащите на комментарий другого решения или клик — открыть" aria-label="Есть комментарий">'+
+      '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v5A1.5 1.5 0 0 1 12.5 10H9l-2.5 2.5V10H3.5A1.5 1.5 0 0 1 2 8.5v-5Z"/></svg></button>';
+  }
+
+  function solutionCommentMerge(){
+    data.ui_state=data.ui_state||{};
+    return data.ui_state.solution_comment_merge||null;
+  }
+
+  function ensureSolutionCommentMergeModal(){
+    if(document.getElementById('solution-comment-merge-modal')) return;
+    var modal=document.createElement('div');
+    modal.id='solution-comment-merge-modal';
+    modal.className='fs-modal-overlay';
+    modal.style.display='none';
+    modal.innerHTML='<div class="fs-modal"><div class="fs-modal-hd"><strong>Комментарий у решения-цели</strong></div>'+
+      '<div class="fs-modal-bd" style="font-size:12px;color:#475569">У выбранного решения в этой очереди уже есть комментарий. Как перенести?</div>'+
+      '<div class="fs-modal-ft"><button type="button" data-solution-comment-merge="merge">Дописать</button>'+
+      '<button type="button" class="fs-modal-save" data-solution-comment-merge="replace">Заменить</button>'+
+      '<button type="button" data-solution-comment-merge-cancel>Отмена</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('[data-solution-comment-merge-cancel]').addEventListener('click',function(){
+      data.ui_state=data.ui_state||{};
+      data.ui_state.solution_comment_merge=null;
+      modal.style.display='none';
+    });
+    modal.querySelectorAll('[data-solution-comment-merge]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        var merge=solutionCommentMerge();
+        if(!merge) return;
+        var source=findSolutionSelection(merge.sourceId);
+        var targetSol=(data.solutions.catalog||[]).find(function(s){ return s.id===merge.targetId; });
+        if(!source||!targetSol) return;
+        var mode=btn.getAttribute('data-solution-comment-merge');
+        var changes=moveSolutionCommentBetween(source, targetSol, merge.fromQueue, merge.toQueue, mode==='merge'?'merge':'replace');
+        changes=withSolutionGroupParent(changes, targetSol, merge.toQueue);
+        applySolutionCommentChanges(changes);
+        data.ui_state=data.ui_state||{};
+        data.ui_state.solution_comment_merge=null;
+        modal.style.display='none';
+        endSolutionDrag();
+        render();
+      });
+    });
+  }
+
+  function applySolutionCommentMove(sourceSel, targetSol, fromQ, toQ, mode){
+    var changes=moveSolutionCommentBetween(sourceSel, targetSol, fromQ, toQ, mode);
+    changes=withSolutionGroupParent(changes, targetSol, toQ);
+    applySolutionCommentChanges(changes);
+    endSolutionDrag();
+    render();
+  }
+
+  function handleSolutionCommentDrop(targetSol, toQ, payload){
+    if(!payload||payload.kind!=='comment') return;
+    if(payload.solutionId===targetSol.id&&payload.fromQueue===toQ) return;
+    var source=findSolutionSelection(payload.solutionId);
+    if(!source) return;
+    var targetSel=findSolutionSelection(targetSol.id);
+    var existing=targetSel?effectiveSolutionComment(targetSel, toQ):'';
+    if(existing){
+      data.ui_state=data.ui_state||{};
+      ensureSolutionCommentMergeModal();
+      data.ui_state.solution_comment_merge={
+        sourceId:payload.solutionId,
+        targetId:targetSol.id,
+        fromQueue:payload.fromQueue,
+        toQueue:toQ
+      };
+      document.getElementById('solution-comment-merge-modal').style.display='flex';
+      endSolutionDrag();
+      return;
+    }
+    applySolutionCommentMove(source, targetSol, payload.fromQueue, toQ, 'replace');
+  }
+
+  function ensureSolutionCommentModal(){
+    var modal=document.getElementById('solution-comment-modal');
+    if(modal) return modal;
+    modal=document.createElement('div');
+    modal.id='solution-comment-modal';
+    modal.className='fs-modal-overlay';
+    modal.style.display='none';
+    modal.innerHTML='<div class="fs-modal"><div class="fs-modal-hd"><div><strong id="solution-comment-title"></strong><div id="solution-comment-sub" style="font-size:11px;color:#64748b;margin-top:2px"></div></div>'+
+      '<button type="button" class="widget-modal-close" data-solution-comment-close>✕</button></div>'+
+      '<div class="fs-modal-bd"><textarea id="solution-comment-text" rows="5" style="width:100%"></textarea></div>'+
+      '<div class="fs-modal-ft"><button type="button" data-solution-comment-cancel>Отмена</button>'+
+      '<button type="button" class="fs-modal-save" data-solution-comment-save>Сохранить</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('[data-solution-comment-close]').addEventListener('click',closeSolutionCommentModal);
+    modal.querySelector('[data-solution-comment-cancel]').addEventListener('click',closeSolutionCommentModal);
+    modal.querySelector('[data-solution-comment-save]').addEventListener('click',function(){
+      if(!solutionCommentCtx) return;
+      var text=document.getElementById('solution-comment-text').value;
+      patchSolutionComment(solutionCommentCtx.solutionId,solutionCommentCtx.queue,text);
+      closeSolutionCommentModal();
+      render();
+    });
+    modal.addEventListener('click',function(e){ if(e.target===modal) closeSolutionCommentModal(); });
+    return modal;
+  }
+
+  var solutionCommentCtx=null;
+  function openSolutionCommentModal(solutionId, q){
+    var sel=findSolutionSelection(solutionId);
+    if(!sel||solutionSelectionQueue(sel)!==String(q)) return;
+    var sol=(data.solutions.catalog||[]).find(function(s){ return s.id===solutionId; });
+    ensureSolutionCommentModal();
+    solutionCommentCtx={solutionId:solutionId,queue:q};
+    document.getElementById('solution-comment-title').textContent='Комментарий — '+solutionQueueLabel(q);
+    document.getElementById('solution-comment-sub').textContent=sol?sol.name:'';
+    document.getElementById('solution-comment-text').value=parseSolutionComments(sel.queue_comment_json)[String(q)]||'';
+    document.getElementById('solution-comment-modal').style.display='flex';
+  }
+
+  function closeSolutionCommentModal(){
+    var modal=document.getElementById('solution-comment-modal');
+    if(modal) modal.style.display='none';
+    solutionCommentCtx=null;
+  }
+
+  function solutionCardContext(solutionId){
+    var sol=data.solutions;
+    if(!sol) return {hypothesis:[],fs:[],widgets:[]};
+    var selected=new Set(sol.selected_problem_ids||[]);
+    var usages=(sol.hypothesis_context_by_solution&&sol.hypothesis_context_by_solution[String(solutionId)])||[];
+    var hypothesis=usages.map(function(usage){
+      return {
+        hypothesis_id:usage.hypothesis_id,
+        hypothesis_name:usage.hypothesis_name,
+        code:usage.code,
+        problems:(usage.problems||[]).filter(function(p){ return selected.has(p.id); })
+      };
+    }).filter(function(usage){ return usage.problems.length>0; });
+    return {
+      hypothesis:hypothesis,
+      fs:(sol.fs_by_solution&&sol.fs_by_solution[String(solutionId)])||[],
+      widgets:(sol.widgets_by_solution&&sol.widgets_by_solution[String(solutionId)])||[]
+    };
+  }
+
+  function renderSolutionCardHypothesis(usages){
+    if(!usages.length){
+      return '<p class="solution-card-empty">Нет выбранных заказчиком проблематик, связанных с этим решением</p>';
+    }
+    return usages.map(function(usage){
+      var rows=usage.problems.map(function(p){
+        return '<tr><td class="solution-card-code">'+
+          esc(p.catalog_code||p.lcm_code||'—')+'</td><td>'+esc(p.name)+'</td></tr>';
+      }).join('');
+      return '<section class="solution-card-hyp"><div class="solution-card-hyp-hd">'+
+        esc(usage.hypothesis_name)+
+        (usage.code?'<span class="solution-card-hyp-code">№ '+esc(usage.code)+'</span>':'')+
+        '</div><table class="solution-card-hyp-tbl"><thead><tr><th>Код</th><th>Проблематика</th></tr></thead><tbody>'+
+        rows+'</tbody></table></section>';
+    }).join('');
+  }
+
+  function renderSolutionCardWidgets(widgets){
+    if(!widgets.length) return '<p class="solution-card-empty">Нет сопоставленных виджетов</p>';
+    return widgets.map(function(w){
+      var img=w.image_base64
+        ? '<img src="'+w.image_base64+'" alt="" data-widget-view="'+w.id+'">'
+        : '<button type="button" class="fs-widget-thumb-btn" data-widget-view="'+w.id+'">?</button>';
+      return '<div class="solution-card-widget">'+img+'<div><div class="solution-card-widget-name">'+
+        esc(w.name)+'</div>'+(w.description?'<div class="solution-card-widget-desc">'+esc(w.description)+'</div>':'')+
+        '</div></div>';
+    }).join('');
+  }
+
+  function fsLinkBadgeLabel(type){
+    if(type==='required') return 'Да';
+    if(type==='optional') return 'Опц.';
+    return 'Нет';
+  }
+
+  function renderSolutionCardFs(items){
+    if(!items.length) return '<p class="solution-card-empty">Нет сопоставленных пунктов ФС</p>';
+    var byGroup={};
+    items.forEach(function(it){
+      var g=it.group_name||'Прочее';
+      if(!byGroup[g]) byGroup[g]=[];
+      byGroup[g].push(it);
+    });
+    return Object.keys(byGroup).sort(function(a,b){ return a.localeCompare(b,'ru'); }).map(function(group){
+      var rows=byGroup[group].map(function(it){
+        return '<div class="solution-card-fs-row"><span class="solution-card-fs-badge '+
+          (it.link_type==='required'?'yes':'opt')+'">'+fsLinkBadgeLabel(it.link_type)+'</span>'+
+          '<span class="solution-card-fs-name">'+(it.prefix?'<span class="solution-card-code">'+esc(it.prefix)+'</span> ':'')+
+          esc(it.name)+'</span></div>';
+      }).join('');
+      return '<div class="solution-card-fs-group"><div class="solution-card-fs-grp">'+esc(group)+'</div>'+rows+'</div>';
+    }).join('');
+  }
+
+  function ensureSolutionCardModal(){
+    var modal=document.getElementById('solution-card-modal');
+    if(modal) return modal;
+    modal=document.createElement('div');
+    modal.id='solution-card-modal';
+    modal.className='fs-modal-overlay';
+    modal.style.display='none';
+    modal.innerHTML='<div class="fs-modal solution-card-modal"><div class="fs-modal-hd"><div id="solution-card-title"></div>'+
+      '<button type="button" class="widget-modal-close" data-solution-card-close>✕</button></div>'+
+      '<div class="fs-modal-bd solution-card-bd" id="solution-card-body"></div>'+
+      '<div class="fs-modal-ft"><button type="button" data-solution-card-close>Закрыть</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelectorAll('[data-solution-card-close]').forEach(function(btn){
+      btn.addEventListener('click',closeSolutionCardModal);
+    });
+    modal.addEventListener('click',function(e){ if(e.target===modal) closeSolutionCardModal(); });
+    return modal;
+  }
+
+  function openSolutionCardModal(solutionId){
+    var sol=(data.solutions&&data.solutions.catalog||[]).find(function(s){ return s.id===solutionId; });
+    if(!sol) return;
+    var ctx=solutionCardContext(solutionId);
+    ensureSolutionCardModal();
+    document.getElementById('solution-card-title').innerHTML=
+      (sol.catalog_code?'<span class="solution-code">'+esc(sol.catalog_code)+'</span> ':'')+
+      '<strong>'+esc(sol.name)+'</strong>'+
+      (sol.description?'<div class="solution-card-desc">'+esc(sol.description)+'</div>':'');
+    document.getElementById('solution-card-body').innerHTML=
+      '<div class="solution-card-split"><div class="solution-card-col">'+
+      '<div class="solution-card-section-title">Гипотезы и проблематики заказчика</div>'+
+      renderSolutionCardHypothesis(ctx.hypothesis)+
+      '</div><div class="solution-card-col"><div class="solution-card-section-title">Виджеты ('+ctx.widgets.length+')</div>'+
+      renderSolutionCardWidgets(ctx.widgets)+
+      '<div class="solution-card-section-title solution-card-section-gap">Пункты ФС ('+ctx.fs.length+')</div>'+
+      renderSolutionCardFs(ctx.fs)+'</div></div>';
+    document.getElementById('solution-card-modal').style.display='flex';
+  }
+
+  function closeSolutionCardModal(){
+    var modal=document.getElementById('solution-card-modal');
+    if(modal) modal.style.display='none';
+  }
+
+  function renderSolutionWidgetsCell(sol, isSelected){
+    if(!isSelected) return '<span style="color:#cbd5e1">—</span>';
+    var widgets=solutionWidgetsFor(sol.id);
+    if(!widgets.length) return '<span class="solution-meta">Нет виджетов</span>';
+    return widgets.map(function(w){
+      var checked=isSolutionWidgetSelected(sol.id,w.id);
+      var img=w.image_base64
+        ? '<img src="'+w.image_base64+'" alt="" data-widget-view="'+w.id+'">'
+        : '<button type="button" class="fs-widget-thumb-btn" data-widget-view="'+w.id+'">?</button>';
+      return '<div class="solution-widget-row"><label><input type="checkbox" data-solution-widget="'+sol.id+':'+w.id+'"'+(checked?' checked':'')+'></label>'+
+        img+'<span class="solution-widget-name">'+esc(w.name)+'</span></div>';
+    }).join('');
+  }
+
+  function renderSolutionCommentCell(sol, q, readOnly){
+    if(readOnly) return '<td class="fs-comment-cell"></td>';
+    var sel=findSolutionSelection(sol.id);
+    var canComment=!!sel&&solutionSelectionQueue(sel)===String(q);
+    var hasComment=canComment&&!!effectiveSolutionComment(sel, q);
+    var attrs='class="fs-comment-cell" data-solution-comment-cell="'+sol.id+':'+q+'" data-q="'+q+'"';
+    if(!hasComment){
+      return '<td '+attrs+' title="'+(canComment?'Добавить комментарий':'Перетащите комментарий сюда')+'"></td>';
+    }
+    return '<td '+attrs+'>'+renderSolutionCommentBtn(sol.id,q)+'</td>';
+  }
+
+  function renderSolutionRow(sol, opts, collapsedGroups){
+    var indent=opts.indent||0;
+    var isGroupParent=opts.variant==='parent'&&(opts.groupChildren||[]).length>0;
+    var groupMembers=isGroupParent?[sol].concat(opts.groupChildren||[]):[sol];
+    var groupQueues=isGroupParent?aggregateSolutionGroupQueues(groupMembers):null;
+    var sel=findSolutionSelection(sol.id);
+    var isSelected=isGroupParent?groupQueues.allOn:!!sel;
+    var unmatched=isSolutionUnmatched(sol.id);
+    var titleClass=opts.variant==='parent'?'font-weight:600':'font-weight:500';
+    var groupCtx=opts.variant==='child'&&opts.groupParentId!=null&&opts.groupSiblings
+      ?{parentId:opts.groupParentId,siblings:opts.groupSiblings}:null;
+    var row='<tr class="'+(opts.variant==='parent'?'solution-group':'')+'">'+
+      '<td style="padding-left:'+(8+indent)+'px;min-width:220px">'+
+      (opts.variant==='parent'&&opts.groupParentId!=null?
+        '<button type="button" class="fs-grp-toggle" data-solution-grp-toggle="'+opts.groupParentId+'">'+
+        (collapsedGroups.has(opts.groupParentId)?'▶':'▼')+'</button> ':'')+
+      '<button type="button" class="solution-name-btn" data-solution-card="'+sol.id+'" style="'+titleClass+(unmatched?';font-style:italic;color:#64748b':'')+'">'+
+      (sol.catalog_code?'<span class="solution-code">'+esc(sol.catalog_code)+'</span>':'')+
+      esc(sol.name)+'</button>'+
+      (unmatched?'<div class="solution-meta">не связано с выбранными проблематиками</div>':'')+
+      '</td><td class="solution-widgets-col">'+renderSolutionWidgetsCell(sol,isSelected)+'</td>';
+    FS_QUEUE_KEYS.forEach(function(q){
+      var isYes=isGroupParent?groupQueues.byQueue[q]:sel?solutionSelectionQueue(sel)===String(q):false;
+      var unmatchedBtn=!isSelected;
+      row+='<td style="text-align:center;width:4rem">'+
+        (isGroupParent?
+          yesNoBadge(isYes):
+          yesNoBtn(isYes,unmatchedBtn&&!isYes).replace('<button','<button data-solution-queue="'+sol.id+':'+q+'"'))+
+        '</td>'+renderSolutionCommentCell(sol,q,isGroupParent);
+    });
+    return row+'</tr>';
+  }
+
+  function syncSolutionProblemFilterFromCustomer(){
+    if(!data.solutions||!data.problems) return;
+    var ids=[];
+    (data.problems.selections||[]).forEach(function(s){
+      if(s.problem_id) ids.push(s.problem_id);
+    });
+    data.solutions.selected_problem_ids=ids;
+    var matched=new Set();
+    (data.solutions.problem_solution_links||[]).forEach(function(link){
+      if(ids.indexOf(link.problem_id)>=0) matched.add(link.solution_id);
+    });
+    data.solutions.matched_solution_ids=[...matched];
+  }
+
+  function renderSolutions(){
+    var sol=data.solutions; if(!sol||!sol.catalog) return '';
+    syncSolutionProblemFilterFromCustomer();
+    if(!data.widgets) data.widgets={catalog:[],selections:[]};
+    var visible=getVisibleSolutionCatalog();
+    var units=buildSolutionDisplayUnits(visible);
+    var collapsedGroups=new Set((data.ui_state&&data.ui_state.solution_groups)||[]);
+    var hint=sol.show_all_solutions
+      ?'Все решения справочника. Курсивом — не связаны с выбранными проблематиками.'
+      :'Решения, сопоставленные с выбранными проблематиками (и группы из НСИ). Назначьте очередь («Да»), комментарий — в колонке «Коммент.»';
+    var toolbar='<div class="solution-toolbar"><div class="solution-hint">'+esc(hint)+'</div>'+
+      '<button type="button" class="solution-filter-btn" data-solution-show-all>'+
+      (sol.show_all_solutions?'Только по проблематикам':'Показать все решения')+'</button></div>';
+    var head1='<tr><th rowspan="2">Решение</th><th rowspan="2">Виджеты</th>';
+    var head2='<tr>';
+    FS_QUEUE_KEYS.forEach(function(q){
+      head1+='<th colspan="2" style="text-align:center">'+esc(solutionQueueLabel(q))+'</th>';
+      head2+='<th style="text-align:center;width:4rem">Да/Нет</th><th style="text-align:center;width:2.5rem">Коммент.</th>';
+    });
+    head1+='</tr>';
+    head2+='</tr>';
+    var rows='';
+    units.forEach(function(unit){
+      if(unit.kind==='group'){
+        rows+=renderSolutionRow(unit.parent,{
+          variant:'parent',groupParentId:unit.parent.id,groupChildren:unit.children,indent:0
+        },collapsedGroups);
+        if(!collapsedGroups.has(unit.parent.id)){
+          unit.children.forEach(function(child){
+            rows+=renderSolutionRow(child,{
+              variant:'child',indent:20,groupParentId:unit.parent.id,groupSiblings:unit.children
+            },collapsedGroups);
+          });
+        }
+      } else {
+        rows+=renderSolutionRow(unit.item,{variant:'standalone',indent:0},collapsedGroups);
+      }
+    });
+    if(!rows){
+      rows='<tr><td colspan="'+(2+FS_QUEUE_KEYS.length*2)+'" style="text-align:center;color:#94a3b8;padding:16px">'+
+        'Нет решений для отображения. Выберите проблематики или нажмите «Показать все решения».</td></tr>';
+    }
+    return sectionWrap('solutions','Решения',toolbar+
+      '<div class="solution-scroll"><table class="solution-tbl"><thead>'+head1+head2+'</thead><tbody>'+rows+'</tbody></table></div>');
   }
 
   function renderOrgVolumeSection(){
@@ -891,8 +1758,8 @@ ${getFsClientJs()}
     var exported=new Date(data.exported_at).toLocaleString('ru-RU');
     app.innerHTML='<div class="hdr"><h1>'+esc(data.briefing_name)+'</h1>'+
       '<div class="meta">Предоценка для заполнения · экспорт '+exported+'</div>'+
-      '<div class="instr">Заполните разделы по порядку: заказчик, решения, виджеты, ФС, орг. объём, параметры оценки. Нажмите «Скачать заполненный файл» внизу и передайте исполнителю.</div></div>'+
-      renderCustomer()+renderSolutions()+renderWidgets()+renderFs()+renderOrgVolumeSection()+renderCriteria()+renderContract()+renderHeadcountLegacy()+renderOrgVolumeLegacy()+renderProblemsLegacy();
+      '<div class="instr">Заполните разделы по порядку: заказчик, виджеты, решения, ФС, орг. объём, параметры оценки. Нажмите «Скачать заполненный файл» внизу и передайте исполнителю.</div></div>'+
+      renderCustomer()+renderWidgets()+renderSolutions()+renderFs()+renderOrgVolumeSection()+renderCriteria()+renderContract()+renderHeadcountLegacy()+renderOrgVolumeLegacy()+renderProblemsLegacy();
     bindEvents();
   }
 
@@ -959,40 +1826,34 @@ ${getFsClientJs()}
 
   function syncAssessmentCriteriaFromDom(){
     if(!data.assessment_criteria) return;
-    if(!data.assessment_criteria.groups) data.assessment_criteria.groups={};
-    document.querySelectorAll('[data-crit-group]').forEach(function(cell){
-      var key=cell.getAttribute('data-crit-group');
+    if(!data.assessment_criteria.standard_document_state) data.assessment_criteria.standard_document_state={};
+    if(!data.assessment_criteria.extra_custom_documents) data.assessment_criteria.extra_custom_documents=[];
+    document.querySelectorAll('[data-std-doc-rp]').forEach(function(cell){
+      var id=cell.getAttribute('data-std-doc-rp');
       var btn=cell.querySelector('button');
-      if(!key||!btn) return;
-      if(!data.assessment_criteria.groups[key]) data.assessment_criteria.groups[key]={children:{},custom_rows:[]};
-      data.assessment_criteria.groups[key].group_rp_override=btn.getAttribute('data-val')==='1';
+      if(!id||!btn) return;
+      if(!data.assessment_criteria.standard_document_state[id]) data.assessment_criteria.standard_document_state[id]={rp_value:false,op_value:false};
+      data.assessment_criteria.standard_document_state[id].rp_value=btn.getAttribute('data-val')==='1';
     });
-    document.querySelectorAll('[data-crit-child]').forEach(function(cell){
-      var parts=(cell.getAttribute('data-crit-child')||'').split('.');
+    document.querySelectorAll('[data-std-doc-op]').forEach(function(cell){
+      var id=cell.getAttribute('data-std-doc-op');
       var btn=cell.querySelector('button');
-      if(parts.length<2||!btn) return;
-      var g=data.assessment_criteria.groups[parts[0]];
-      if(!g) return;
-      if(!g.children) g.children={};
-      if(!g.children[parts[1]]) g.children[parts[1]]={rp_value:false,op_value:false};
-      g.children[parts[1]].rp_value=btn.getAttribute('data-val')==='1';
+      if(!id||!btn) return;
+      if(!data.assessment_criteria.standard_document_state[id]) data.assessment_criteria.standard_document_state[id]={rp_value:false,op_value:false};
+      data.assessment_criteria.standard_document_state[id].op_value=btn.getAttribute('data-val')==='1';
     });
-    document.querySelectorAll('[data-crit-custom-val]').forEach(function(cell){
-      var parts=(cell.getAttribute('data-crit-custom-val')||'').split('.');
-      var btn=cell.querySelector('button');
-      if(parts.length<2||!btn) return;
-      var g=data.assessment_criteria.groups[parts[0]];
-      if(!g||!g.custom_rows) return;
-      var row=g.custom_rows.find(function(r){return r.id===parts[1];});
-      if(row) row.rp_value=btn.getAttribute('data-val')==='1';
-    });
-    document.querySelectorAll('[data-crit-custom]').forEach(function(inp){
-      var parts=(inp.getAttribute('data-crit-custom')||'').split('.');
-      if(parts.length<2) return;
-      var g=data.assessment_criteria.groups[parts[0]];
-      if(!g||!g.custom_rows) return;
-      var row=g.custom_rows.find(function(r){return r.id===parts[1];});
+    document.querySelectorAll('[data-extra-custom-label]').forEach(function(inp){
+      var id=inp.getAttribute('data-extra-custom-label');
+      if(!id) return;
+      var row=data.assessment_criteria.extra_custom_documents.find(function(r){return r.id===id;});
       if(row) row.label=inp.value;
+    });
+    document.querySelectorAll('[data-extra-custom-op]').forEach(function(cell){
+      var id=cell.getAttribute('data-extra-custom-op');
+      var btn=cell.querySelector('button');
+      if(!id||!btn) return;
+      var row=data.assessment_criteria.extra_custom_documents.find(function(r){return r.id===id;});
+      if(row) row.op_value=btn.getAttribute('data-val')==='1';
     });
   }
 
@@ -1057,22 +1918,93 @@ ${getFsClientJs()}
       });
     }
     if(data.solutions){
-      data.solutions.selected_ids=[];
-      document.querySelectorAll('[data-solution]:checked').forEach(function(el){
-        data.solutions.selected_ids.push(Number(el.getAttribute('data-solution')));
-      });
+      data.solutions.selections=(data.solutions.selections||[]).slice();
     }
     if(data.widgets){
-      data.widgets.selections=[];
-      document.querySelectorAll('[data-widget]:checked').forEach(function(el){
-        var parts=el.getAttribute('data-widget').split(':');
-        data.widgets.selections.push({widget_id:Number(parts[0]),solution_id:Number(parts[1])});
+      var widgetSel=[];
+      document.querySelectorAll('[data-widget]:checked,[data-solution-widget]:checked').forEach(function(el){
+        var raw=el.getAttribute('data-widget')||el.getAttribute('data-solution-widget')||'';
+        var parts=raw.split(':');
+        if(parts.length<2) return;
+        var a=Number(parts[0]), b=Number(parts[1]);
+        var widgetId=el.hasAttribute('data-solution-widget')?b:a;
+        var solutionId=el.hasAttribute('data-solution-widget')?a:b;
+        widgetSel.push({solution_id:solutionId,widget_id:widgetId});
+      });
+      var seen=new Set();
+      data.widgets.selections=widgetSel.filter(function(s){
+        var key=s.solution_id+':'+s.widget_id;
+        if(seen.has(key)) return false;
+        seen.add(key);
+        return true;
       });
     }
     if(data.assessment_headcount){
       var hs=document.querySelector('[data-headcount]');
       if(hs) data.assessment_headcount.headcount_category=hs.value;
     }
+  }
+
+  function bindSolutionCommentDrag(){
+    var tbody=document.querySelector('.solution-tbl tbody');
+    if(!tbody) return;
+
+    tbody.addEventListener('dragstart',function(e){
+      var btn=e.target.closest('[data-solution-comment-drag]');
+      if(!btn) return;
+      e.stopPropagation();
+      var parts=(btn.getAttribute('data-solution-comment-drag')||'').split(':');
+      if(parts.length<2) return;
+      solutionDragPayload={kind:'comment',solutionId:Number(parts[0]),fromQueue:parts[1]};
+      e.dataTransfer.effectAllowed='move';
+      e.dataTransfer.setData('application/x-solution-comment', JSON.stringify(solutionDragPayload));
+    });
+
+    tbody.addEventListener('dragover',function(e){
+      if(!isSolutionCommentDragActive(e)) return;
+      var cell=e.target.closest('[data-solution-comment-cell]');
+      if(!cell) return;
+      e.preventDefault();
+      if(e.dataTransfer) e.dataTransfer.dropEffect='move';
+      clearSolutionCommentDropTargets();
+      cell.classList.add('fs-drop-target');
+    });
+
+    tbody.addEventListener('drop',function(e){
+      var cell=e.target.closest('[data-solution-comment-cell]');
+      if(!cell) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var payload=parseSolutionCommentPayload(e);
+      clearSolutionCommentDropTargets();
+      solutionDragPayload=null;
+      if(!payload) return;
+      var parts=(cell.getAttribute('data-solution-comment-cell')||'').split(':');
+      if(parts.length<2) return;
+      var targetSol=(data.solutions&&data.solutions.catalog||[]).find(function(s){ return s.id===Number(parts[0]); });
+      if(!targetSol||!parts[1]) return;
+      handleSolutionCommentDrop(targetSol, parts[1], payload);
+    });
+
+    tbody.addEventListener('dragend',function(e){
+      if(e.target.closest('[data-solution-comment-drag]')) endSolutionDrag();
+    });
+
+    tbody.addEventListener('click',function(e){
+      var btn=e.target.closest('[data-solution-comment-drag]');
+      if(btn){
+        e.stopPropagation();
+        var dparts=(btn.getAttribute('data-solution-comment-drag')||'').split(':');
+        if(dparts.length<2) return;
+        openSolutionCommentModal(Number(dparts[0]),dparts[1]);
+        return;
+      }
+      var cell=e.target.closest('[data-solution-comment-cell]');
+      if(!cell||e.target.closest('[data-solution-comment-drag]')) return;
+      var cparts=(cell.getAttribute('data-solution-comment-cell')||'').split(':');
+      if(cparts.length<2) return;
+      openSolutionCommentModal(Number(cparts[0]),cparts[1]);
+    });
   }
 
   function bindEvents(){
@@ -1167,27 +2099,63 @@ ${getFsClientJs()}
         btn.setAttribute('data-val',on?1:0);
       });
     }
-    document.querySelectorAll('[data-crit-child]').forEach(function(cell){
-      var parts=cell.getAttribute('data-crit-child').split('.');
+    function applyHtmlDocExclusions(docId, enabled){
+      if(!enabled||!data.assessment_criteria.standard_document_exclusions) return;
+      (data.assessment_criteria.standard_document_exclusions||[]).forEach(function(pair){
+        var other=pair.doc_id_a===docId?pair.doc_id_b:pair.doc_id_b===docId?pair.doc_id_a:null;
+        if(other==null) return;
+        var k=String(other);
+        if(!data.assessment_criteria.standard_document_state[k]) data.assessment_criteria.standard_document_state[k]={rp_value:false,op_value:false};
+        data.assessment_criteria.standard_document_state[k].rp_value=false;
+        data.assessment_criteria.standard_document_state[k].op_value=false;
+        data.assessment_criteria.standard_document_state[k].extra=false;
+        data.assessment_criteria.standard_document_state[k].rp_manual=false;
+        data.assessment_criteria.standard_document_state[k].op_manual=false;
+      });
+    }
+    document.querySelectorAll('[data-std-doc-rp]').forEach(function(cell){
+      var id=Number(cell.getAttribute('data-std-doc-rp'));
+      var isExtra=cell.getAttribute('data-std-extra')==='1';
       toggleYesNo(cell.querySelector('button'),function(on){
-        var g=data.assessment_criteria.groups[parts[0]];
-        if(!g.children[parts[1]]) g.children[parts[1]]={rp_value:false,op_value:false};
-        g.children[parts[1]].rp_value=on;
-        g.group_rp_override=null;
+        if(!data.assessment_criteria.standard_document_state) data.assessment_criteria.standard_document_state={};
+        var key=String(id);
+        if(!data.assessment_criteria.standard_document_state[key]) data.assessment_criteria.standard_document_state[key]={rp_value:false,op_value:false};
+        data.assessment_criteria.standard_document_state[key].rp_value=on;
+        data.assessment_criteria.standard_document_state[key].rp_manual=true;
+        if(isExtra) data.assessment_criteria.standard_document_state[key].extra=on;
+        applyHtmlDocExclusions(id,on);
       });
     });
-    document.querySelectorAll('[data-crit-group]').forEach(function(cell){
-      var key=cell.getAttribute('data-crit-group');
+    document.querySelectorAll('[data-std-doc-op]').forEach(function(cell){
+      var id=cell.getAttribute('data-std-doc-op');
       toggleYesNo(cell.querySelector('button'),function(on){
-        data.assessment_criteria.groups[key].group_rp_override=on;
+        if(!data.assessment_criteria.standard_document_state) data.assessment_criteria.standard_document_state={};
+        if(!data.assessment_criteria.standard_document_state[id]) data.assessment_criteria.standard_document_state[id]={rp_value:false,op_value:false};
+        data.assessment_criteria.standard_document_state[id].op_value=on;
+        data.assessment_criteria.standard_document_state[id].op_manual=true;
       });
     });
-    document.querySelectorAll('[data-crit-custom-val]').forEach(function(cell){
-      var parts=cell.getAttribute('data-crit-custom-val').split('.');
+    document.querySelectorAll('[data-extra-custom-op]').forEach(function(cell){
+      var id=cell.getAttribute('data-extra-custom-op');
       toggleYesNo(cell.querySelector('button'),function(on){
-        var g=data.assessment_criteria.groups[parts[0]];
-        var row=g.custom_rows.find(function(r){return r.id===parts[1];});
-        if(row) row.rp_value=on;
+        if(!data.assessment_criteria.extra_custom_documents) data.assessment_criteria.extra_custom_documents=[];
+        var row=data.assessment_criteria.extra_custom_documents.find(function(r){return r.id===id;});
+        if(row) row.op_value=on;
+      });
+    });
+    document.querySelectorAll('[data-extra-custom-add]').forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.preventDefault();
+        syncFromDom();
+        if(!data.assessment_criteria.extra_custom_documents) data.assessment_criteria.extra_custom_documents=[];
+        data.assessment_criteria.extra_custom_documents.push({
+          id:'ecd_'+Date.now(),
+          label:'',
+          rp_value:false,
+          op_value:false,
+          tech:'CASE'
+        });
+        render();
       });
     });
     document.querySelectorAll('[data-contract]').forEach(function(cell){
@@ -1198,14 +2166,6 @@ ${getFsClientJs()}
     });
     document.querySelectorAll('[data-contract-param=advance_pct],[data-contract-param=payment_deferral_days]').forEach(function(inp){
       inp.addEventListener('input', updateAdvanceDeferralFormulaCell);
-    });
-    document.querySelectorAll('[data-crit-custom]').forEach(function(inp){
-      inp.addEventListener('input',function(){
-        var parts=inp.getAttribute('data-crit-custom').split('.');
-        var g=data.assessment_criteria.groups[parts[0]];
-        var row=g.custom_rows.find(function(r){return r.id===parts[1];});
-        if(row) row.label=inp.value;
-      });
     });
     var segSel=document.querySelector('[data-c=segment_id]');
     if(segSel) segSel.addEventListener('change',function(){
@@ -1306,14 +2266,22 @@ ${getFsClientJs()}
       });
     });
     document.querySelectorAll('[data-widget-group-toggle]').forEach(function(btn){
-      btn.addEventListener('click',function(){
+      btn.addEventListener('click',function(e){
+        e.stopPropagation();
         var key=btn.getAttribute('data-widget-group-toggle');
         if(!key) return;
         data.ui_state=data.ui_state||{};
         data.ui_state.widget_groups=data.ui_state.widget_groups||{};
         data.ui_state.widget_groups[key]=!uiOpen('widget_groups',key,true);
-        syncUiState();
         render();
+      });
+    });
+    document.querySelectorAll('[data-widget-view]').forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        var key=btn.getAttribute('data-widget-view');
+        if(key) openWidgetModal(key);
       });
     });
     var widgetCollapseBtn=document.querySelector('[data-widget-collapse-all]');
@@ -1324,11 +2292,63 @@ ${getFsClientJs()}
       var allCollapsed=keys.length>1&&keys.every(function(key){return !uiOpen('widget_groups',key,true);});
       data.ui_state=data.ui_state||{};
       data.ui_state.widget_groups={};
-      if(allCollapsed){
-        keys.forEach(function(key){ data.ui_state.widget_groups[key]=true; });
-      }
-      syncUiState();
+      keys.forEach(function(key){
+        data.ui_state.widget_groups[key]=allCollapsed;
+      });
       render();
+    });
+    document.querySelectorAll('[data-solution-show-all]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        if(!data.solutions) return;
+        data.solutions.show_all_solutions=!data.solutions.show_all_solutions;
+        render();
+      });
+    });
+    document.querySelectorAll('[data-solution-grp-toggle]').forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.stopPropagation();
+        var id=Number(btn.getAttribute('data-solution-grp-toggle'));
+        data.ui_state=data.ui_state||{};
+        data.ui_state.solution_groups=data.ui_state.solution_groups||[];
+        var set=new Set(data.ui_state.solution_groups);
+        if(set.has(id)) set.delete(id); else set.add(id);
+        data.ui_state.solution_groups=[...set];
+        render();
+      });
+    });
+    document.querySelectorAll('[data-solution-queue]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        var parts=(btn.getAttribute('data-solution-queue')||'').split(':');
+        if(parts.length<2) return;
+        var solutionId=Number(parts[0]), q=parts[1];
+        var sol=(data.solutions&&data.solutions.catalog||[]).find(function(s){return s.id===solutionId;});
+        if(!sol) return;
+        var groupCtx=null;
+        if(sol.parent_id){
+          var parent=(data.solutions.catalog||[]).find(function(s){return s.id===sol.parent_id;});
+          if(parent){
+            var siblings=(data.solutions.catalog||[]).filter(function(s){return s.parent_id===parent.id;});
+            groupCtx={parentId:parent.id,siblings:[parent].concat(siblings)};
+          }
+        }
+        toggleSolutionQueue(sol,q,groupCtx);
+        render();
+      });
+    });
+    document.querySelectorAll('[data-solution-widget]').forEach(function(inp){
+      inp.addEventListener('change',function(){
+        var parts=(inp.getAttribute('data-solution-widget')||'').split(':');
+        if(parts.length<2) return;
+        toggleSolutionWidget(Number(parts[0]),Number(parts[1]),inp.checked);
+        render();
+      });
+    });
+    bindSolutionCommentDrag();
+    document.querySelectorAll('[data-solution-card]').forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.stopPropagation();
+        openSolutionCardModal(Number(btn.getAttribute('data-solution-card')));
+      });
     });
   }
 

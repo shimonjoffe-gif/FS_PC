@@ -36,11 +36,13 @@ function WidgetImageField({
   busy,
   onPickFile,
   onRemoveImage,
+  compact = false,
 }: {
   widget: Pick<WidgetDetail, 'name' | 'image_path'>;
   busy: boolean;
   onPickFile: (file: File) => void;
   onRemoveImage: () => void;
+  compact?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -59,6 +61,38 @@ function WidgetImageField({
     onPickFile(file);
   }
 
+  const buttons = (
+    <div className="flex flex-wrap gap-2">
+      <button
+        type="button"
+        className="text-[10px] px-2 py-0.5 rounded border border-blue-200 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+        disabled={busy}
+        onClick={() => fileRef.current?.click()}
+      >
+        {busy ? 'Загрузка…' : widget.image_path ? 'Заменить' : 'Добавить'}
+      </button>
+      {widget.image_path ? (
+        <button
+          type="button"
+          className="text-[10px] px-2 py-0.5 rounded border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
+          disabled={busy}
+          onClick={onRemoveImage}
+        >
+          Удалить
+        </button>
+      ) : null}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+    </div>
+  );
+
+  if (compact) return buttons;
+
   return (
     <div className="shrink-0 space-y-1">
       {widget.image_path ? (
@@ -72,33 +106,7 @@ function WidgetImageField({
           Нет
         </div>
       )}
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          className="text-[10px] px-2 py-0.5 rounded border border-blue-200 text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-          disabled={busy}
-          onClick={() => fileRef.current?.click()}
-        >
-          {busy ? 'Загрузка…' : widget.image_path ? 'Заменить' : 'Добавить'}
-        </button>
-        {widget.image_path ? (
-          <button
-            type="button"
-            className="text-[10px] px-2 py-0.5 rounded border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
-            disabled={busy}
-            onClick={onRemoveImage}
-          >
-            Удалить
-          </button>
-        ) : null}
-      </div>
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
-        className="hidden"
-        onChange={handleFileChange}
-      />
+      {buttons}
     </div>
   );
 }
@@ -408,7 +416,7 @@ export default function WidgetCardModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div
-        className={`relative bg-white rounded-xl shadow-2xl w-full ${showSplitView ? 'max-w-6xl' : 'max-w-3xl'} max-h-[90vh] flex flex-col`}
+        className={`relative bg-white rounded-xl shadow-2xl w-full ${showSplitView ? 'max-w-6xl' : 'max-w-3xl'} max-h-[90vh] flex flex-col overflow-hidden`}
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-start justify-between px-4 py-3 border-b border-slate-100 gap-3 shrink-0">
@@ -488,30 +496,11 @@ export default function WidgetCardModal({
                 </div>
               </div>
             ) : (
-              <div className="flex gap-3">
-                {canManageImage ? (
-                  <WidgetImageField
-                    widget={widget!}
-                    busy={imageBusy}
-                    onPickFile={file => void handlePickImage(file)}
-                    onRemoveImage={() => void handleRemoveImage()}
-                  />
-                ) : widget?.image_path ? (
-                  <WidgetImageThumbnail
-                    imagePath={widget.image_path}
-                    name={widget.name}
-                    className="w-20 h-14 object-contain bg-white border border-slate-100 rounded shrink-0 cursor-pointer hover:border-slate-400"
-                  />
-                ) : null}
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-slate-800">{widget?.name}</div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    {widget?.type}
-                    {widget ? ` · ${widgetDataSliceLabel(widget)}` : ''}
-                  </div>
-                  {widget?.description ? (
-                    <div className="text-xs text-slate-600 mt-2 whitespace-pre-wrap">{widget.description}</div>
-                  ) : null}
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-slate-800">{widget?.name}</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  {widget?.type}
+                  {widget ? ` · ${widgetDataSliceLabel(widget)}` : ''}
                 </div>
               </div>
             )}
@@ -527,8 +516,40 @@ export default function WidgetCardModal({
         </div>
 
         {showSplitView ? (
-          <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-0 overflow-hidden">
-            <div className="overflow-y-auto px-4 py-3 border-b lg:border-b-0 lg:border-r border-slate-100">
+          <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-2 gap-0 overflow-hidden">
+            <div className="overflow-hidden px-4 py-3 border-b lg:border-b lg:border-r border-slate-100 flex flex-col items-center justify-center gap-2 bg-slate-50/50 min-h-0">
+              {widget.image_path ? (
+                <WidgetImageThumbnail
+                  imagePath={widget.image_path}
+                  name={widget.name}
+                  className="max-w-full max-h-full w-auto h-auto max-h-[calc(100%-2rem)] object-contain bg-white border border-slate-100 rounded cursor-pointer hover:border-slate-400"
+                />
+              ) : (
+                <span className="text-xs text-slate-400">Нет изображения</span>
+              )}
+              {canManageImage ? (
+                <div className="flex flex-wrap gap-2 justify-center shrink-0">
+                  <WidgetImageField
+                    widget={widget}
+                    busy={imageBusy}
+                    onPickFile={file => void handlePickImage(file)}
+                    onRemoveImage={() => void handleRemoveImage()}
+                    compact
+                  />
+                </div>
+              ) : null}
+            </div>
+            <div className="overflow-y-auto px-4 py-3 border-b border-slate-100 min-h-0">
+              <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                Описание
+              </div>
+              {widget.description ? (
+                <div className="text-xs text-slate-700 whitespace-pre-wrap">{widget.description}</div>
+              ) : (
+                <p className="text-sm text-slate-400">Описание не указано</p>
+              )}
+            </div>
+            <div className="overflow-y-auto px-4 py-3 border-b lg:border-b-0 lg:border-r border-slate-100 min-h-0">
               <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-2">
                 Гипотезы, проблематики и решения
               </div>
@@ -537,34 +558,32 @@ export default function WidgetCardModal({
                 Связи виджет → решение настраиваются в карточке решения
               </p>
             </div>
-            <div className="overflow-y-auto px-4 py-3">
-              <section>
-                <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
-                    Пункты ФС
-                    <span className="ml-1.5 font-normal text-slate-400 normal-case">({fsIds.size})</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="text-[10px] px-2 py-1 rounded border border-blue-200 text-blue-600 hover:bg-blue-50"
-                    onClick={() => {
-                      setFsDraft(new Set(fsIds));
-                      setPickFsOpen(true);
-                    }}
-                  >
-                    Редактировать
-                  </button>
+            <div className="overflow-y-auto px-4 py-3 min-h-0">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">
+                  Пункты ФС
+                  <span className="ml-1.5 font-normal text-slate-400 normal-case">({fsIds.size})</span>
                 </div>
-                <SolutionFsPanel
-                  groups={fsGroups}
-                  items={fsItems}
-                  fsLinks={fsIdsToLinks(fsIds)}
-                  editing={false}
-                  onChange={() => {}}
-                  onlySelected
-                  compact
-                />
-              </section>
+                <button
+                  type="button"
+                  className="text-[10px] px-2 py-1 rounded border border-blue-200 text-blue-600 hover:bg-blue-50"
+                  onClick={() => {
+                    setFsDraft(new Set(fsIds));
+                    setPickFsOpen(true);
+                  }}
+                >
+                  Редактировать
+                </button>
+              </div>
+              <SolutionFsPanel
+                groups={fsGroups}
+                items={fsItems}
+                fsLinks={fsIdsToLinks(fsIds)}
+                editing={false}
+                onChange={() => {}}
+                onlySelected
+                compact
+              />
             </div>
           </div>
         ) : null}

@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { normalizeFsPrefix } from './fsPrefix';
 import { seedProjectTypesNsi } from './assessmentCalc';
+import { seedStandardDocumentsNsi, migrateStandardDocumentsSchema } from './standardDocumentsSeed';
 
 const DATA_DIR = path.join(process.cwd(), '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -354,6 +355,17 @@ export function initDB() {
       rate_manual INTEGER DEFAULT 0,
       technology_manual INTEGER DEFAULT 0,
       PRIMARY KEY (briefing_id, queue)
+    );
+
+    CREATE TABLE IF NOT EXISTS standard_documents (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      field_key    TEXT NOT NULL UNIQUE,
+      label        TEXT NOT NULL,
+      type_impact  TEXT NOT NULL CHECK(type_impact IN ('PROF', 'KORP')),
+      excel_ref    TEXT NOT NULL DEFAULT '',
+      group_key    TEXT NOT NULL,
+      sort_order   INTEGER DEFAULT 0,
+      is_active    INTEGER DEFAULT 1
     );
   `);
 
@@ -736,4 +748,6 @@ export function initDB() {
   backfillFsCatalogGroups();
 
   seedProjectTypesNsi();
+  migrateStandardDocumentsSchema();
+  seedStandardDocumentsNsi();
 }

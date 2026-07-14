@@ -305,6 +305,16 @@ export function getFsClientJs(): string {
     return html;
   }
 
+  function renderFsWidgetsCell(widgets){
+    if(!widgets||!widgets.length) return '—';
+    return '<div class="fs-widget-thumbs">'+widgets.map(function(w){
+      if(w.image_base64){
+        return '<img src="'+w.image_base64+'" alt="'+esc(w.name)+'" title="'+esc(w.name)+'" data-widget-view="'+w.id+'">';
+      }
+      return '<button type="button" class="fs-widget-thumb-btn" data-widget-view="'+w.id+'" title="'+esc(w.name)+'">?</button>';
+    }).join('')+'</div>';
+  }
+
   function renderFsToolbar(){
     var yf=fsYesFilter();
     var showNsi=fsShowNsi();
@@ -371,7 +381,7 @@ export function getFsClientJs(): string {
         var unmatched=!customerItem&&it.matched===false;
         var flags=fsDetailLineFlags(it);
         var rowCls='fs-row'+(customerItem?' fs-row-customer':'')+(unmatched?' fs-row-unmatched':'');
-        var widgets=(it.matched_widgets||[]).length>0?it.matched_widgets.length+' выбрано':'—';
+        var widgets=renderFsWidgetsCell(it.matched_widgets||[]);
         var funcCell=customerItem?
           '<select class="fs-func-select" data-fs-func-type="'+fid+'">'+
           FS_FUNC_TYPE_VALUES.map(function(v){return '<option'+(it.func_type===v?' selected':'')+'>'+esc(v)+'</option>';}).join('')+'</select>':
@@ -400,7 +410,7 @@ export function getFsClientJs(): string {
           badges+'</button></td>'+
           '<td>'+funcCell+'</td>'+
           fsNsiCells(it,false)+
-          '<td class="fs-widgets-cell">'+esc(widgets)+'</td>'+
+          '<td class="fs-widgets-cell">'+widgets+'</td>'+
           '<td style="text-align:center">'+fsYesNoSpan(allOn,unmatched&&!allOn)+'</td>'+
           renderFsQueueCells(it,unmatched)+
           '</tr>';
@@ -511,8 +521,8 @@ export function getFsClientJs(): string {
     });
     var widgets=it.matched_widgets||[];
     if(!customerItem&&widgets.length>0){
-      body+='<div style="margin-top:12px"><div style="font-size:11px;font-weight:600;color:#64748b;margin-bottom:4px">Виджеты</div><ul class="fs-widget-list">'+
-        widgets.map(function(w){return '<li>'+esc(w.name)+'</li>';}).join('')+'</ul></div>';
+      body+='<div style="margin-top:12px"><div style="font-size:11px;font-weight:600;color:#64748b;margin-bottom:4px">Виджеты</div>'+
+        renderFsWidgetsCell(widgets)+'</div>';
     }
     return '<div class="fs-modal-overlay" data-fs-modal="card"><div class="fs-modal fs-modal-lg" onclick="event.stopPropagation()">'+
       '<div class="fs-modal-hd"><div style="flex:1;min-width:0">'+title+
@@ -688,6 +698,23 @@ export function getFsClientJs(): string {
     document.querySelectorAll('.qcell.fs-drop-target,.fs-comment-cell.fs-drop-target').forEach(function(c){ c.classList.remove('fs-drop-target'); });
   }
 
+  function isFsCommentDragActive(e){
+    if(fsDragPayload&&fsDragPayload.kind==='comment') return true;
+    if(!e||!e.dataTransfer||!e.dataTransfer.types) return false;
+    return Array.prototype.indexOf.call(e.dataTransfer.types,'application/x-fs-comment')>=0;
+  }
+
+  function parseFsCommentPayload(e){
+    var payload=fsDragPayload;
+    if(!payload||payload.kind!=='comment'){
+      try{
+        payload=JSON.parse(e.dataTransfer.getData('application/x-fs-comment'));
+      }catch(err){ return null; }
+    }
+    if(!payload||payload.kind!=='comment') return null;
+    return payload;
+  }
+
   function primaryQueueFrom(queues){
     var primary='1';
     ['1','2','3','4'].forEach(function(k){ if(queues[k]===1) primary=k; });
@@ -736,7 +763,7 @@ export function getFsClientJs(): string {
   function applyCommentMove(source, target, fromQ, toQ, mode){
     if(!moveCommentBetweenItems(source, target, fromQ, toQ, mode)) return;
     updateOrgActiveCheckbox(toQ);
-    fsRerenderForItem(target.fs_item_id);
+    fsRerender(null);
   }
 
   function handleCommentDrop(targetItem, toQ, payload){
@@ -1031,6 +1058,32 @@ export function getFsClientJs(): string {
         fsRerender(btn);
       });
     });
+    var fsTbody=document.querySelector('.fs-tbl tbody');
+    if(fsTbody){
+      fsTbody.addEventListener('dragover',function(e){
+        if(!isFsCommentDragActive(e)) return;
+        var cell=e.target.closest('[data-fs-comment-cell]');
+        if(!cell) return;
+        e.preventDefault();
+        if(e.dataTransfer) e.dataTransfer.dropEffect='move';
+        clearFsDropTargets();
+        cell.classList.add('fs-drop-target');
+      });
+      fsTbody.addEventListener('drop',function(e){
+        var cell=e.target.closest('[data-fs-comment-cell]');
+        if(!cell) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var payload=parseFsCommentPayload(e);
+        endFsDrag();
+        if(!payload) return;
+        var fid=Number(cell.getAttribute('data-fs-comment-cell'));
+        var toQ=cell.getAttribute('data-q');
+        var target=getFsItemById(fid);
+        if(!target||!toQ) return;
+        handleCommentDrop(target, toQ, payload);
+      });
+    }
     document.querySelectorAll('[data-fs-comment-cell]').forEach(function(cell){
       cell.addEventListener('click',function(e){
         if(e.target.closest('[data-fs-comment]')) return;
@@ -1043,31 +1096,6 @@ export function getFsClientJs(): string {
         fsCommentDraft='';
         data.ui_state.fs_comment=fid+':'+q;
         fsRerender(cell);
-      });
-      cell.addEventListener('dragover',function(e){
-        if(!fsDragPayload||fsDragPayload.kind!=='comment') return;
-        e.preventDefault();
-        clearFsDropTargets();
-        cell.classList.add('fs-drop-target');
-      });
-      cell.addEventListener('dragleave',function(){
-        cell.classList.remove('fs-drop-target');
-      });
-      cell.addEventListener('drop',function(e){
-        e.preventDefault();
-        e.stopPropagation();
-        var payload=fsDragPayload;
-        if(!payload||payload.kind!=='comment'){
-          try{
-            payload=JSON.parse(e.dataTransfer.getData('application/x-fs-comment'));
-          }catch(err){ endFsDrag(); return; }
-        }
-        endFsDrag();
-        var fid=Number(cell.getAttribute('data-fs-comment-cell'));
-        var toQ=cell.getAttribute('data-q');
-        var target=getFsItemById(fid);
-        if(!target||!toQ||!payload||payload.kind!=='comment') return;
-        handleCommentDrop(target, toQ, payload);
       });
     });
     document.querySelectorAll('[data-fs-comment-merge]').forEach(function(btn){
@@ -1188,6 +1216,14 @@ export function getFsClientJs(): string {
         data.ui_state.fs_comment_merge=null;
         fsCommentDraft='';
         fsRerender(null);
+      });
+    });
+    document.querySelectorAll('[data-widget-view]').forEach(function(el){
+      el.addEventListener('click',function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        var id=el.getAttribute('data-widget-view');
+        if(id && typeof openWidgetModal==='function') openWidgetModal(id);
       });
     });
   }

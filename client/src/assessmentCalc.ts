@@ -15,6 +15,7 @@ import {
   CONTRACT_CRITERIA_DEFS,
   type SellerCriteria, type SellerCriteriaKey,
 } from './sellerCriteria';
+import { mergeStandardDocumentsIntoCriteria, resolveAutoProjectTypeCode } from './standardDocuments';
 
 export interface ComputeRisksContext {
   projectTypeCode?: string | null;
@@ -1058,6 +1059,7 @@ export function computeAutoProjectType(
   fsItems: BriefingFsSel[],
   criteria: SellerCriteria,
   projectTypes: ProjectType[],
+  documentCatalog: import('./standardDocuments').StandardDocument[] = [],
 ): ProjectType | null {
   const hc = headcount ?? 0;
   const sp = spByFuncType(fsItems);
@@ -1069,28 +1071,16 @@ export function computeAutoProjectType(
   );
   const rpRpo = Math.max(...FS_QUEUE_KEYS.map(q => orgAuto.queues[q].rp_rpo ?? 0));
 
-  const isKorp =
-    sp.KORP > 0
-    || hc >= 1001
-    || criteriaFlag(criteria, 'gost_customer_tech')
-    || users > 500
-    || criteriaFlag(criteria, 'methodology')
-    || sp.NMD > 0
-    || criteriaFlag(criteria, 'bp_optimization')
-    || criteriaFlag(criteria, 'ib_requirements');
-
-  const isProf =
-    sp.PROF > 0
-    || criteriaFlag(criteria, 'non_standard_docs')
-    || criteriaFlag(criteria, 'bp_description')
-    || users > 200
-    || rpRpo > 20
-    || criteriaFlag(criteria, 'load_testing');
-
-  let code = 'CASE';
-  if (isKorp) code = 'KORP';
-  else if (isProf) code = 'PROF';
-  else if (sp.PROF_MINI > 0) code = 'PROF_MINI';
+  const code = resolveAutoProjectTypeCode(
+    sp,
+    hc,
+    users,
+    rpRpo,
+    documentCatalog,
+    criteria.standard_documents,
+    null,
+    criteria.extra_custom_documents ?? [],
+  );
 
   return projectTypes.find(pt => pt.code === code && pt.is_active !== 0) ?? null;
 }
@@ -1719,6 +1709,12 @@ export function applyAssessmentPatch(
       ...incoming,
       groups: mergedGroups,
     };
+    if (incoming.standard_documents && typeof incoming.standard_documents === 'object') {
+      next.criteria.standard_documents = {
+        ...(assessment.criteria.standard_documents ?? {}),
+        ...incoming.standard_documents,
+      };
+    }
     for (const def of CONTRACT_CRITERIA_DEFS) {
       if (incoming[def.key] !== undefined) next.criteria[def.key] = incoming[def.key];
     }
@@ -1798,25 +1794,52 @@ export function recomputeAssessmentDerived(
   nsi: AssessmentNsiCache,
 ): BriefingAssessment {
   const projectTypes = nsi.projectTypes.length > 0 ? nsi.projectTypes : assessment.project_types;
-  const criteria = assessment.criteria;
+  const catalog = assessment.standard_documents_catalog ?? [];
+  let criteria = mergeStandardDocumentsIntoCriteria(
+    catalog,
+    assessment.criteria,
+    null,
+    false,
+  );
 
   const autoOrg = computeOrgVolume(
     context.headcount,
     context.fs_items,
     {},
   );
-  const autoType = computeAutoProjectType(
+  let autoType = computeAutoProjectType(
     context.headcount,
     context.fs_items,
     criteria,
     projectTypes,
+    catalog,
   );
 
-  const effectiveTypeId = assessment.project_type_manual && assessment.project_type_id
+  let effectiveTypeId = assessment.project_type_manual && assessment.project_type_id
     ? assessment.project_type_id
     : autoType?.id ?? assessment.project_type_id ?? autoType?.id ?? null;
 
-  const typeCode = projectTypes.find(pt => pt.id === effectiveTypeId)?.code ?? null;
+  let typeCode = projectTypes.find(pt => pt.id === effectiveTypeId)?.code ?? null;
+  criteria = mergeStandardDocumentsIntoCriteria(catalog, criteria, typeCode, true);
+
+  if (!assessment.project_type_manual) {
+    autoType = computeAutoProjectType(
+      context.headcount,
+      context.fs_items,
+      criteria,
+      projectTypes,
+    );
+    effectiveTypeId = autoType?.id ?? assessment.project_type_id ?? autoType?.id ?? null;
+    typeCode = projectTypes.find(pt => pt.id === effectiveTypeId)?.code ?? null;
+    criteria = mergeStandardDocumentsIntoCriteria(catalog, criteria, typeCode, true);
+    autoType = computeAutoProjectType(
+      context.headcount,
+      context.fs_items,
+      criteria,
+      projectTypes,
+    );
+    effectiveTypeId = autoType?.id ?? null;
+  }
   const autoRisks = computeRisks(criteria, { projectTypeCode: typeCode });
 
   const effectiveRisks = mergeEffectiveRisks(
@@ -1905,6 +1928,7 @@ export function recomputeAssessmentDerived(
 
   return {
     ...assessment,
+    criteria,
     project_types: projectTypes,
     auto_risks: autoRisks,
     risks: effectiveRisks,

@@ -72,6 +72,7 @@ export default function FsItemCardModal({
   item,
   moveTargets,
   fsTrace,
+  onOpenWidgetCard,
   onClose,
   onSave,
   onMoveCustomerLine,
@@ -79,6 +80,7 @@ export default function FsItemCardModal({
   item: BriefingFsSel;
   moveTargets: { fs_item_id: number; label: string; group: string }[];
   fsTrace?: { customTexts: string[]; solutionNames: string[] };
+  onOpenWidgetCard?: (widgetId: number) => void;
   onClose: () => void;
   onSave: (patch: Partial<BriefingFsSel>) => void;
   onMoveCustomerLine: (
@@ -341,6 +343,8 @@ export default function FsItemCardModal({
                 {item.matched_widgets!.map(w => (
                   <li key={w.id} className="flex items-center gap-2">
                     <WidgetImageThumbnail
+                      widgetId={w.id}
+                      onOpenWidgetCard={onOpenWidgetCard}
                       imagePath={w.image_path}
                       name={w.name}
                       className="w-10 h-7 object-contain bg-white border border-slate-100 rounded shrink-0 cursor-pointer hover:border-slate-400"

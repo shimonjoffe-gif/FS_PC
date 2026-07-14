@@ -493,3 +493,39 @@ export const addProjectTypeRate = (id: number, data: { hourly_rate: number; vali
 export const getProjectTypeCoefficients = (id: number) => req<HeadcountCoefficient[]>(`/catalog/project-types/${id}/coefficients`);
 export const saveProjectTypeCoefficients = (id: number, coefficients: HeadcountCoefficient[]) =>
   req<{ ok: boolean }>(`/catalog/project-types/${id}/coefficients`, { method: 'PUT', body: JSON.stringify({ coefficients }) });
+
+export interface StandardDocument {
+  id: number;
+  field_key: string;
+  label: string;
+  excel_ref: string;
+  group_key: string;
+  sort_order: number;
+  is_active: number;
+  tech: 'CASE' | 'BZ' | 'PROF_MINI' | 'PROF' | 'KORP';
+  can_extra: number;
+  std_case: number;
+  std_bz: number;
+  std_prof_mini: number;
+  std_prof: number;
+  std_korp: number;
+}
+
+export interface StandardDocumentExclusion {
+  id: number;
+  doc_id_a: number;
+  doc_id_b: number;
+}
+
+export const getStandardDocuments = () => req<StandardDocument[]>('/catalog/standard-documents');
+export const getStandardDocumentExclusions = () => req<StandardDocumentExclusion[]>('/catalog/standard-document-exclusions');
+export const createStandardDocument = (data: Omit<StandardDocument, 'id'>) =>
+  req<{ id: number }>('/catalog/standard-documents', { method: 'POST', body: JSON.stringify(data) });
+export const updateStandardDocument = (id: number, data: Partial<StandardDocument>) =>
+  req<{ ok: boolean }>(`/catalog/standard-documents/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+export const deleteStandardDocument = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/standard-documents/${id}`, { method: 'DELETE' });
+export const createStandardDocumentExclusion = (doc_id_a: number, doc_id_b: number) =>
+  req<{ id: number }>('/catalog/standard-document-exclusions', { method: 'POST', body: JSON.stringify({ doc_id_a, doc_id_b }) });
+export const deleteStandardDocumentExclusion = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/standard-document-exclusions/${id}`, { method: 'DELETE' });

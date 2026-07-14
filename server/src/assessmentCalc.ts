@@ -19,6 +19,8 @@ import {
   type SellerCriteria,
   type SellerCriteriaKey,
 } from './sellerCriteria';
+import { listStandardDocuments } from './standardDocumentsSeed';
+import { resolveAutoProjectTypeCode } from './standardDocuments';
 
 export interface ComputeRisksContext {
   projectTypeCode?: string | null;
@@ -130,6 +132,7 @@ export function computeAutoProjectType(briefingId: number, criteria: SellerCrite
   } | undefined;
   const headcount = briefing?.headcount ?? 0;
   const sp = spByFuncType(briefingId);
+  const catalog = listStandardDocuments();
 
   const orgAuto = computeOrgVolume(briefingId, {});
   const users = Math.max(
@@ -138,28 +141,16 @@ export function computeAutoProjectType(briefingId: number, criteria: SellerCrite
   );
   const rpRpo = Math.max(...FS_QUEUE_KEYS.map(q => orgAuto.queues[q].rp_rpo ?? 0));
 
-  const isKorp =
-    sp.KORP > 0
-    || headcount >= 1001
-    || criteriaFlag(criteria, 'gost_customer_tech')
-    || users > 500
-    || criteriaFlag(criteria, 'methodology')
-    || sp.NMD > 0
-    || criteriaFlag(criteria, 'bp_optimization')
-    || criteriaFlag(criteria, 'ib_requirements');
-
-  const isProf =
-    sp.PROF > 0
-    || criteriaFlag(criteria, 'non_standard_docs')
-    || criteriaFlag(criteria, 'bp_description')
-    || users > 200
-    || rpRpo > 20
-    || criteriaFlag(criteria, 'load_testing');
-
-  let code = 'CASE';
-  if (isKorp) code = 'KORP';
-  else if (isProf) code = 'PROF';
-  else if (sp.PROF_MINI > 0) code = 'PROF_MINI';
+  const code = resolveAutoProjectTypeCode(
+    sp,
+    headcount,
+    users,
+    rpRpo,
+    catalog,
+    criteria.standard_documents,
+    null,
+    criteria.extra_custom_documents ?? [],
+  );
 
   return db.prepare(`SELECT * FROM project_types WHERE code=? AND is_active=1`).get(code) as ProjectTypeRow | null;
 }

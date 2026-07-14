@@ -13,8 +13,8 @@ export type ExportBlocks = Record<ExportBlockKey, boolean>;
 
 export const EXPORT_BLOCK_KEYS: ExportBlockKey[] = [
   'customer',
-  'solutions',
   'widgets',
+  'solutions',
   'fs',
   'assessment_criteria',
   'assessment_contract',
@@ -26,8 +26,8 @@ export const EXPORT_BLOCK_KEYS: ExportBlockKey[] = [
 /** Порядок разделов в HTML для заполнения заказчиком (как во вкладках брифинга). */
 export const EXPORT_FILL_ORDER: ExportBlockKey[] = [
   'customer',
-  'solutions',
   'widgets',
+  'solutions',
   'fs',
   'assessment_org_volume',
   'assessment_criteria',

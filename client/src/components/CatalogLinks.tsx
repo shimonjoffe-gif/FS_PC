@@ -14,6 +14,9 @@ import {
   setFsCatalogItemPublished,
   getProjectTypes, createProjectType, updateProjectType, deleteProjectType,
   getProjectTypeRates, addProjectTypeRate, getProjectTypeCoefficients, saveProjectTypeCoefficients,
+  getStandardDocuments, createStandardDocument, updateStandardDocument, deleteStandardDocument,
+  getStandardDocumentExclusions, createStandardDocumentExclusion, deleteStandardDocumentExclusion,
+  type StandardDocument, type StandardDocumentExclusion,
 } from '../api';
 import { filterFsCatalogItems } from '../utils/fsDisplayGroups';
 import FsNsiTable from './FsNsiTable';
@@ -21,6 +24,7 @@ import HypothesesNsi from './HypothesesNsi';
 import ProblemsNsi from './ProblemsNsi';
 import SolutionsNsi from './SolutionsNsi';
 import WidgetsNsi from './WidgetsNsi';
+import { TYPE_CRITERIA_DEFS } from '../sellerCriteria';
 
 type FsCatalogUsageRow = {
   briefing_name: string;
@@ -29,7 +33,7 @@ type FsCatalogUsageRow = {
   recorded_at: string;
 };
 
-type LinkTab = 'widgets' | 'nsi-fs' | 'hypotheses' | 'problems' | 'solutions' | 'project-types';
+type LinkTab = 'widgets' | 'nsi-fs' | 'hypotheses' | 'problems' | 'solutions' | 'project-types' | 'standard-documents';
 
 const LINK_TABS: { id: LinkTab; label: string }[] = [
   { id: 'widgets', label: 'Виджеты' },
@@ -38,6 +42,7 @@ const LINK_TABS: { id: LinkTab; label: string }[] = [
   { id: 'problems', label: 'Проблематики' },
   { id: 'solutions', label: 'Решения' },
   { id: 'project-types', label: 'Типы проекта' },
+  { id: 'standard-documents', label: 'Стандартные документы' },
 ];
 
 export default function CatalogLinks() {
@@ -54,6 +59,25 @@ export default function CatalogLinks() {
   const [typeRates, setTypeRates] = useState<ProjectTypeRate[]>([]);
   const [typeCoeffs, setTypeCoeffs] = useState<HeadcountCoefficient[]>([]);
   const [newRate, setNewRate] = useState('');
+  const [standardDocuments, setStandardDocuments] = useState<StandardDocument[]>([]);
+  const [stdDocExclusions, setStdDocExclusions] = useState<StandardDocumentExclusion[]>([]);
+  const [newStdDocLabel, setNewStdDocLabel] = useState('');
+  const [exclusionA, setExclusionA] = useState('');
+  const [exclusionB, setExclusionB] = useState('');
+
+  const TECH_OPTIONS = ['CASE', 'BZ', 'PROF_MINI', 'PROF', 'KORP'] as const;
+  const MATRIX_COLS = [
+    { key: 'std_case' as const, label: 'Кейс' },
+    { key: 'std_bz' as const, label: 'БЗ' },
+    { key: 'std_prof_mini' as const, label: 'мини' },
+    { key: 'std_prof' as const, label: 'ПРОФ' },
+    { key: 'std_korp' as const, label: 'КОРП' },
+  ];
+
+  const criteriaGroupOptions = useMemo(
+    () => TYPE_CRITERIA_DEFS.filter(d => d.group === 'type').map(d => ({ key: d.key, label: d.label })),
+    [],
+  );
 
   const [fsNsiGroups, setFsNsiGroups] = useState<FsCatalogGroup[]>([]);
   const [fsNsiItems, setFsNsiItems] = useState<FsCatalogItem[]>([]);
@@ -174,6 +198,8 @@ export default function CatalogLinks() {
     setMaturityLevels(await getMaturityLevels());
     const pts = await getProjectTypes();
     setProjectTypes(pts);
+    setStandardDocuments(await getStandardDocuments());
+    setStdDocExclusions(await getStandardDocumentExclusions());
     if (selectedTypeId && pts.some(p => p.id === selectedTypeId)) {
       setTypeRates(await getProjectTypeRates(selectedTypeId));
       setTypeCoeffs(await getProjectTypeCoefficients(selectedTypeId));
@@ -424,6 +450,158 @@ export default function CatalogLinks() {
                 return result;
               }}
             />
+          </div>
+        )}
+
+        {linkTab === 'standard-documents' && (
+          <div className="space-y-4">
+            <p className="text-xs text-slate-500">
+              Справочник документов: колонки Кейс/БЗ/мини/ПРОФ/КОРП — документ в стандартном наборе для типа; «Сверх стандарта» — можно включить по запросу заказчика, если для типа не входит в стандарт; пары исключений внизу.
+            </p>
+            <div className="flex gap-2 items-end">
+              <label className="flex-1 text-xs">
+                <span className="text-slate-400 block mb-1">Новый документ</span>
+                <input className="w-full text-sm border rounded px-2 py-1" placeholder="Название"
+                  value={newStdDocLabel} onChange={e => setNewStdDocLabel(e.target.value)} />
+              </label>
+              <button type="button" className="text-sm bg-blue-500 text-white px-3 py-1 rounded disabled:opacity-50"
+                disabled={!newStdDocLabel.trim()}
+                onClick={async () => {
+                  await createStandardDocument({
+                    field_key: `doc_custom_${Date.now()}`,
+                    label: newStdDocLabel.trim(),
+                    excel_ref: '',
+                    group_key: 'non_standard_docs',
+                    sort_order: standardDocuments.length + 1,
+                    is_active: 1,
+                    tech: 'CASE',
+                    can_extra: 0,
+                    std_case: 0, std_bz: 0, std_prof_mini: 0, std_prof: 0, std_korp: 0,
+                  });
+                  setNewStdDocLabel('');
+                  setStandardDocuments(await getStandardDocuments());
+                }}>+ Добавить</button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[10px] border-collapse min-w-[900px]">
+                <thead>
+                  <tr className="bg-slate-50">
+                    <th className="p-1 border text-left">Название</th>
+                    <th className="p-1 border">Excel</th>
+                    <th className="p-1 border">Тех.</th>
+                    <th className="p-1 border" title="Можно включить сверх стандартного набора (запрос заказчика)">Сверх std.</th>
+                    {MATRIX_COLS.map(c => (
+                      <th key={c.key} className="p-1 border text-center">{c.label}</th>
+                    ))}
+                    <th className="p-1 border">Акт.</th>
+                    <th className="p-1 border"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {standardDocuments.map(doc => (
+                    <tr key={doc.id}>
+                      <td className="p-1 border">
+                        <input className="w-full border-0 bg-transparent text-xs" defaultValue={doc.label}
+                          onBlur={e => {
+                            if (e.target.value !== doc.label) {
+                              void updateStandardDocument(doc.id, { label: e.target.value })
+                                .then(async () => setStandardDocuments(await getStandardDocuments()));
+                            }
+                          }} />
+                      </td>
+                      <td className="p-1 border">
+                        <input className="w-14 border-0 bg-transparent text-center" defaultValue={doc.excel_ref}
+                          onBlur={e => {
+                            if (e.target.value !== doc.excel_ref) {
+                              void updateStandardDocument(doc.id, { excel_ref: e.target.value })
+                                .then(async () => setStandardDocuments(await getStandardDocuments()));
+                            }
+                          }} />
+                      </td>
+                      <td className="p-1 border">
+                        <select className="text-[10px] border-0 bg-transparent" defaultValue={doc.tech}
+                          onChange={e => {
+                            void updateStandardDocument(doc.id, { tech: e.target.value as StandardDocument['tech'] })
+                              .then(async () => setStandardDocuments(await getStandardDocuments()));
+                          }}>
+                          {TECH_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      </td>
+                      <td className="p-1 border text-center">
+                        <input type="checkbox" defaultChecked={doc.can_extra === 1}
+                          onChange={e => {
+                            void updateStandardDocument(doc.id, { can_extra: e.target.checked ? 1 : 0 })
+                              .then(async () => setStandardDocuments(await getStandardDocuments()));
+                          }} />
+                      </td>
+                      {MATRIX_COLS.map(col => (
+                        <td key={col.key} className="p-1 border text-center">
+                          <input type="checkbox" defaultChecked={doc[col.key] === 1}
+                            onChange={e => {
+                              void updateStandardDocument(doc.id, { [col.key]: e.target.checked ? 1 : 0 })
+                                .then(async () => setStandardDocuments(await getStandardDocuments()));
+                            }} />
+                        </td>
+                      ))}
+                      <td className="p-1 border text-center">
+                        <input type="checkbox" defaultChecked={doc.is_active !== 0}
+                          onChange={e => {
+                            void updateStandardDocument(doc.id, { is_active: e.target.checked ? 1 : 0 })
+                              .then(async () => setStandardDocuments(await getStandardDocuments()));
+                          }} />
+                      </td>
+                      <td className="p-1 border text-center">
+                        <button type="button" className="text-red-600"
+                          onClick={async () => {
+                            if (!confirm(`Удалить «${doc.label}»?`)) return;
+                            await deleteStandardDocument(doc.id);
+                            setStandardDocuments(await getStandardDocuments());
+                            setStdDocExclusions(await getStandardDocumentExclusions());
+                          }}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="border-t pt-3">
+              <h4 className="text-sm font-medium mb-2">Пары взаимоисключения</h4>
+              <div className="flex flex-wrap gap-2 items-end mb-2">
+                <select className="text-xs border rounded px-2 py-1" value={exclusionA} onChange={e => setExclusionA(e.target.value)}>
+                  <option value="">Документ A</option>
+                  {standardDocuments.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+                </select>
+                <span className="text-xs text-slate-400">↔</span>
+                <select className="text-xs border rounded px-2 py-1" value={exclusionB} onChange={e => setExclusionB(e.target.value)}>
+                  <option value="">Документ B</option>
+                  {standardDocuments.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
+                </select>
+                <button type="button" className="text-xs bg-slate-100 px-2 py-1 rounded"
+                  disabled={!exclusionA || !exclusionB || exclusionA === exclusionB}
+                  onClick={async () => {
+                    await createStandardDocumentExclusion(Number(exclusionA), Number(exclusionB));
+                    setExclusionA('');
+                    setExclusionB('');
+                    setStdDocExclusions(await getStandardDocumentExclusions());
+                  }}>+ Пара</button>
+              </div>
+              <ul className="text-xs space-y-1">
+                {stdDocExclusions.map(pair => {
+                  const a = standardDocuments.find(d => d.id === pair.doc_id_a);
+                  const b = standardDocuments.find(d => d.id === pair.doc_id_b);
+                  return (
+                    <li key={pair.id} className="flex items-center gap-2">
+                      <span>{a?.label ?? pair.doc_id_a} ↔ {b?.label ?? pair.doc_id_b}</span>
+                      <button type="button" className="text-red-600"
+                        onClick={async () => {
+                          await deleteStandardDocumentExclusion(pair.id);
+                          setStdDocExclusions(await getStandardDocumentExclusions());
+                        }}>✕</button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           </div>
         )}
 

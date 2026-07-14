@@ -57,19 +57,46 @@ export function WidgetImagePreviewModal({
 export function WidgetImageThumbnail({
   imagePath,
   name,
+  widgetId,
+  onOpenWidgetCard,
   className = 'w-16 h-12 object-contain border border-slate-200 rounded bg-white shrink-0 cursor-pointer hover:border-slate-400',
   placeholderClassName = 'text-slate-300',
   showPlaceholder = true,
 }: {
   imagePath?: string | null;
   name: string;
+  widgetId?: number;
+  onOpenWidgetCard?: (widgetId: number) => void;
   className?: string;
   placeholderClassName?: string;
   showPlaceholder?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const url = widgetImageUrl(imagePath);
+
+  function handleClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (widgetId != null && onOpenWidgetCard) {
+      onOpenWidgetCard(widgetId);
+      return;
+    }
+    if (url) setOpen(true);
+  }
+
   if (!url) {
+    if (widgetId != null && onOpenWidgetCard) {
+      return (
+        <button
+          type="button"
+          className={`${className} flex items-center justify-center text-[10px] text-slate-400 bg-slate-50`}
+          title={`${name} — открыть карточку`}
+          onClick={handleClick}
+        >
+          ?
+        </button>
+      );
+    }
     if (!showPlaceholder) return null;
     return <span className={placeholderClassName}>—</span>;
   }
@@ -79,15 +106,11 @@ export function WidgetImageThumbnail({
       <img
         src={url}
         alt={name}
-        title={`${name} — клик для увеличения`}
+        title={widgetId != null && onOpenWidgetCard ? `${name} — открыть карточку` : `${name} — клик для увеличения`}
         className={className}
-        onClick={e => {
-          e.preventDefault();
-          e.stopPropagation();
-          setOpen(true);
-        }}
+        onClick={handleClick}
       />
-      {open ? (
+      {open && !onOpenWidgetCard ? (
         <WidgetImagePreviewModal src={url} title={name} onClose={() => setOpen(false)} />
       ) : null}
     </>

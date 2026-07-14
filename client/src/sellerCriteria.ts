@@ -245,6 +245,8 @@ export type SellerCriteria = Partial<Record<SellerCriteriaKey, boolean>> & {
   content_selections?: ContentSelections;
   groups?: CriteriaGroups;
   contract_params?: Partial<ContractParams>;
+  standard_documents?: import('./standardDocuments').StandardDocumentsState;
+  extra_custom_documents?: import('./standardDocuments').ExtraCustomDocument[];
 };
 
 const NO_METHODOLOGY = 'Не ожидается методической работы и результатов';
@@ -445,7 +447,7 @@ export function parseSellerCriteria(raw: unknown): SellerCriteria {
     return { groups: ensureCriteriaGroups({}), contract_params: { ...DEFAULT_CONTRACT_PARAMS } };
   }
   const obj = raw as Record<string, unknown>;
-  const { content_selections, groups: rawGroups, contract_params: rawContractParams, ...rest } = obj;
+  const { content_selections, groups: rawGroups, contract_params: rawContractParams, standard_documents: rawStdDocs, extra_custom_documents: rawExtraCustom, ...rest } = obj;
 
   const criteria: SellerCriteria = {};
 
@@ -469,6 +471,19 @@ export function parseSellerCriteria(raw: unknown): SellerCriteria {
     criteria.contract_params = ensureContractParams(rawContractParams as Partial<ContractParams>);
   }
 
+  if (rawStdDocs && typeof rawStdDocs === 'object') {
+    criteria.standard_documents = rawStdDocs as import('./standardDocuments').StandardDocumentsState;
+  }
+
+  if (Array.isArray(rawExtraCustom)) {
+    criteria.extra_custom_documents = rawExtraCustom as import('./standardDocuments').ExtraCustomDocument[];
+  }
+
+  if (!criteria.extra_custom_documents?.length) {
+    const migrated = ensureExtraCustomDocuments(criteria);
+    if (migrated.length > 0) criteria.extra_custom_documents = migrated;
+  }
+
   return criteria;
 }
 
@@ -485,6 +500,12 @@ export function serializeSellerCriteria(criteria: SellerCriteria): Record<string
   }
   if (criteria.contract_params) {
     out.contract_params = ensureContractParams(criteria.contract_params);
+  }
+  if (criteria.standard_documents && Object.keys(criteria.standard_documents).length > 0) {
+    out.standard_documents = criteria.standard_documents;
+  }
+  if (criteria.extra_custom_documents && criteria.extra_custom_documents.length > 0) {
+    out.extra_custom_documents = criteria.extra_custom_documents;
   }
   return out;
 }
@@ -518,4 +539,27 @@ export function typeImpactLabel(impact?: ProjectTypeImpact): string {
 
 export function newCustomRowId(): string {
   return `cr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+export function ensureExtraCustomDocuments(criteria: SellerCriteria): import('./standardDocuments').ExtraCustomDocument[] {
+  const stored = criteria.extra_custom_documents;
+  if (stored && stored.length > 0) return stored;
+
+  const migrated: import('./standardDocuments').ExtraCustomDocument[] = [];
+  const groups = criteria.groups ?? {};
+  for (const def of TYPE_CRITERIA_DEFS) {
+    const g = groups[def.key];
+    if (!g?.custom_rows?.length) continue;
+    for (const row of g.custom_rows) {
+      if (!row.label.trim()) continue;
+      migrated.push({
+        id: row.id,
+        label: row.label,
+        rp_value: row.rp_value === true,
+        op_value: row.op_value === true,
+        tech: def.typeImpact === 'KORP' ? 'KORP' : 'PROF',
+      });
+    }
+  }
+  return migrated;
 }

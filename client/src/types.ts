@@ -619,6 +619,8 @@ export type SellerCriteria = Partial<Record<string, boolean>> & {
     payment_deferral_days?: number;
     max_stage_duration_days?: number | null;
   };
+  standard_documents?: import('./standardDocuments').StandardDocumentsState;
+  extra_custom_documents?: import('./standardDocuments').ExtraCustomDocument[];
 };
 
 export interface RisksC51C57 {
@@ -792,6 +794,8 @@ export interface AssessmentScenarioSnapshot {
 export interface BriefingAssessment {
   criteria: SellerCriteria;
   criteria_defs: SellerCriteriaDef[];
+  standard_documents_catalog: import('./standardDocuments').StandardDocument[];
+  standard_document_exclusions: import('./standardDocuments').StandardDocumentExclusion[];
   auto_criteria_sp: Record<string, boolean>;
   project_type_id: number | null;
   project_type_manual: boolean;
@@ -882,8 +886,8 @@ export type ExportBlocks = Record<ExportBlockKey, boolean>;
 
 export const EXPORT_FILL_ORDER: ExportBlockKey[] = [
   'customer',
-  'solutions',
   'widgets',
+  'solutions',
   'fs',
   'assessment_org_volume',
   'assessment_criteria',

@@ -1,4 +1,5 @@
 import type { Solution } from '../types';
+import { compareCatalogCode } from './catalogCodeSort';
 
 export type SolutionDisplayUnit =
   | { kind: 'group'; parent: Solution; children: Solution[] }
@@ -26,12 +27,12 @@ export function buildSolutionDisplayUnits(items: Solution[]): SolutionDisplayUni
 
   const roots = items
     .filter(s => !s.parent_id || !byId.has(s.parent_id))
-    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id);
+    .sort(compareCatalogCode);
 
   for (const root of roots) {
     const children = items
       .filter(c => c.parent_id === root.id)
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id);
+      .sort(compareCatalogCode);
     if (children.length > 0) {
       units.push({ kind: 'group', parent: root, children });
       consumed.add(root.id);
@@ -46,9 +47,9 @@ export function buildSolutionDisplayUnits(items: Solution[]): SolutionDisplayUni
   }
 
   units.sort((a, b) => {
-    const orderA = a.kind === 'group' ? (a.parent.sort_order ?? 0) : (a.item.sort_order ?? 0);
-    const orderB = b.kind === 'group' ? (b.parent.sort_order ?? 0) : (b.item.sort_order ?? 0);
-    return orderA - orderB || (a.kind === 'group' ? a.parent.id : a.item.id) - (b.kind === 'group' ? b.parent.id : b.item.id);
+    const itemA = a.kind === 'group' ? a.parent : a.item;
+    const itemB = b.kind === 'group' ? b.parent : b.item;
+    return compareCatalogCode(itemA, itemB);
   });
 
   return units;

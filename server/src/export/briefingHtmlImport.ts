@@ -3,8 +3,10 @@ import { getBriefingFull } from '../routes/briefings';
 import { loadFsSelections } from '../briefingCalc';
 import { replaceBriefingFsCustomerItems, isCustomerFsGroupPrefix } from '../fsCustomerItems';
 import { parseQueuesJson, primaryQueue, enabledFromQueues } from '../fsQueues';
-import { parseSellerCriteria, serializeSellerCriteria, computeAdvanceDeferralOk, ensureContractParams, ensureCriteriaGroups } from '../sellerCriteria';
+import { parseSellerCriteria, serializeSellerCriteria, computeAdvanceDeferralOk, ensureContractParams, ensureExtraCustomDocuments } from '../sellerCriteria';
 import type { SellerCriteria } from '../sellerCriteria';
+import { listStandardDocuments } from '../standardDocumentsSeed';
+import { mergeStandardDocumentsIntoCriteria } from '../standardDocuments';
 import { EXPORT_VERSION, type ExportBlockKey, type ExportBlocks, type ImportOptions } from './briefingExportTypes';
 import { listBlocksInPayload } from './briefingHtmlExport';
 import { isPublishedFsCatalogItem } from '../fsCatalogNsi';
@@ -50,7 +52,8 @@ export interface ParsedBriefingExport {
     }[];
   };
   assessment_criteria?: {
-    groups: SellerCriteria['groups'];
+    standard_document_state?: SellerCriteria['standard_documents'];
+    extra_custom_documents?: SellerCriteria['extra_custom_documents'];
   };
   assessment_contract?: {
     contract_params: {
@@ -78,7 +81,12 @@ export interface ParsedBriefingExport {
     segment_id?: number | null;
   };
   solutions?: {
-    selected_ids: number[];
+    selections?: {
+      solution_id: number;
+      queue?: string;
+      queue_comment_json?: Record<string, string> | null;
+    }[];
+    selected_ids?: number[];
   };
   widgets?: {
     selections: { solution_id: number; widget_id: number }[];
@@ -314,11 +322,19 @@ function applyAssessmentCriteria(briefingId: number, data: NonNullable<ParsedBri
   } | undefined;
   if (!row) return;
   const criteria = parseSellerCriteria(JSON.parse(row.criteria_json || '{}'));
-  const importedGroups = ensureCriteriaGroups({ groups: data.groups ?? {} });
-  const next = {
+  const stdCatalog = listStandardDocuments();
+  let next = {
     ...criteria,
-    groups: { ...ensureCriteriaGroups(criteria), ...importedGroups },
+    standard_documents: {
+      ...(criteria.standard_documents ?? {}),
+      ...(data.standard_document_state ?? {}),
+    },
+    extra_custom_documents: data.extra_custom_documents ?? criteria.extra_custom_documents ?? [],
   } as SellerCriteria;
+  if (!next.extra_custom_documents?.length) {
+    next.extra_custom_documents = ensureExtraCustomDocuments(next);
+  }
+  next = mergeStandardDocumentsIntoCriteria(stdCatalog, next, null, false);
   db.prepare(`UPDATE briefing_assessment SET criteria_json=? WHERE briefing_id=?`).run(
     JSON.stringify(serializeSellerCriteria(next)),
     briefingId,
@@ -386,11 +402,22 @@ function applyProblems(briefingId: number, data: NonNullable<ParsedBriefingExpor
 }
 
 function applySolutions(briefingId: number, data: NonNullable<ParsedBriefingExport['solutions']>) {
+  const rows = data.selections?.length
+    ? data.selections
+    : (data.selected_ids ?? []).map(solution_id => ({ solution_id, queue: '1' }));
   const del = db.prepare(`DELETE FROM briefing_solution_sel WHERE briefing_id=?`);
-  const ins = db.prepare(`INSERT INTO briefing_solution_sel(briefing_id, solution_id, queue) VALUES (?,?,?)`);
+  const ins = db.prepare(`
+    INSERT INTO briefing_solution_sel(briefing_id, solution_id, queue, queue_comment_json, source_problem_sel_id)
+    VALUES (?,?,?,?,?)
+  `);
   const tx = db.transaction(() => {
     del.run(briefingId);
-    for (const sid of data.selected_ids ?? []) ins.run(briefingId, sid, '1');
+    for (const row of rows) {
+      const commentJson = row.queue_comment_json == null
+        ? null
+        : JSON.stringify(row.queue_comment_json);
+      ins.run(briefingId, row.solution_id, row.queue ?? '1', commentJson, null);
+    }
   });
   tx();
 }

@@ -192,11 +192,13 @@ export function CustomerWidgetsPanel({
   selected,
   solutionsByWidgetId,
   onRequestToggle,
+  onOpenWidgetCard,
 }: {
   catalog: Widget[];
   selected: BriefingCustomerWidgetSel[];
   solutionsByWidgetId: Map<number, Solution[]>;
   onRequestToggle: (widget: Widget, enable: boolean) => void;
+  onOpenWidgetCard?: (widgetId: number) => void;
 }) {
   const [search, setSearch] = useState('');
   const groupCollapse = useWidgetGroupCollapse();
@@ -255,6 +257,8 @@ export function CustomerWidgetsPanel({
                     <tr key={w.id} className={on ? 'bg-blue-50/30' : 'hover:bg-slate-50/80'}>
                       <td className="p-2 border-b align-middle">
                         <WidgetImageThumbnail
+                          widgetId={w.id}
+                          onOpenWidgetCard={onOpenWidgetCard}
                           imagePath={w.image_path}
                           name={w.name}
                           className="w-14 h-10 object-contain bg-white border border-slate-100 rounded cursor-pointer hover:border-slate-400"

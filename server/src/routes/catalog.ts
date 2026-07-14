@@ -877,6 +877,105 @@ catalogRouter.delete('/project-types/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Standard documents NSI ---
+
+const STD_DOC_COLS = `
+  id, field_key, label, excel_ref, group_key, sort_order, is_active,
+  tech, can_extra, std_case, std_bz, std_prof_mini, std_prof, std_korp
+`;
+
+catalogRouter.get('/standard-documents', (_req, res) => {
+  res.json(db.prepare(`
+    SELECT ${STD_DOC_COLS}
+    FROM standard_documents
+    ORDER BY sort_order, id
+  `).all());
+});
+
+catalogRouter.get('/standard-document-exclusions', (_req, res) => {
+  res.json(db.prepare(`
+    SELECT id, doc_id_a, doc_id_b FROM standard_document_exclusions ORDER BY id
+  `).all());
+});
+
+catalogRouter.post('/standard-documents', (req, res) => {
+  const body = req.body as Record<string, unknown>;
+  const tech = String(body.tech ?? 'CASE');
+  const typeImpact = tech === 'KORP' ? 'KORP' : 'PROF';
+  const r = db.prepare(`
+    INSERT INTO standard_documents(
+      field_key, label, type_impact, excel_ref, group_key, sort_order, is_active,
+      tech, can_extra, std_case, std_bz, std_prof_mini, std_prof, std_korp
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    body.field_key,
+    body.label,
+    typeImpact,
+    body.excel_ref ?? '',
+    body.group_key ?? 'non_standard_docs',
+    body.sort_order ?? 0,
+    body.is_active ?? 1,
+    tech,
+    body.can_extra ?? 0,
+    body.std_case ?? 0,
+    body.std_bz ?? 0,
+    body.std_prof_mini ?? 0,
+    body.std_prof ?? 0,
+    body.std_korp ?? 0,
+  );
+  res.json({ id: r.lastInsertRowid });
+});
+
+catalogRouter.patch('/standard-documents/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare(`SELECT * FROM standard_documents WHERE id=?`).get(id) as Record<string, unknown> | undefined;
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  const body = req.body as Record<string, unknown>;
+  db.prepare(`
+    UPDATE standard_documents SET
+      field_key=?, label=?, type_impact=?, excel_ref=?, group_key=?, sort_order=?, is_active=?,
+      tech=?, can_extra=?, std_case=?, std_bz=?, std_prof_mini=?, std_prof=?, std_korp=?
+    WHERE id=?
+  `).run(
+    body.field_key ?? existing.field_key,
+    body.label ?? existing.label,
+    body.tech === 'KORP' || (body.tech == null && existing.tech === 'KORP') ? 'KORP' : 'PROF',
+    body.excel_ref ?? existing.excel_ref,
+    body.group_key ?? existing.group_key,
+    body.sort_order ?? existing.sort_order,
+    body.is_active ?? existing.is_active,
+    body.tech ?? existing.tech,
+    body.can_extra ?? existing.can_extra,
+    body.std_case ?? existing.std_case,
+    body.std_bz ?? existing.std_bz,
+    body.std_prof_mini ?? existing.std_prof_mini,
+    body.std_prof ?? existing.std_prof,
+    body.std_korp ?? existing.std_korp,
+    id,
+  );
+  res.json({ ok: true });
+});
+
+catalogRouter.delete('/standard-documents/:id', (req, res) => {
+  db.prepare(`DELETE FROM standard_documents WHERE id=?`).run(req.params.id);
+  res.json({ ok: true });
+});
+
+catalogRouter.post('/standard-document-exclusions', (req, res) => {
+  const { doc_id_a, doc_id_b } = req.body as { doc_id_a: number; doc_id_b: number };
+  const lo = Math.min(doc_id_a, doc_id_b);
+  const hi = Math.max(doc_id_a, doc_id_b);
+  const r = db.prepare(`
+    INSERT OR IGNORE INTO standard_document_exclusions(doc_id_a, doc_id_b) VALUES (?,?)
+  `).run(lo, hi);
+  res.json({ id: r.lastInsertRowid });
+});
+
+catalogRouter.delete('/standard-document-exclusions/:id', (req, res) => {
+  db.prepare(`DELETE FROM standard_document_exclusions WHERE id=?`).run(req.params.id);
+  res.json({ ok: true });
+});
+
 catalogRouter.get('/project-types/:id/rates', (req, res) => {
   res.json(db.prepare(`
     SELECT * FROM project_type_rates WHERE project_type_id=? ORDER BY valid_from DESC

@@ -28,6 +28,8 @@ import {
 import { buildBriefingHtmlExport } from '../export/briefingHtmlExport';
 import { applyBriefingHtmlImport, previewBriefingHtmlImport } from '../export/briefingHtmlImport';
 import { mergeExportBlocks, type ExportBlocks, type ImportOptions } from '../export/briefingExportTypes';
+import { listStandardDocuments, listStandardDocumentExclusions } from '../standardDocumentsSeed';
+import { mergeStandardDocumentsIntoCriteria } from '../standardDocuments';
 
 function loadBriefingActivityTypeIds(briefingId: number): number[] {
   return (db.prepare(`
@@ -125,10 +127,28 @@ function loadAssessment(briefingId: number) {
     assessment_scenarios_json: string | null;
   };
 
-  const criteria = parseSellerCriteria(parseJson(row.criteria_json, {}));
+  const criteriaRaw = parseSellerCriteria(parseJson(row.criteria_json, {}));
+  const stdCatalog = listStandardDocuments();
+  let criteria = mergeStandardDocumentsIntoCriteria(stdCatalog, criteriaRaw, null, false);
   const storedOrg = parseJson<Partial<OrgVolumeData>>(row.org_volume_json, {});
 
-  const autoType = computeAutoProjectType(briefingId, criteria);
+  const autoTypeInitial = computeAutoProjectType(briefingId, criteria);
+  let effectiveTypeIdPre = row.project_type_manual && row.project_type_id
+    ? row.project_type_id
+    : autoTypeInitial?.id ?? row.project_type_id ?? autoTypeInitial?.id ?? null;
+  const typeRowPre = effectiveTypeIdPre
+    ? db.prepare(`SELECT code FROM project_types WHERE id=?`).get(effectiveTypeIdPre) as { code: string } | undefined
+    : undefined;
+  criteria = mergeStandardDocumentsIntoCriteria(stdCatalog, criteria, typeRowPre?.code ?? null, true);
+
+  const autoType = row.project_type_manual
+    ? computeAutoProjectType(briefingId, criteria)
+    : (() => {
+      const t = computeAutoProjectType(briefingId, criteria);
+      const code = t?.code ?? null;
+      criteria = mergeStandardDocumentsIntoCriteria(stdCatalog, criteria, code, true);
+      return computeAutoProjectType(briefingId, criteria);
+    })();
   const autoOrg = computeOrgVolume(briefingId, {});
 
   const effectiveTypeId = row.project_type_manual && row.project_type_id
@@ -250,7 +270,9 @@ function loadAssessment(briefingId: number) {
 
   return {
     criteria,
-    criteria_defs: SELLER_CRITERIA_DEFS,
+    criteria_defs: SELLER_CRITERIA_DEFS.filter(d => d.group === 'contract'),
+    standard_documents_catalog: stdCatalog,
+    standard_document_exclusions: listStandardDocumentExclusions(),
     auto_criteria_sp: computeCriteriaSpAuto(
       criteria.content_selections,
       criteria.groups,
