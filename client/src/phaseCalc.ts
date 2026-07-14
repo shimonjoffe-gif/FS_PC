@@ -11,6 +11,7 @@ import {
   typeCodeForTechnologyLabel,
   isCaseProjectType,
   getEffectiveQueueRate,
+  isQueueEvaluated,
 } from './assessmentCalc';
 import {
   effectivePhaseCalcParamsForQueue,
@@ -189,7 +190,7 @@ export function buildPhaseCalcInputs(
     c32,
     c63: assessment.headcount_coeffs.c63,
     c64: assessment.headcount_coeffs.c64,
-    e20: effectiveLoadTestScenarios(queueRow.active, queueRow.load_test_scenarios, c20),
+    e20: effectiveLoadTestScenarios(isQueueEvaluated(queueRow), queueRow.load_test_scenarios, c20),
     e7: effectiveE7RegionalRg(queueRow),
     c50: params.c50_business_trip_day_cost,
     c88: params.c88_ib_doc_amount,

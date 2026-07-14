@@ -745,14 +745,17 @@ ${getFsClientJs()}
     var titleClass=opts.variant==='parent'?'font-weight:600':'font-weight:500';
     var meta=[problem.segment_name,problem.maturity_name].filter(Boolean).join(' · ');
     var code=problem.catalog_code?'<span style="color:#94a3b8;font-family:monospace;font-size:10px;margin-right:4px">'+esc(problem.catalog_code)+'</span>':'';
+    var toggle=opts.variant==='parent'&&opts.groupParentId!=null
+      ?'<button type="button" class="fs-grp-toggle" title="'+(opts.groupOpen?'Свернуть группу':'Развернуть группу')+'" data-problem-grp-toggle="'+opts.groupParentId+'">'+(opts.groupOpen?'▼':'▶')+'</button>'
+      :'<span class="problem-toggle-spacer" aria-hidden="true"></span>';
     return '<tr class="'+(opts.variant==='parent'?'problem-group':'')+'">'+
       '<td style="padding-left:'+(8+indent)+'px">'+
-      (opts.variant==='parent'&&opts.groupParentId!=null?
-        '<button type="button" class="fs-grp-toggle" data-problem-grp-toggle="'+opts.groupParentId+'">'+(opts.groupOpen?'▼':'▶')+'</button> ':'')+
+      '<div class="problem-row-inner">'+toggle+
+      '<div class="problem-row-body">'+
       '<div style="'+titleClass+(unmatched?';font-style:italic;color:#64748b':'')+'">'+code+esc(problem.name)+'</div>'+
       (unmatched?'<div class="problem-hint">'+esc(mismatchHint)+'</div>':'')+
       (meta?'<div class="problem-meta">'+esc(meta)+'</div>':'')+
-      '</td>'+
+      '</div></div></td>'+
       '<td style="text-align:center;width:4rem">'+
       (isGroupParent?
         '<button type="button" class="yesno '+(isYes?'yes':'no')+(unmatched&&!isYes?' unmatched':'')+'" data-problem-group="'+groupMembers.map(function(m){return m.id;}).join(',')+'" data-val="'+(isYes?1:0)+'">'+(isYes?'Да':'Нет')+'</button>':
@@ -790,7 +793,7 @@ ${getFsClientJs()}
         rows+=renderProblemRow(parent,{variant:'parent',groupParentId:parent.id,groupChildren:children,groupOpen:groupOpen,indent:0},st,pr,selectedIds);
         if(groupOpen){
           children.forEach(function(child){
-            rows+=renderProblemRow(child,{variant:'child',indent:20},st,pr,selectedIds);
+            rows+=renderProblemRow(child,{variant:'child',indent:12},st,pr,selectedIds);
           });
         }
       } else {
@@ -852,7 +855,7 @@ ${getFsClientJs()}
         rows+=renderProblemRow(parent,{variant:'parent',groupParentId:parent.id,groupChildren:children,groupOpen:groupOpen,indent:0},st,pr,selectedIds);
         if(groupOpen){
           children.forEach(function(child){
-            rows+=renderProblemRow(child,{variant:'child',indent:20},st,pr,selectedIds);
+            rows+=renderProblemRow(child,{variant:'child',indent:12},st,pr,selectedIds);
           });
         }
       } else {
@@ -1634,16 +1637,19 @@ ${getFsClientJs()}
     var titleClass=opts.variant==='parent'?'font-weight:600':'font-weight:500';
     var groupCtx=opts.variant==='child'&&opts.groupParentId!=null&&opts.groupSiblings
       ?{parentId:opts.groupParentId,siblings:opts.groupSiblings}:null;
+    var toggle=opts.variant==='parent'&&opts.groupParentId!=null
+      ?'<button type="button" class="fs-grp-toggle" title="'+(collapsedGroups.has(opts.groupParentId)?'Развернуть группу':'Свернуть группу')+'" data-solution-grp-toggle="'+opts.groupParentId+'">'+
+        (collapsedGroups.has(opts.groupParentId)?'▶':'▼')+'</button>'
+      :'<span class="solution-toggle-spacer" aria-hidden="true"></span>';
     var row='<tr class="'+(opts.variant==='parent'?'solution-group':'')+'">'+
       '<td style="padding-left:'+(8+indent)+'px;min-width:220px">'+
-      (opts.variant==='parent'&&opts.groupParentId!=null?
-        '<button type="button" class="fs-grp-toggle" data-solution-grp-toggle="'+opts.groupParentId+'">'+
-        (collapsedGroups.has(opts.groupParentId)?'▶':'▼')+'</button> ':'')+
+      '<div class="solution-row-inner">'+toggle+
+      '<div class="solution-row-body">'+
       '<button type="button" class="solution-name-btn" data-solution-card="'+sol.id+'" style="'+titleClass+(unmatched?';font-style:italic;color:#64748b':'')+'">'+
       (sol.catalog_code?'<span class="solution-code">'+esc(sol.catalog_code)+'</span>':'')+
       esc(sol.name)+'</button>'+
       (unmatched?'<div class="solution-meta">не связано с выбранными проблематиками</div>':'')+
-      '</td><td class="solution-widgets-col">'+renderSolutionWidgetsCell(sol,isSelected)+'</td>';
+      '</div></div></td><td class="solution-widgets-col">'+renderSolutionWidgetsCell(sol,isSelected)+'</td>';
     FS_QUEUE_KEYS.forEach(function(q){
       var isYes=isGroupParent?groupQueues.byQueue[q]:sel?solutionSelectionQueue(sel)===String(q):false;
       var unmatchedBtn=!isSelected;
@@ -1700,7 +1706,7 @@ ${getFsClientJs()}
         if(!collapsedGroups.has(unit.parent.id)){
           unit.children.forEach(function(child){
             rows+=renderSolutionRow(child,{
-              variant:'child',indent:20,groupParentId:unit.parent.id,groupSiblings:unit.children
+              variant:'child',indent:12,groupParentId:unit.parent.id,groupSiblings:unit.children
             },collapsedGroups);
           });
         }

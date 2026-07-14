@@ -1,7 +1,7 @@
 import type {
   BriefingAssessment, BriefingFsSel, FsQueueKey, TeamProportions,
 } from './types';
-import { getActiveQueueKeys } from './assessmentCalc';
+import { getEvaluatedQueueKeys } from './assessmentCalc';
 import { computeAllPhaseBases } from './phaseCalc';
 import { computeAllPhaseProds } from './phaseCalcProd';
 
@@ -25,7 +25,7 @@ export function computeSummaryPhaseDoTable(
   accuracyPct: number,
   defaultTeam: TeamProportions,
 ): SummaryPhaseDoTable {
-  const activeQueues = getActiveQueueKeys(assessment.org_volume);
+  const activeQueues = getEvaluatedQueueKeys(assessment.org_volume);
   const defs = (assessment.phase_calc_defs ?? []).filter(d => d.is_phase);
   const otRisks = assessment.effective_risks_ot;
   const doRisks = assessment.effective_risks_do;

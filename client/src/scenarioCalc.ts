@@ -6,7 +6,7 @@ import { FS_QUEUE_KEYS, anyQueueEnabled, itemQueues } from './types';
 import type { FsQueuesMap } from './types';
 import type { AssessmentNsiCache } from './assessmentNsi';
 import {
-  getActiveQueueKeys, computeQueueSpFromFs, getEffectiveQueueRate,
+  getEvaluatedQueueKeys, computeQueueSpFromFs, getEffectiveQueueRate,
   getHourlyRateForTechnologyLabel, resolveQueueTechnology,
   normalizeQueueTechnologyLabel, QUEUE_TECHNOLOGY_OPTIONS,
 } from './assessmentCalc';
@@ -382,7 +382,7 @@ export function computeScenarioOtTotals(
   accuracyPct: number,
   defaultTeam: TeamProportions,
 ): ScenarioOtTotals {
-  const activeQueues = getActiveQueueKeys(assessment.org_volume);
+  const activeQueues = getEvaluatedQueueKeys(assessment.org_volume);
   const otRisks = assessment.effective_risks_ot;
   const doRisks = assessment.effective_risks_do;
   const byPhase: Record<string, number> = {};

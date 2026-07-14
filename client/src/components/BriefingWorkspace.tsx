@@ -24,6 +24,7 @@ import {
 } from '../api';
 import {
   applyAssessmentPatch, recomputeAssessmentDerived, computeAutoUnifiedRate, isUnifiedRateAutoMode,
+  getEvaluatedQueueKeys, isQueueEvaluated,
   computeQueueSpFromFs,
   catalogSpForItem,
   catalogNmdLabel,
@@ -2447,6 +2448,15 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   const [assessmentNsi, setAssessmentNsi] = useState<AssessmentNsiCache | null>(null);
   const [assessmentRecalcFlash, setAssessmentRecalcFlash] = useState(0);
   const [phaseQueue, setPhaseQueue] = useState<FsQueueKey>('1');
+  const activePhaseQueues = useMemo(
+    () => (data?.assessment ? getEvaluatedQueueKeys(data.assessment.org_volume) : []),
+    [data?.assessment?.org_volume],
+  );
+  useEffect(() => {
+    if (activePhaseQueues.length > 0 && !activePhaseQueues.includes(phaseQueue)) {
+      setPhaseQueue(activePhaseQueues[0]);
+    }
+  }, [activePhaseQueues, phaseQueue]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [fsTableVisitKey, setFsTableVisitKey] = useState(0);
   const [catalogAddOpen, setCatalogAddOpen] = useState(false);
@@ -3609,6 +3619,15 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     return { ...assessment.org_volume.queues, [q]: nextRow };
   }
 
+  function toggleQueueEvaluated(q: FsQueueKey, evaluated: boolean) {
+    if (!data?.assessment) return;
+    const current = data.assessment.org_volume.queues[q];
+    updateOrgSpQueues({
+      ...data.assessment.org_volume.queues,
+      [q]: { ...current, evaluated },
+    });
+  }
+
   function setOrgSpField(q: FsQueueKey, field: 'functional_sp' | 'integrations_sp' | 'nmd_sp' | 'load_test_scenarios', value: string | number) {
     updateOrgSpQueues(patchOrgSpRow(q, field, value));
   }
@@ -4114,6 +4133,8 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
           <div className="w-full space-y-4">
             {data.assessment && (() => {
               const fsSp = computeQueueSpFromFs(data.fs_items ?? []);
+              const activeQueues = getEvaluatedQueueKeys(data.assessment!.org_volume);
+              const unifiedRateActive = activeQueues.length > 0 ? activeQueues : undefined;
               const unifiedRateExtra = (
                 <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                   <input
@@ -4122,7 +4143,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                     onChange={e => {
                       const enabled = e.target.checked;
                       if (enabled) {
-                        const maxRate = computeAutoUnifiedRate(data.assessment!.queue_calcs);
+                        const maxRate = computeAutoUnifiedRate(data.assessment!.queue_calcs, unifiedRateActive);
                         updateAssessment({
                           unified_rate_enabled: true,
                           unified_rate: maxRate,
@@ -4154,7 +4175,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                           }`}
                           value={
                             isUnifiedRateAutoMode(data.assessment!)
-                              ? computeAutoUnifiedRate(data.assessment!.queue_calcs)
+                              ? computeAutoUnifiedRate(data.assessment!.queue_calcs, unifiedRateActive)
                               : data.assessment!.unified_rate
                           }
                           onChange={e => {
@@ -4170,7 +4191,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                           type="button"
                           className="text-xs text-blue-600 hover:underline pb-2"
                           onClick={() => {
-                            const maxRate = computeAutoUnifiedRate(data.assessment!.queue_calcs);
+                            const maxRate = computeAutoUnifiedRate(data.assessment!.queue_calcs, unifiedRateActive);
                             updateAssessment({
                               unified_rate: maxRate,
                               unified_rate_manual: false,
@@ -4186,7 +4207,8 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                     <thead>
                       <tr className="bg-slate-50 text-slate-500">
                         <th className="p-2 border text-left">Очередь</th>
-                        <th className="p-2 border text-center w-16">Активна</th>
+                        <th className="p-2 border text-center w-16" title="Есть пункты ФС в этой очереди">ФС</th>
+                        <th className="p-2 border text-center w-20" title="Включить очередь в оценку РП">Оценивать</th>
                         <th className="p-2 border text-right w-24" title="Функциональный объём — без интеграций и НМД">SP</th>
                         <th className="p-2 border text-right w-28">SP Интегр.</th>
                         <th className="p-2 border text-right w-24">SP НМД</th>
@@ -4198,7 +4220,8 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                       </tr>
                       <tr className="bg-slate-50 text-slate-400 text-[10px]">
                         <th className="p-1 border" />
-                        <th className="p-1 border text-center">Яч.</th>
+                        <th className="p-1 border text-center">ФС</th>
+                        <th className="p-1 border text-center">оценка</th>
                         <th className="p-1 border text-center">C20</th>
                         <th className="p-1 border text-center">C21</th>
                         <th className="p-1 border text-center">D20</th>
@@ -4220,17 +4243,29 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                         const nmdPlaceholder = fsSp.nmd_sp_auto[q] > 0
                           ? String(fsSp.nmd_sp_auto[q]) : '';
                         const c20Effective = effectiveFunctionalSp(q, row.functional_sp, fsSp.functional_sp[q]);
-                        const loadTestPlaceholder = String(autoLoadTestScenarios(row.active, c20Effective));
+                        const evaluated = isQueueEvaluated(row);
+                        const loadTestPlaceholder = String(autoLoadTestScenarios(evaluated, c20Effective));
                         return (
-                          <tr key={q}>
+                          <tr key={q} className={evaluated ? undefined : 'text-slate-400 bg-slate-50/60'}>
                             <td className="p-2 border font-medium">{queueLabel(queueLabels, q)}</td>
                             <td className="p-2 border text-center">
                               <input type="checkbox" checked={row.active} disabled
-                                className="opacity-60" title="Из ФС (активные очереди)" />
+                                className="opacity-60" title="Из ФС (есть пункты в очереди)" />
+                            </td>
+                            <td className="p-2 border text-center">
+                              <input
+                                type="checkbox"
+                                checked={evaluated}
+                                title={row.active
+                                  ? 'Оценка очереди'
+                                  : 'Можно включить без ФС, напр. тиражирование'}
+                                onChange={e => toggleQueueEvaluated(q, e.target.checked)}
+                              />
                             </td>
                             <td className="p-2 border text-right" title="SP функционала (C20)">
                               <input type="number" min="0" step="1"
-                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
+                                disabled={!evaluated}
+                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums disabled:opacity-50 disabled:cursor-not-allowed"
                                 value={isQueueSpUnset(row.functional_sp) ? '' : row.functional_sp}
                                 placeholder={functionalPlaceholder}
                                 onChange={e => setOrgSpField(q, 'functional_sp', e.target.value)}
@@ -4239,7 +4274,8 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                             </td>
                             <td className="p-2 border text-right" title="SP интеграций (C21)">
                               <input type="number" min="0" step="1"
-                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
+                                disabled={!evaluated}
+                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums disabled:opacity-50 disabled:cursor-not-allowed"
                                 value={isQueueSpUnset(row.integrations_sp) ? '' : row.integrations_sp}
                                 placeholder={integrationsPlaceholder}
                                 onChange={e => setOrgSpField(q, 'integrations_sp', e.target.value)}
@@ -4248,7 +4284,8 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                             </td>
                             <td className="p-2 border text-right" title="SP НМД (D20)">
                               <input type="number" min="0" step="1"
-                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
+                                disabled={!evaluated}
+                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums disabled:opacity-50 disabled:cursor-not-allowed"
                                 value={isQueueSpUnset(row.nmd_sp) ? '' : row.nmd_sp}
                                 placeholder={nmdPlaceholder}
                                 onChange={e => setOrgSpField(q, 'nmd_sp', e.target.value)}
@@ -4257,14 +4294,15 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                             </td>
                             <td className="p-2 border text-right" title="Сценариев нагрузочного тестирования (E20)">
                               <input type="number" min="0" step="1"
-                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums"
+                                disabled={!evaluated}
+                                className="w-full text-right border rounded px-1 py-0.5 tabular-nums disabled:opacity-50 disabled:cursor-not-allowed"
                                 value={isQueueSpUnset(row.load_test_scenarios) ? '' : row.load_test_scenarios}
                                 placeholder={loadTestPlaceholder}
                                 onChange={e => setOrgSpField(q, 'load_test_scenarios', e.target.value)}
                                 onBlur={e => commitOrgSpField(q, 'load_test_scenarios', e.target.value)}
                                 {...numericInputHandlers} />
                             </td>
-                            {qc ? (
+                            {qc && evaluated ? (
                               <>
                                 <td className="p-2 border">
                                   <select
@@ -4356,9 +4394,9 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                     </tbody>
                     <tfoot>
                       <tr>
-                        <td colSpan={10} className="p-2 border text-[10px] text-slate-400">
+                        <td colSpan={11} className="p-2 border text-[10px] text-slate-400">
                           C20/C21/D20 заполняются автоматически из ФС; C21 — только раздел 11 («ФС интеграции»). Пустое поле = авто.
-                          Placeholder — подсказка из ФС или тестовое значение.
+                          «Оценивать» — включение очереди в расчёт (можно без ФС, напр. тиражирование).
                         </td>
                       </tr>
                     </tfoot>
@@ -4375,6 +4413,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                     value={phaseQueue}
                     onChange={setPhaseQueue}
                     labels={queueLabels}
+                    queues={activePhaseQueues}
                   />
                 )}
               >
@@ -4406,6 +4445,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                 accuracyPct={params.accuracy ?? 0}
                 onAccuracyChange={v => saveParams({ accuracy: v })}
                 queueLabels={queueLabels}
+                activeQueues={activePhaseQueues}
               />
               </CollapsibleSection>
             )}
@@ -4435,6 +4475,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                 accuracyPct={params.accuracy ?? 0}
                 defaultTeam={team}
                 queueLabels={queueLabels}
+                activeQueues={activePhaseQueues}
                 onChange={patch => updateAssessment({ phase_calc: patch })}
                 onRisksChange={patch => handleAssessmentChange(patch)}
               />

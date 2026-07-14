@@ -1029,22 +1029,25 @@ export function computeOrgVolume(
       if (queues[q] === 1) activeQueues.add(q);
     }
   }
-  if (activeQueues.size === 0) activeQueues.add('1');
-
   const fsSp = computeQueueSpFromFs(fsItems);
   const queues = {} as Record<FsQueueKey, QueueOrgVolume>;
   for (const q of FS_QUEUE_KEYS) {
-    const active = activeQueues.has(q);
+    const hasFs = activeQueues.has(q);
     const storedQ = stored.queues?.[q];
-    const base = defaultQueueVolume(hc, active);
+    const evaluated = storedQ?.evaluated !== undefined ? storedQ.evaluated : hasFs;
+    const base = defaultQueueVolume(hc, hasFs);
     const withFsSp: QueueOrgVolume = {
       ...base,
       functional_sp: fsSp.functional_sp[q],
       integrations_sp: fsSp.integrations_sp_auto[q],
       nmd_sp: fsSp.nmd_sp_auto[q],
-      load_test_scenarios: autoLoadTestScenarios(active, fsSp.functional_sp[q]),
+      load_test_scenarios: autoLoadTestScenarios(evaluated, fsSp.functional_sp[q]),
+      active: hasFs,
+      evaluated,
     };
-    queues[q] = storedQ ? { ...withFsSp, ...storedQ, active } : withFsSp;
+    queues[q] = storedQ
+      ? { ...withFsSp, ...storedQ, active: hasFs, evaluated: storedQ.evaluated !== undefined ? storedQ.evaluated : evaluated }
+      : withFsSp;
   }
 
   const maxUsers = Math.max(hc, ...FS_QUEUE_KEYS.map(q => queues[q].users));
@@ -1526,8 +1529,23 @@ export function getActiveQueueKeys(orgVolume: OrgVolumeData): FsQueueKey[] {
   return FS_QUEUE_KEYS.filter(q => orgVolume.queues[q]?.active);
 }
 
-export function computeAutoUnifiedRate(queueCalcs: QueueRateRow[]): number {
-  return computeMaxQueueRate(queueCalcs);
+/** Очередь участвует в оценке РП (явный флаг; без ФС можно включить вручную, напр. тиражирование). */
+export function isQueueEvaluated(row: QueueOrgVolume | undefined): boolean {
+  if (!row) return false;
+  if (row.evaluated !== undefined) return row.evaluated;
+  return row.active;
+}
+
+export function getEvaluatedQueueKeys(orgVolume: OrgVolumeData | null | undefined): FsQueueKey[] {
+  if (!orgVolume?.queues) return [];
+  return FS_QUEUE_KEYS.filter(q => isQueueEvaluated(orgVolume.queues[q]));
+}
+
+export function computeAutoUnifiedRate(
+  queueCalcs: QueueRateRow[],
+  activeQueues?: Iterable<FsQueueKey>,
+): number {
+  return computeMaxQueueRate(queueCalcs, activeQueues);
 }
 
 export function getEffectiveQueueRate(
@@ -1889,6 +1907,8 @@ export function recomputeAssessmentDerived(
   const groups = ensureCriteriaGroups(criteria);
   const autoCriteriaSp = computeCriteriaSpAuto(criteria.content_selections, groups);
 
+  const activeQueueKeys = getEvaluatedQueueKeys(effectiveOrg);
+
   const queue_calcs = FS_QUEUE_KEYS.map(q => {
     const qc = assessment.queue_calcs.find(r => r.queue === q) ?? {
       queue: q,
@@ -1899,6 +1919,9 @@ export function recomputeAssessmentDerived(
       nsi_rate: 5000,
       rate_manual: 0,
     };
+    if (!activeQueueKeys.includes(q)) {
+      return { ...qc, queue: q };
+    }
     const highest = highestFuncTypeCodeInQueue(context.fs_items, q);
     const autoTech = computeAutoTechnologyForQueue(highest, typeCode ?? autoType?.code ?? 'CASE');
     const technology = normalizeQueueTechnologyLabel(resolveQueueTechnology(
@@ -1923,7 +1946,7 @@ export function recomputeAssessmentDerived(
   const unifiedManual = isTruthyDbFlag(assessment.unified_rate_manual);
   let unified_rate = assessment.unified_rate ?? 0;
   if (unifiedEnabled && !unifiedManual) {
-    unified_rate = computeAutoUnifiedRate(queue_calcs);
+    unified_rate = computeAutoUnifiedRate(queue_calcs, activeQueueKeys);
   }
 
   return {

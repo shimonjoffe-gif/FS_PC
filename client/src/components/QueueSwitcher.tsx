@@ -7,16 +7,25 @@ type Props = {
   className?: string;
   showLabel?: boolean;
   labels?: QueueLabelsMap;
+  /** Очереди для переключателя; по умолчанию — все. */
+  queues?: readonly FsQueueKey[];
 };
 
-export default function QueueSwitcher({ value, onChange, className = '', showLabel = false, labels }: Props) {
+export default function QueueSwitcher({
+  value,
+  onChange,
+  className = '',
+  showLabel = false,
+  labels,
+  queues = FS_QUEUE_KEYS as readonly FsQueueKey[],
+}: Props) {
   return (
     <div className={`flex items-center gap-2 ${className}`}>
       {showLabel && (
         <span className="text-xs font-medium text-slate-600">Очередь</span>
       )}
       <div className="flex gap-1">
-      {FS_QUEUE_KEYS.map(q => (
+      {queues.map(q => (
         <button
           key={q}
           type="button"

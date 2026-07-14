@@ -7,7 +7,7 @@ import { FS_QUEUE_KEYS, FS_QUEUE_LABELS } from '../types';
 import type { AssessmentNsiCache } from '../assessmentNsi';
 import { createAssessmentSnapshot, deleteAssessmentSnapshot } from '../api';
 import {
-  QUEUE_TECHNOLOGY_OPTIONS, getActiveQueueKeys,
+  QUEUE_TECHNOLOGY_OPTIONS, getEvaluatedQueueKeys,
 } from '../assessmentCalc';
 import {
   baseEnabledFsItems,
@@ -84,7 +84,7 @@ export default function AssessmentScenariosTab({
   }, [assessment, fsItems, selected, accuracyPct, defaultTeam, nsi]);
 
   const activeQueues = useMemo(
-    () => getActiveQueueKeys(assessment.org_volume),
+    () => getEvaluatedQueueKeys(assessment.org_volume),
     [assessment.org_volume],
   );
 

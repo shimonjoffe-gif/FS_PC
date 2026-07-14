@@ -360,22 +360,25 @@ export function computeOrgVolume(briefingId: number, stored: Partial<OrgVolumeDa
       if (queues[q] === 1) activeQueues.add(q);
     }
   }
-  if (activeQueues.size === 0) activeQueues.add('1');
-
   const fsSp = computeQueueSpFromFs(fsItems);
   const queues = {} as Record<FsQueueKey, QueueOrgVolume>;
   for (const q of FS_QUEUE_KEYS) {
-    const active = activeQueues.has(q);
+    const hasFs = activeQueues.has(q);
     const storedQ = stored.queues?.[q];
-    const base = defaultQueueVolume(headcount, active);
+    const evaluated = storedQ?.evaluated !== undefined ? storedQ.evaluated : hasFs;
+    const base = defaultQueueVolume(headcount, hasFs);
     const withFsSp: QueueOrgVolume = {
       ...base,
       functional_sp: fsSp.functional_sp[q],
       integrations_sp: fsSp.integrations_sp_auto[q],
       nmd_sp: fsSp.nmd_sp_auto[q],
-      load_test_scenarios: autoLoadTestScenarios(active, fsSp.functional_sp[q]),
+      load_test_scenarios: autoLoadTestScenarios(evaluated, fsSp.functional_sp[q]),
+      active: hasFs,
+      evaluated,
     };
-    queues[q] = storedQ ? { ...withFsSp, ...storedQ, active } : withFsSp;
+    queues[q] = storedQ
+      ? { ...withFsSp, ...storedQ, active: hasFs, evaluated: storedQ.evaluated !== undefined ? storedQ.evaluated : evaluated }
+      : withFsSp;
   }
 
   const maxUsers = Math.max(headcount, ...FS_QUEUE_KEYS.map(q => queues[q].users));

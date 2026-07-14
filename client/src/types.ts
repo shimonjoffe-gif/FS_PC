@@ -666,7 +666,10 @@ export interface QueueOrgVolume {
   /** Excel E20 — сценариев нагрузочного тестирования */
   load_test_scenarios: number;
   region: string;
+  /** Есть пункты ФС в этой очереди (авто). */
   active: boolean;
+  /** Включена ли очередь в оценку РП (ручной выбор; по умолчанию = active). */
+  evaluated?: boolean;
   /** Географическая детализация пользователей; итоги очереди независимы */
   breakdown?: OrgVolumeBreakdownRow[];
 }

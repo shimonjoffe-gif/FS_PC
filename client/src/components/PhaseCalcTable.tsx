@@ -84,6 +84,8 @@ type Props = {
   activeQueue?: FsQueueKey;
   onActiveQueueChange?: (q: FsQueueKey) => void;
   queueLabels?: QueueLabelsMap;
+  /** Очереди с пунктами ФС; переключатель показывает только их. */
+  activeQueues?: FsQueueKey[];
 };
 
 function formatSum(n: number | null): string {
@@ -450,6 +452,7 @@ export default function PhaseCalcTable({
   activeQueue: activeQueueProp,
   onActiveQueueChange,
   queueLabels,
+  activeQueues,
 }: Props) {
   const [internalQueue, setInternalQueue] = useState<FsQueueKey>('1');
   const activeQueue = activeQueueProp ?? internalQueue;
@@ -613,9 +616,23 @@ export default function PhaseCalcTable({
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="text-xs text-slate-500">Расчёт фаз по очереди</div>
-        <QueueSwitcher showLabel value={activeQueue} onChange={setActiveQueue} labels={queueLabels} />
+        {activeQueues && activeQueues.length > 0 ? (
+          <QueueSwitcher
+            showLabel
+            value={activeQueue}
+            onChange={setActiveQueue}
+            labels={queueLabels}
+            queues={activeQueues}
+          />
+        ) : null}
       </div>
 
+      {activeQueues && activeQueues.length === 0 ? (
+        <p className="text-sm text-slate-400 py-4">
+          Нет очередей с включённой оценкой — отметьте «Оценивать» в таблице SP выше.
+        </p>
+      ) : (
+      <>
       <div className="overflow-x-auto border rounded">
         <table className="w-full text-xs border-collapse min-w-[1200px]">
           <thead>
@@ -894,6 +911,8 @@ export default function PhaseCalcTable({
           result={explainResult}
           onClose={() => setExplainLineId(null)}
         />
+      )}
+      </>
       )}
     </div>
   );

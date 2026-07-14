@@ -91,6 +91,7 @@ type Props = {
   onAccuracyChange: (value: number) => void;
   bare?: boolean;
   queueLabels?: QueueLabelsMap;
+  activeQueues?: FsQueueKey[];
 };
 
 function ReadonlyCell({ value, title }: { value: number | string; title?: string }) {
@@ -232,6 +233,7 @@ export default function PhaseCalcParamsPanel({
   onAccuracyChange,
   bare = false,
   queueLabels,
+  activeQueues,
 }: Props) {
   const mergedParams = useMemo(
     () => effectivePhaseCalcParamsForQueue(queue, params),
@@ -394,9 +396,21 @@ export default function PhaseCalcParamsPanel({
       {!bare && (
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <h3 className="text-sm font-semibold text-slate-700">Параметры расчёта фаз</h3>
-          <QueueSwitcher showLabel value={queue} onChange={onQueueChange} labels={queueLabels} />
+          <QueueSwitcher
+            showLabel
+            value={queue}
+            onChange={onQueueChange}
+            labels={queueLabels}
+            queues={activeQueues}
+          />
         </div>
       )}
+      {activeQueues && activeQueues.length === 0 ? (
+        <p className="text-sm text-slate-400 py-4">
+          Нет очередей с включённой оценкой — отметьте «Оценивать» в таблице SP выше.
+        </p>
+      ) : (
+      <>
       <p className="text-[10px] text-slate-400">
           <span className={`inline-block w-2 h-2 rounded-sm border ${OVERRIDE_CLASS} align-middle mr-1`} />
           ≠ авто
@@ -625,7 +639,13 @@ export default function PhaseCalcParamsPanel({
       <div>
         <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
           <div className="text-xs font-medium text-slate-600">Обучение</div>
-          <QueueSwitcher showLabel value={queue} onChange={onQueueChange} labels={queueLabels} />
+          <QueueSwitcher
+            showLabel
+            value={queue}
+            onChange={onQueueChange}
+            labels={queueLabels}
+            queues={activeQueues}
+          />
         </div>
         <p className="text-[10px] text-slate-400 mb-1">
           Строка 46 (C46) — в блоке «Параметры подготовки БД». Вид обучения: авто по E (стр. 47/49 — ≤100, стр. 48 — ≤300).
@@ -882,6 +902,8 @@ export default function PhaseCalcParamsPanel({
           </table>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }
