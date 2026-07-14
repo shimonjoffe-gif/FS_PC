@@ -7,6 +7,7 @@ import { parseSellerCriteria, serializeSellerCriteria, computeAdvanceDeferralOk,
 import type { SellerCriteria } from '../sellerCriteria';
 import { EXPORT_VERSION, type ExportBlockKey, type ExportBlocks, type ImportOptions } from './briefingExportTypes';
 import { listBlocksInPayload } from './briefingHtmlExport';
+import { isPublishedFsCatalogItem } from '../fsCatalogNsi';
 
 export interface ParsedBriefingExport {
   version: number;
@@ -22,6 +23,7 @@ export interface ParsedBriefingExport {
     headcount?: number | null;
     headcount_category?: string;
     org_volume?: Record<string, unknown>;
+    activity_type_ids?: number[];
   };
   fs?: {
     items: {
@@ -39,7 +41,6 @@ export interface ParsedBriefingExport {
         inactive?: boolean;
         sort_order?: number;
       }[];
-      inactive_for_customer?: boolean;
       is_customer_item?: boolean;
       customer_item_id?: number | null;
       group_prefix?: string | null;
@@ -73,6 +74,8 @@ export interface ParsedBriefingExport {
       custom_text: string | null;
       linked_problem_id?: number | null;
     }[];
+    activity_type_ids?: number[];
+    segment_id?: number | null;
   };
   solutions?: {
     selected_ids: number[];
@@ -112,18 +115,47 @@ function categoryToHeadcount(cat: string): number {
   return map[cat] ?? 200;
 }
 
+function saveBriefingActivityTypeIds(briefingId: number, activityTypeIds: number[]) {
+  const unique = [...new Set(activityTypeIds.filter(id => Number.isFinite(id)))];
+  db.prepare(`DELETE FROM briefing_activity_type_sel WHERE briefing_id=?`).run(briefingId);
+  const ins = db.prepare(`INSERT INTO briefing_activity_type_sel(briefing_id, activity_type_id) VALUES (?,?)`);
+  for (const id of unique) ins.run(briefingId, id);
+
+  const firstIndustry = unique.length > 0
+    ? db.prepare(`
+      SELECT i.id FROM activity_types at
+      JOIN industries i ON i.name = at.name
+      WHERE at.id=?
+      LIMIT 1
+    `).get(unique[0]) as { id: number } | undefined
+    : undefined;
+  db.prepare(`UPDATE briefings SET industry_id=? WHERE id=?`).run(firstIndustry?.id ?? null, briefingId);
+
+  db.prepare(`DELETE FROM briefing_industry_sel WHERE briefing_id=?`).run(briefingId);
+  const insIndustry = db.prepare(`INSERT INTO briefing_industry_sel(briefing_id, industry_id) VALUES (?,?)`);
+  for (const atId of unique) {
+    const row = db.prepare(`
+      SELECT i.id FROM activity_types at
+      JOIN industries i ON i.name = at.name
+      WHERE at.id=?
+    `).get(atId) as { id: number } | undefined;
+    if (row) insIndustry.run(briefingId, row.id);
+  }
+}
+
 function applyCustomer(briefingId: number, customer: NonNullable<ParsedBriefingExport['customer']>) {
   const headcount = customer.headcount_category
     ? categoryToHeadcount(customer.headcount_category)
     : (customer.headcount ?? null);
+  const industryId = customer.industry_id ?? null;
   db.prepare(`
     UPDATE briefings SET
-      name=?, industry_id=?, segment_id=?, scenario=?, headcount=?,
+      name=?, industry_id=COALESCE(?, industry_id), segment_id=?, scenario=?, headcount=?,
       updated_at=CURRENT_TIMESTAMP
     WHERE id=?
   `).run(
     customer.name?.trim() || 'Новая предоценка',
-    customer.industry_id,
+    industryId,
     customer.segment_id,
     customer.scenario,
     headcount,
@@ -137,6 +169,9 @@ function applyCustomer(briefingId: number, customer: NonNullable<ParsedBriefingE
   if (customer.org_volume) {
     applyOrgVolume(briefingId, { org_volume: customer.org_volume });
   }
+  if (customer.activity_type_ids !== undefined) {
+    saveBriefingActivityTypeIds(briefingId, customer.activity_type_ids);
+  }
 }
 
 function applyFs(briefingId: number, fsData: NonNullable<ParsedBriefingExport['fs']>) {
@@ -148,6 +183,7 @@ function applyFs(briefingId: number, fsData: NonNullable<ParsedBriefingExport['f
     .map(item => {
       const imp = importById.get(item.fs_item_id);
       if (!imp) return null;
+      if (!isPublishedFsCatalogItem(item.fs_item_id)) return null;
       const queues = parseQueuesJson(imp.queues_json as import('../fsQueues').FsQueuesMap);
       return {
         fs_item_id: item.fs_item_id,
@@ -161,7 +197,6 @@ function applyFs(briefingId: number, fsData: NonNullable<ParsedBriefingExport['f
         queue_comment_json: imp.queue_comment_json ?? null,
         customer_name: imp.customer_name?.trim() || null,
         customer_description: imp.customer_description?.trim() || null,
-        inactive_for_customer: imp.inactive_for_customer,
         detail_lines: imp.detail_lines?.map((dl, i) => ({
           catalog_detail_id: dl.catalog_detail_id ?? null,
           source: dl.source === 'customer' ? 'customer' as const : 'nsi' as const,
@@ -178,7 +213,6 @@ function applyFs(briefingId: number, fsData: NonNullable<ParsedBriefingExport['f
       source: string; story_points: number | null;
       queue_sp_json: unknown; queue_nmd_json: unknown; queue_comment_json: unknown;
       customer_name: string | null; customer_description: string | null;
-      inactive_for_customer?: boolean;
       detail_lines?: { catalog_detail_id: number | null; source: 'nsi' | 'customer'; name: string; description: string | null; inactive: boolean; sort_order: number }[];
     }[];
 
@@ -186,21 +220,19 @@ function applyFs(briefingId: number, fsData: NonNullable<ParsedBriefingExport['f
     INSERT INTO briefing_fs_sel(
       briefing_id, fs_item_id, enabled, queue, queues_json, source, story_points,
       queue_sp_json, queue_nmd_json, queue_comment_json,
-      customer_name, customer_description, inactive_for_customer, detail_lines_json
+      customer_name, customer_description, detail_lines_json
     )
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(briefing_id, fs_item_id) DO UPDATE SET
       enabled=excluded.enabled, queue=excluded.queue, queues_json=excluded.queues_json,
       queue_nmd_json=excluded.queue_nmd_json, queue_comment_json=excluded.queue_comment_json,
       customer_name=excluded.customer_name,
       customer_description=excluded.customer_description,
-      inactive_for_customer=excluded.inactive_for_customer,
       detail_lines_json=excluded.detail_lines_json
   `);
 
   const tx = db.transaction(() => {
     for (const item of items) {
-      const inactive = item.inactive_for_customer ? 1 : 0;
       const detailLinesJson = item.detail_lines == null
         ? null
         : JSON.stringify(item.detail_lines);
@@ -225,7 +257,7 @@ function applyFs(briefingId: number, fsData: NonNullable<ParsedBriefingExport['f
         JSON.stringify(item.queues_json),
         item.source, item.story_points,
         queueSpJson, queueNmdJson, queueCommentJson,
-        item.customer_name, item.customer_description, inactive,
+        item.customer_name, item.customer_description,
         detailLinesJson,
       );
     }
@@ -263,7 +295,6 @@ function applyFs(briefingId: number, fsData: NonNullable<ParsedBriefingExport['f
             nsi_description: null,
             sort_order: dl.sort_order ?? idx,
           })),
-          inactive_for_customer: imp.inactive_for_customer,
           sort_order: i,
         };
       })
@@ -329,6 +360,12 @@ function applyHeadcount(briefingId: number, data: NonNullable<ParsedBriefingExpo
 }
 
 function applyProblems(briefingId: number, data: NonNullable<ParsedBriefingExport['problems']>) {
+  if (data.activity_type_ids !== undefined) {
+    saveBriefingActivityTypeIds(briefingId, data.activity_type_ids);
+  }
+  if (data.segment_id !== undefined) {
+    db.prepare(`UPDATE briefings SET segment_id=? WHERE id=?`).run(data.segment_id, briefingId);
+  }
   const del = db.prepare(`DELETE FROM briefing_problem_sel WHERE briefing_id=?`);
   const ins = db.prepare(`
     INSERT INTO briefing_problem_sel(briefing_id, problem_id, custom_text, linked_problem_id)
@@ -399,6 +436,7 @@ export function applyBriefingHtmlImport(
   if (!full) throw new Error('Предоценка не найдена');
 
   const blocks = blocksToApply(payload, options);
+  let problemsApplied = false;
 
   for (const block of blocks) {
     try {
@@ -407,6 +445,10 @@ export function applyBriefingHtmlImport(
           if (payload.customer) {
             applyCustomer(briefingId, payload.customer);
             applied.push('customer');
+            if (payload.problems) {
+              applyProblems(briefingId, payload.problems);
+              problemsApplied = true;
+            }
           }
           break;
         case 'fs':
@@ -440,7 +482,7 @@ export function applyBriefingHtmlImport(
           }
           break;
         case 'problems':
-          if (payload.problems) {
+          if (payload.problems && !problemsApplied) {
             applyProblems(briefingId, payload.problems);
             applied.push('problems');
           }

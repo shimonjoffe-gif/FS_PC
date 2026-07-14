@@ -3,6 +3,8 @@ import type { ExportBlockKey, ExportBlocks } from '../types';
 import {
   DEFAULT_EXPORT_BLOCKS,
   EXPORT_BLOCK_LABELS,
+  EXPORT_FILL_ORDER,
+  normalizeExportBlocksForFill,
 } from '../types';
 import {
   exportBriefingHtml,
@@ -12,8 +14,13 @@ import {
 
 type Mode = 'export' | 'import';
 
-const BLOCK_KEYS = (Object.keys(DEFAULT_EXPORT_BLOCKS) as ExportBlockKey[])
-  .filter(k => k !== 'assessment_headcount' && k !== 'assessment_org_volume');
+const BLOCK_KEYS = EXPORT_FILL_ORDER.filter(
+  k => k !== 'assessment_headcount' && k !== 'assessment_org_volume',
+);
+
+const IMPORT_BLOCK_LABELS: Partial<Record<ExportBlockKey, string>> = {
+  problems: 'Проблематики (в составе заказчика)',
+};
 
 interface Props {
   mode: Mode;
@@ -60,8 +67,19 @@ export default function BriefingExportImportModal({
     return preview.blocks;
   }, [preview]);
 
+  function blockLabel(key: ExportBlockKey) {
+    return IMPORT_BLOCK_LABELS[key] ?? EXPORT_BLOCK_LABELS[key];
+  }
+
   function toggleBlock(key: ExportBlockKey) {
-    setBlocks(prev => ({ ...prev, [key]: !prev[key] }));
+    setBlocks(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (key === 'customer') next.problems = next.customer;
+      if (key === 'customer' || key === 'assessment_criteria') {
+        next.assessment_org_volume = next.customer || next.assessment_criteria;
+      }
+      return next;
+    });
   }
 
   function toggleImportBlock(key: ExportBlockKey) {
@@ -72,7 +90,7 @@ export default function BriefingExportImportModal({
     setBusy(true);
     setError(null);
     try {
-      await exportBriefingHtml(briefingId, blocks);
+      await exportBriefingHtml(briefingId, normalizeExportBlocksForFill(blocks));
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -178,7 +196,7 @@ export default function BriefingExportImportModal({
                       checked={blocks[key]}
                       onChange={() => toggleBlock(key)}
                     />
-                    {EXPORT_BLOCK_LABELS[key]}
+                    {blockLabel(key)}
                   </label>
                 ))}
               </div>
@@ -231,7 +249,7 @@ export default function BriefingExportImportModal({
                         checked={importBlocks[key] ?? false}
                         onChange={() => toggleImportBlock(key)}
                       />
-                      {EXPORT_BLOCK_LABELS[key]}
+                      {blockLabel(key)}
                     </label>
                   ))}
                   <button
@@ -250,7 +268,7 @@ export default function BriefingExportImportModal({
                   <div><span className="text-slate-500">Экспорт:</span> {new Date(preview.exported_at).toLocaleString('ru-RU')}</div>
                   <div>
                     <span className="text-slate-500">Разделы:</span>{' '}
-                    {preview.blocks.map(b => EXPORT_BLOCK_LABELS[b]).join(', ')}
+                    {preview.blocks.map(b => blockLabel(b)).join(', ')}
                   </div>
                   {preview.warnings.map((w, i) => (
                     <div key={i} className="text-amber-700">⚠ {w}</div>
@@ -264,7 +282,7 @@ export default function BriefingExportImportModal({
             <div className="space-y-2 text-sm">
               <div className="text-green-700 font-medium">Импорт выполнен</div>
               <div className="text-xs text-slate-600">
-                Обновлено: {result.applied.map(a => EXPORT_BLOCK_LABELS[a as ExportBlockKey] ?? a).join(', ') || '—'}
+                Обновлено: {result.applied.map(a => blockLabel(a as ExportBlockKey) ?? a).join(', ') || '—'}
               </div>
               {result.warnings.map((w, i) => (
                 <div key={i} className="text-xs text-amber-700">⚠ {w}</div>

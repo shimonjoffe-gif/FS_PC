@@ -13,14 +13,25 @@ export type ExportBlocks = Record<ExportBlockKey, boolean>;
 
 export const EXPORT_BLOCK_KEYS: ExportBlockKey[] = [
   'customer',
+  'solutions',
+  'widgets',
   'fs',
   'assessment_criteria',
   'assessment_contract',
   'assessment_org_volume',
   'assessment_headcount',
   'problems',
+];
+
+/** Порядок разделов в HTML для заполнения заказчиком (как во вкладках брифинга). */
+export const EXPORT_FILL_ORDER: ExportBlockKey[] = [
+  'customer',
   'solutions',
   'widgets',
+  'fs',
+  'assessment_org_volume',
+  'assessment_criteria',
+  'assessment_contract',
 ];
 
 export const DEFAULT_EXPORT_BLOCKS: ExportBlocks = {
@@ -49,7 +60,7 @@ export interface ImportOptions {
 }
 
 export const EXPORT_BLOCK_LABELS: Record<ExportBlockKey, string> = {
-  customer: 'Заказчик (численность и орг. объём)',
+  customer: 'Заказчик (данные, отборы, проблематики)',
   fs: 'ФС + очереди',
   assessment_criteria: 'Параметры оценки (критерии)',
   assessment_contract: 'Параметры договора',
@@ -59,3 +70,13 @@ export const EXPORT_BLOCK_LABELS: Record<ExportBlockKey, string> = {
   solutions: 'Решения',
   widgets: 'Виджеты',
 };
+
+/** Проблематики и орг. объём включаются вместе с соответствующими блоками. */
+export function normalizeExportBlocksForFill(blocks: ExportBlocks): ExportBlocks {
+  const includeOrgVolume = blocks.customer || blocks.assessment_criteria || blocks.assessment_org_volume;
+  return {
+    ...blocks,
+    problems: blocks.problems || blocks.customer,
+    assessment_org_volume: includeOrgVolume,
+  };
+}

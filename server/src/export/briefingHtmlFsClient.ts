@@ -308,8 +308,10 @@ export function getFsClientJs(): string {
   function renderFsToolbar(){
     var yf=fsYesFilter();
     var showNsi=fsShowNsi();
+    var groups=groupItems(data.fs.items);
+    var allCollapsed=groups.length>0&&groups.every(function(grp){return !uiOpen('fs_groups',grp.group,false);});
     return '<div class="fs-toolbar">'+
-      '<button type="button" data-fs-collapse-sections>Свернуть разделы</button>'+
+      '<button type="button" data-fs-collapse-sections>'+(allCollapsed?'Развернуть все группы':'Свернуть все группы')+'</button>'+
       (yf?'<button type="button" class="fs-filter-reset" data-fs-reset-yes-filter>Сбросить фильтр «Да»</button>':'')+
       '<button type="button" data-fs-toggle-nsi>'+(showNsi?'Скрыть НСИ':'Показать НСИ')+'</button>'+
       '</div>';
@@ -596,7 +598,6 @@ export function getFsClientJs(): string {
       it.customer_description=draft.breakdown.trim()||null;
       if(draft.func_type) it.func_type=draft.func_type;
     }
-    it.inactive_for_customer=false;
     if(draft.detailLines){
       it.detail_lines=draft.detailLines
         .filter(function(l){return (l.name||'').trim();})
@@ -735,7 +736,7 @@ export function getFsClientJs(): string {
   function applyCommentMove(source, target, fromQ, toQ, mode){
     if(!moveCommentBetweenItems(source, target, fromQ, toQ, mode)) return;
     updateOrgActiveCheckbox(toQ);
-    fsRerender();
+    fsRerenderForItem(target.fs_item_id);
   }
 
   function handleCommentDrop(targetItem, toQ, payload){
@@ -755,7 +756,7 @@ export function getFsClientJs(): string {
       };
       endFsDrag();
       saveSectionsFromDom();
-      render();
+      fsRerenderForItem(targetItem.fs_item_id);
       return;
     }
     applyCommentMove(source, targetItem, payload.fromQueue, toQ, 'replace');
@@ -775,49 +776,77 @@ export function getFsClientJs(): string {
     }
   }
 
-  function fsRerender(){
-    syncFsFromDom();
-    saveSectionsFromDom();
-    render();
-  }
-
-  function captureFsScrollAnchor(btn){
+  function captureFsScrollState(triggerEl){
     var fsEl=document.querySelector('.fs-scroll');
-    var row=btn.closest('tr');
-    if(!fsEl||!row) return null;
-    return {
-      grpEnc: row.getAttribute('data-fs-grp'),
-      offset: row.getBoundingClientRect().top-fsEl.getBoundingClientRect().top
-    };
+    if(!fsEl) return { scrollTop: 0, winScroll: window.scrollY };
+    var state={ scrollTop: fsEl.scrollTop, winScroll: window.scrollY, offset: null, rowKey: null };
+    if(triggerEl){
+      var row=triggerEl.closest('tr');
+      if(row&&fsEl.contains(row)){
+        state.offset=row.getBoundingClientRect().top-fsEl.getBoundingClientRect().top;
+        state.rowKey=row.getAttribute('data-fs-grp')||row.getAttribute('data-fs-row');
+      }
+    }
+    return state;
   }
 
-  function restoreFsScrollAnchor(anchor){
-    if(!anchor||!anchor.grpEnc) return;
+  function restoreFsScrollState(state){
+    if(!state) return;
     var fsEl=document.querySelector('.fs-scroll');
     if(!fsEl) return;
-    var row=fsEl.querySelector('tr[data-fs-grp="'+anchor.grpEnc+'"]');
-    if(!row) return;
-    fsEl.scrollTop+=row.getBoundingClientRect().top-fsEl.getBoundingClientRect().top-anchor.offset;
+    if(state.rowKey!=null&&state.offset!=null){
+      var row=fsEl.querySelector('tr[data-fs-grp="'+state.rowKey+'"]')
+        ||fsEl.querySelector('tr[data-fs-row="'+state.rowKey+'"]');
+      if(row){
+        fsEl.scrollTop+=row.getBoundingClientRect().top-fsEl.getBoundingClientRect().top-state.offset;
+        window.scrollTo(0,state.winScroll||0);
+        return;
+      }
+    }
+    fsEl.scrollTop=state.scrollTop||0;
+    window.scrollTo(0,state.winScroll||0);
+  }
+
+  function fsRerender(triggerEl){
+    syncFsFromDom();
+    saveSectionsFromDom();
+    var scrollState=captureFsScrollState(triggerEl);
+    render();
+    restoreFsScrollState(scrollState);
+  }
+
+  function fsRerenderForItem(fsItemId){
+    var fsEl=document.querySelector('.fs-scroll');
+    var triggerEl=fsEl&&fsEl.querySelector('tr[data-fs-row="'+fsItemId+'"]');
+    fsRerender(triggerEl||null);
   }
 
   function bindFsEvents(){
     var collapseBtn=document.querySelector('[data-fs-collapse-sections]');
     if(collapseBtn) collapseBtn.addEventListener('click',function(){
       ensureFsUiState();
-      data.ui_state.fs_groups={};
-      fsRerender();
+      var groups=groupItems(data.fs.items);
+      var allCollapsed=groups.length>0&&groups.every(function(grp){return !uiOpen('fs_groups',grp.group,false);});
+      if(allCollapsed){
+        var toExpand={};
+        groups.forEach(function(grp){ toExpand[grp.group]=true; });
+        data.ui_state.fs_groups=toExpand;
+      } else {
+        data.ui_state.fs_groups={};
+      }
+      fsRerender(collapseBtn);
     });
     var resetFilterBtn=document.querySelector('[data-fs-reset-yes-filter]');
     if(resetFilterBtn) resetFilterBtn.addEventListener('click',function(){
       ensureFsUiState();
       data.ui_state.fs_yes_filter=null;
-      fsRerender();
+      fsRerender(resetFilterBtn);
     });
     var toggleNsiBtn=document.querySelector('[data-fs-toggle-nsi]');
     if(toggleNsiBtn) toggleNsiBtn.addEventListener('click',function(){
       ensureFsUiState();
       data.ui_state.fs_show_nsi=!fsShowNsi();
-      fsRerender();
+      fsRerender(toggleNsiBtn);
     });
     document.querySelectorAll('[data-fs-queue-expand]').forEach(function(btn){
       btn.addEventListener('click',function(e){
@@ -827,7 +856,7 @@ export function getFsClientJs(): string {
         var q=btn.getAttribute('data-fs-queue-expand');
         ensureFsUiState();
         data.ui_state.fs_queue_cols[q]=!fsQueueExpanded(q);
-        render();
+        fsRerender(btn);
       });
     });
     document.querySelectorAll('[data-fs-yes-filter]').forEach(function(th){
@@ -846,7 +875,7 @@ export function getFsClientJs(): string {
           });
           data.ui_state.fs_groups=toExpand;
         }
-        render();
+        fsRerender(th);
       });
     });
     document.querySelectorAll('[data-fs-grp-toggle]').forEach(function(btn){
@@ -859,11 +888,7 @@ export function getFsClientJs(): string {
         var key=decodeURIComponent(enc);
         ensureFsUiState();
         data.ui_state.fs_groups[key]=!uiOpen('fs_groups',key,false);
-        var scrollAnchor=captureFsScrollAnchor(btn);
-        var winScroll=window.scrollY;
-        render();
-        restoreFsScrollAnchor(scrollAnchor);
-        window.scrollTo(0,winScroll);
+        fsRerender(btn);
       });
     });
     document.querySelectorAll('[data-fs-add-customer]').forEach(function(btn){
@@ -881,7 +906,7 @@ export function getFsClientJs(): string {
         data.ui_state.fs_groups[groupName]=true;
         fsCardDrafts[newItem.fs_item_id]=buildCardDraft(newItem);
         data.ui_state.fs_card=newItem.fs_item_id;
-        fsRerender();
+        fsRerender(btn);
       });
     });
     document.querySelectorAll('[data-fs-del-customer]').forEach(function(btn){
@@ -896,7 +921,7 @@ export function getFsClientJs(): string {
           ensureFsUiState();
           data.ui_state.fs_card=null;
         }
-        fsRerender();
+        fsRerender(btn);
       });
     });
     document.querySelectorAll('.qcell').forEach(function(cell){
@@ -930,7 +955,7 @@ export function getFsClientJs(): string {
         syncFsFromDom();
         moveToQueue(it, payload.fromQueue, toQ);
         updateOrgActiveCheckbox(toQ);
-        fsRerender();
+        fsRerender(cell);
       });
       if(btn.draggable){
         btn.addEventListener('dragstart',function(e){
@@ -955,7 +980,7 @@ export function getFsClientJs(): string {
         queues[q]=queues[q]===1?0:1;
         patchQueues(it,queues);
         updateOrgActiveCheckbox(q);
-        fsRerender();
+        fsRerender(btn);
       });
     });
     document.querySelectorAll('[data-fs-nmd]').forEach(function(sel){
@@ -966,7 +991,7 @@ export function getFsClientJs(): string {
         if(!it||!q) return;
         var patch=patchFsItemQueueNmd(it,q,sel.value);
         it.queue_nmd_json=patch.queue_nmd_json;
-        fsRerender();
+        fsRerender(sel);
       });
     });
     document.querySelectorAll('[data-fs-nmd-reset]').forEach(function(btn){
@@ -978,7 +1003,7 @@ export function getFsClientJs(): string {
         if(!it||!q) return;
         var patch=resetNmd(it,q);
         it.queue_nmd_json=patch.queue_nmd_json;
-        fsRerender();
+        fsRerender(btn);
       });
     });
     document.querySelectorAll('[data-fs-comment]').forEach(function(btn){
@@ -1003,7 +1028,7 @@ export function getFsClientJs(): string {
         ensureFsUiState();
         fsCommentDraft='';
         data.ui_state.fs_comment=fid+':'+q;
-        render();
+        fsRerender(btn);
       });
     });
     document.querySelectorAll('[data-fs-comment-cell]').forEach(function(cell){
@@ -1017,7 +1042,7 @@ export function getFsClientJs(): string {
         ensureFsUiState();
         fsCommentDraft='';
         data.ui_state.fs_comment=fid+':'+q;
-        render();
+        fsRerender(cell);
       });
       cell.addEventListener('dragover',function(e){
         if(!fsDragPayload||fsDragPayload.kind!=='comment') return;
@@ -1068,7 +1093,7 @@ export function getFsClientJs(): string {
         ensureFsUiState();
         fsCardDrafts[fid]=buildCardDraft(it);
         data.ui_state.fs_card=fid;
-        render();
+        fsRerender(btn);
       });
     });
     document.querySelectorAll('[data-fs-modal-close]').forEach(function(btn){
@@ -1080,7 +1105,7 @@ export function getFsClientJs(): string {
         data.ui_state.fs_comment=null;
         data.ui_state.fs_comment_merge=null;
         fsCommentDraft='';
-        render();
+        fsRerender(btn);
       });
     });
     var cardSave=document.querySelector('[data-fs-card-save]');
@@ -1095,7 +1120,7 @@ export function getFsClientJs(): string {
       ensureFsUiState();
       data.ui_state.fs_card=null;
       delete fsCardDrafts[cardId];
-      fsRerender();
+      fsRerenderForItem(cardId);
     });
     var commentSave=document.querySelector('[data-fs-comment-save]');
     if(commentSave) commentSave.addEventListener('click',function(){
@@ -1112,7 +1137,7 @@ export function getFsClientJs(): string {
       ensureFsUiState();
       data.ui_state.fs_comment=null;
       fsCommentDraft='';
-      fsRerender();
+      fsRerenderForItem(fid);
     });
     var addLineBtn=document.querySelector('[data-fs-card-add-line]');
     if(addLineBtn) addLineBtn.addEventListener('click',function(){
@@ -1123,7 +1148,7 @@ export function getFsClientJs(): string {
       draft.detailLines.push({source:'customer',name:'',description:null,inactive:false,sort_order:draft.detailLines.length});
       fsCardDrafts[cardId]=draft;
       saveSectionsFromDom();
-      render();
+      fsRerenderForItem(cardId);
     });
     document.querySelectorAll('[data-fs-card-line-remove]').forEach(function(btn){
       btn.addEventListener('click',function(){
@@ -1134,7 +1159,7 @@ export function getFsClientJs(): string {
         draft.detailLines=(draft.detailLines||[]).filter(function(_,i){return i!==idx;});
         fsCardDrafts[cardId]=draft;
         saveSectionsFromDom();
-        render();
+        fsRerenderForItem(cardId);
       });
     });
     document.querySelectorAll('[data-fs-card-line-revert]').forEach(function(btn){
@@ -1150,7 +1175,7 @@ export function getFsClientJs(): string {
         line.inactive=false;
         fsCardDrafts[cardId]=draft;
         saveSectionsFromDom();
-        render();
+        fsRerenderForItem(cardId);
       });
     });
     document.querySelectorAll('.fs-modal-overlay').forEach(function(overlay){
@@ -1162,7 +1187,7 @@ export function getFsClientJs(): string {
         data.ui_state.fs_comment=null;
         data.ui_state.fs_comment_merge=null;
         fsCommentDraft='';
-        render();
+        fsRerender(null);
       });
     });
   }

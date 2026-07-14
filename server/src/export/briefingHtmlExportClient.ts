@@ -27,7 +27,7 @@ export const BRIEFING_HTML_EXPORT_CLIENT_JS = `
   function secOpen(key){
     if(data.ui_state && data.ui_state.sections && Object.prototype.hasOwnProperty.call(data.ui_state.sections, key))
       return !!data.ui_state.sections[key];
-    return false;
+    return key === 'customer';
   }
 
   function sectionWrap(key, title, body){
@@ -47,6 +47,11 @@ export const BRIEFING_HTML_EXPORT_CLIENT_JS = `
     document.querySelectorAll('.fs-grp[data-fs-grp]').forEach(function(row){
       var key=decodeURIComponent(row.getAttribute('data-fs-grp')||'');
       data.ui_state.fs_groups[key] = row.classList.contains('open');
+    });
+    data.ui_state.widget_groups = {};
+    document.querySelectorAll('[data-widget-group]').forEach(function(row){
+      var key=row.getAttribute('data-widget-group')||'';
+      data.ui_state.widget_groups[key] = row.classList.contains('open');
     });
     data.ui_state.org_queues = {};
     document.querySelectorAll('[data-org-queue-open]').forEach(function(el){
@@ -74,9 +79,59 @@ export const BRIEFING_HTML_EXPORT_CLIENT_JS = `
   }
 
   function getOrgVolume(){
-    if(data.customer&&data.customer.org_volume) return data.customer.org_volume;
     if(data.assessment_org_volume&&data.assessment_org_volume.org_volume) return data.assessment_org_volume.org_volume;
+    if(data.customer&&data.customer.org_volume) return data.customer.org_volume;
     return null;
+  }
+
+  function orgVolumeContext(){
+    var ov=getOrgVolume();
+    if(!ov) return null;
+    var block=data.assessment_org_volume||{};
+    return {
+      org_volume: ov,
+      queue_keys: block.queue_keys||data.customer&&data.customer.queue_keys||FS_QUEUE_KEYS,
+      queue_labels: block.queue_labels||data.customer&&data.customer.queue_labels||{}
+    };
+  }
+
+  function catalogCodeParts(code){
+    if(!code) return [Number.MAX_SAFE_INTEGER];
+    return String(code).replace(/\.$/,'').split('.').map(function(n){ return parseInt(n,10)||0; });
+  }
+
+  function compareCatalogCode(a,b){
+    var pa=catalogCodeParts(a.catalog_code);
+    var pb=catalogCodeParts(b.catalog_code);
+    var len=Math.max(pa.length,pb.length);
+    for(var i=0;i<len;i++){
+      var diff=(pa[i]??Number.MAX_SAFE_INTEGER)-(pb[i]??Number.MAX_SAFE_INTEGER);
+      if(diff) return diff;
+    }
+    return (a.sort_order||0)-(b.sort_order||0)||a.id-b.id;
+  }
+
+  function availableSegments(c){
+    var all=c.segments||[];
+    var ids=c.activity_type_ids||[];
+    if(!ids.length) return all;
+    var industryIds=new Set();
+    (c.activity_types||[]).forEach(function(at){
+      if(ids.indexOf(at.id)<0) return;
+      (c.industries||[]).forEach(function(ind){
+        if(ind.name===at.name) industryIds.add(ind.id);
+      });
+    });
+    if(!industryIds.size) return all;
+    return all.filter(function(s){ return s.industry_id==null||industryIds.has(s.industry_id); });
+  }
+
+  function ensureValidCustomerSegment(){
+    if(!data.customer) return;
+    var segs=availableSegments(data.customer);
+    if(data.customer.segment_id!=null&&!segs.some(function(s){ return s.id===data.customer.segment_id; })){
+      data.customer.segment_id=null;
+    }
   }
 
   function ensureOrgQueue(ov,q){
@@ -373,9 +428,8 @@ export const BRIEFING_HTML_EXPORT_CLIENT_JS = `
         '<td>'+orgNumInput(q,'rg',row.rg)+'</td></tr>';
       if(queueOpen) rows+=renderOrgBreakdownRows(q,row);
     });
-    return '<div style="margin-top:14px"><div style="font-weight:600;font-size:12px;margin-bottom:6px">Орг. объём по очередям</div>'+
-      '<table class="tbl"><thead><tr><th>Очередь</th><th style="width:4rem">Активна</th><th>Польз.</th><th>РП/РПО</th><th>Исполн.</th><th>РГ</th></tr></thead><tbody>'+rows+'</tbody></table>'+
-      '<p style="font-size:10px;color:#64748b;margin-top:6px">Польз. очереди — итого; регионы — для удалёнки и командировок (сумма регионов ≠ очередь). РП/РПО + Исполн. = Польз. Изменение польз. в очереди каскадируется на последующие очереди.</p></div>';
+    return '<table class="tbl"><thead><tr><th>Очередь</th><th style="width:4rem">Активна</th><th>Польз.</th><th>РП/РПО</th><th>Исполн.</th><th>РГ</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+      '<p style="font-size:10px;color:#64748b;margin-top:6px">Польз. очереди — итого; регионы — для удалёнки и командировок (сумма регионов ≠ очередь). РП/РПО + Исполн. = Польз. Изменение польз. в очереди каскадируется на последующие очереди.</p>';
   }
 
   function customerHeadcountCategory(c){
@@ -386,21 +440,53 @@ export const BRIEFING_HTML_EXPORT_CLIENT_JS = `
 
   function renderCustomer(){
     var c=data.customer; if(!c) return '';
-    var indOpts=c.industries.map(function(i){ return '<option value="'+i.id+'"'+(c.industry_id===i.id?' selected':'')+'>'+esc(i.name)+'</option>'; }).join('');
-    var segOpts='<option value="">—</option>'+c.segments.filter(function(s){ return !c.industry_id||s.industry_id===c.industry_id; }).map(function(s){ return '<option value="'+s.id+'"'+(c.segment_id===s.id?' selected':'')+'>'+esc(s.name)+'</option>'; }).join('');
-    var scenOpts=c.scenarios.map(function(s){ return '<option'+(c.scenario===s?' selected':'')+'>'+esc(s)+'</option>'; }).join('');
+    var scenOpts='<option value="">— выберите —</option>'+c.scenarios.map(function(s){ return '<option'+(c.scenario===s?' selected':'')+'>'+esc(s)+'</option>'; }).join('');
     var selectedHc=customerHeadcountCategory(c);
     var hcOpts=(c.headcount_categories||[]).map(function(cat){
       return '<option'+(selectedHc===cat?' selected':'')+'>'+esc(cat)+'</option>';
     }).join('');
     return sectionWrap('customer', 'Заказчик',
-      '<label class="field"><span>Название предоценки</span><input type="text" data-c="name" value="'+esc(c.name)+'"></label>'+
-      '<label class="field"><span>Отрасль</span><select data-c="industry_id"><option value="">—</option>'+indOpts+'</select></label>'+
-      '<label class="field"><span>Сегмент</span><select data-c="segment_id">'+segOpts+'</select></label>'+
-      '<label class="field"><span>Сценарий</span><select data-c="scenario">'+scenOpts+'</select></label>'+
-      '<label class="field"><span>Категория численности</span><select data-c="headcount_category">'+hcOpts+'</select></label>'+
-      renderOrgVolumeBlock(c)
+      '<div class="customer-header-row">'+
+      '<label class="field-hdr"><span>Название оценки</span><input type="text" data-c="name" value="'+esc(c.name)+'"></label>'+
+      '<label class="field-hdr shrink"><span>Сценарий</span><select data-c="scenario">'+scenOpts+'</select></label>'+
+      '<label class="field-hdr hc"><span>Численность (C62)</span><select data-c="headcount_category">'+hcOpts+'</select></label>'+
+      '</div>'+
+      renderCustomerFilterRows()+
+      renderProblemsTable()
     );
+  }
+
+  function renderCustomerFilterRows(){
+    var pr=data.problems;
+    if(!pr||!pr.catalog||!data.customer) return '';
+    var c=data.customer;
+    var st=problemFilterState(pr);
+    var filterActive=problemCustomerFilterActive(st);
+    var anyFilter=filterActive||st.hypothesisFilterIds.length>0;
+    var selAct=new Set(st.activityTypeIds);
+    var chips=(c.activity_types||[]).map(function(at){
+      return '<button type="button" class="problem-chip'+(selAct.has(at.id)?' selected':'')+'" data-activity-type="'+at.id+'">'+esc(at.name)+'</button>';
+    }).join('');
+    var segs=availableSegments(c);
+    var segOpts='<option value="">Сегм.</option>'+segs.map(function(s){
+      return '<option value="'+s.id+'"'+(c.segment_id===s.id?' selected':'')+'>'+esc(s.name)+'</option>';
+    }).join('');
+    var showAllBtn=filterActive?('<button type="button" class="problem-filter-btn" data-problem-show-all>'+(st.showAllProblems?'Только по фильтру':'Показать все')+'</button>'):'';
+    var row1='<div class="customer-filter-grid'+(filterActive?'':' no-showall')+'">'+
+      '<div class="customer-filter-chips"><span class="filter-label">Виды деятельности</span>'+chips+'</div>'+
+      '<select class="customer-segment-select" data-c="segment_id" title="Сегмент">'+segOpts+'</select>'+
+      showAllBtn+
+      '</div>';
+    var row2='';
+    if(filterActive){
+      var avail=availableHypothesesForFilter(st,pr);
+      var hypSel=new Set(st.hypothesisFilterIds);
+      var hypChips=avail.length?avail.map(function(h){
+        return '<button type="button" class="problem-chip'+(hypSel.has(h.id)?' selected':'')+'" data-problem-hypothesis="'+h.id+'">'+esc(h.name)+'</button>';
+      }).join(''):'<span style="font-size:11px;color:#94a3b8">нет по текущему фильтру</span>';
+      row2='<div class="customer-hypothesis-row"><span class="filter-label">Гипотезы</span><div class="customer-filter-chips">'+hypChips+'</div></div>';
+    }
+    return row1+row2;
   }
 
   function groupItems(items){
@@ -460,13 +546,250 @@ ${getFsClientJs()}
     );
   }
 
-  function renderProblems(){
-    var pr=data.problems; if(!pr) return '';
-    var sel=new Set((pr.selections||[]).map(function(s){return s.problem_id;}).filter(Boolean));
-    var items=(pr.catalog||[]).map(function(p){
-      return '<label><input type="checkbox" data-problem="'+p.id+'"'+(sel.has(p.id)?' checked':'')+'> '+esc(p.name)+'</label>';
-    }).join('');
-    return sectionWrap('problems', 'Проблематики', '<div class="chk-list">'+items+'</div>');
+  function problemFilterState(pr){
+    var segmentId=pr.segment_id;
+    if(data.customer&&data.customer.segment_id!=null) segmentId=data.customer.segment_id;
+    var activityIds=(data.customer&&data.customer.activity_type_ids)||pr.activity_type_ids||[];
+    return {
+      activityTypeIds: activityIds.slice(),
+      segmentId: segmentId,
+      hypothesisFilterIds: pr.hypothesis_filter_ids||[],
+      showAllProblems: !!pr.show_all_problems
+    };
+  }
+
+  function problemCustomerFilterActive(st){
+    return st.activityTypeIds.length>0||st.segmentId!=null;
+  }
+
+  function matchesProblemActivity(problemId, st, pr){
+    if(!st.activityTypeIds.length&&st.segmentId==null) return true;
+    var problem=(pr.catalog||[]).find(function(p){return p.id===problemId;});
+    if(!problem) return false;
+    if(st.segmentId!=null&&problem.segment_id!=null&&problem.segment_id!==st.segmentId) return false;
+    if(!st.activityTypeIds.length) return true;
+    var hypIds=(pr.problem_hypothesis_ids||{})[String(problemId)]||[];
+    return hypIds.some(function(hid){
+      var hyp=(pr.hypotheses||[]).find(function(h){return h.id===hid;});
+      if(!hyp) return false;
+      return (hyp.activity_type_ids||[]).some(function(aid){return st.activityTypeIds.indexOf(aid)>=0;});
+    });
+  }
+
+  function matchesProblemHypothesis(problem, st){
+    if(!st.hypothesisFilterIds.length) return true;
+    var sel=new Set(st.hypothesisFilterIds);
+    var hypByName={};
+    (data.problems&&data.problems.hypotheses||[]).forEach(function(h){ hypByName[h.name]=h.id; });
+    return (problem.used_in_hypotheses||[]).some(function(name){
+      var hid=hypByName[name];
+      return hid!=null&&sel.has(hid);
+    });
+  }
+
+  function collectProblemWithAncestors(catalog, matchIds){
+    var byId={};
+    catalog.forEach(function(p){ byId[p.id]=p; });
+    var result=new Set();
+    matchIds.forEach(function(id){
+      var cursor=id;
+      while(cursor){
+        if(result.has(cursor)) break;
+        result.add(cursor);
+        var row=byId[cursor];
+        cursor=row&&row.parent_id?row.parent_id:null;
+      }
+    });
+    return result;
+  }
+
+  function buildProblemDisplayUnits(items){
+    var units=[];
+    var consumed=new Set();
+    var byId={};
+    items.forEach(function(p){ byId[p.id]=p; });
+    var roots=items.filter(function(p){ return !p.parent_id||!byId[p.parent_id]; })
+      .sort(compareCatalogCode);
+    roots.forEach(function(root){
+      var children=items.filter(function(c){ return c.parent_id===root.id; })
+        .sort(compareCatalogCode);
+      if(children.length>0){
+        units.push({kind:'group',parent:root,children:children});
+        consumed.add(root.id);
+        children.forEach(function(c){ consumed.add(c.id); });
+      }
+    });
+    items.forEach(function(item){
+      if(!consumed.has(item.id)) units.push({kind:'standalone',item:item});
+    });
+    units.sort(function(a,b){
+      var itemA=a.kind==='group'?a.parent:a.item;
+      var itemB=b.kind==='group'?b.parent:b.item;
+      return compareCatalogCode(itemA,itemB);
+    });
+    return units;
+  }
+
+  function aggregateProblemGroupSelected(members, selectedIds){
+    return members.some(function(m){ return selectedIds.has(m.id); });
+  }
+
+  function getProblemFilterMismatchHint(problemId, st, pr){
+    if(!problemCustomerFilterActive(st)&&!st.hypothesisFilterIds.length) return null;
+    var problem=(pr.catalog||[]).find(function(p){return p.id===problemId;});
+    if(!problem) return null;
+    var activityFail=problemCustomerFilterActive(st)&&!matchesProblemActivity(problemId,st,pr);
+    var hypothesisFail=st.hypothesisFilterIds.length>0&&!matchesProblemHypothesis(problem,st);
+    if(!activityFail&&!hypothesisFail) return null;
+    if(activityFail&&hypothesisFail) return 'не подходит под виды деятельности/сегмент и гипотезы';
+    if(activityFail) return 'не подходит под виды деятельности/сегмент';
+    return 'не подходит под выбранные гипотезы';
+  }
+
+  function availableHypothesesForFilter(st, pr){
+    if(!problemCustomerFilterActive(st)) return [];
+    var namesInPool=new Set();
+    (pr.catalog||[]).forEach(function(p){
+      if(!matchesProblemActivity(p.id,st,pr)) return;
+      (p.used_in_hypotheses||[]).forEach(function(n){ namesInPool.add(n); });
+    });
+    return (pr.hypotheses||[]).filter(function(h){ return namesInPool.has(h.name); });
+  }
+
+  function selectedProblemIds(pr){
+    var ids=new Set();
+    (pr.selections||[]).forEach(function(s){ if(s.problem_id) ids.add(s.problem_id); });
+    return ids;
+  }
+
+  function renderProblemRow(problem, opts, st, pr, selectedIds){
+    var indent=opts.indent||0;
+    var isGroupParent=opts.variant==='parent'&&(opts.groupChildren||[]).length>0;
+    var groupMembers=isGroupParent?[problem].concat(opts.groupChildren||[]):[problem];
+    var isYes=isGroupParent?aggregateProblemGroupSelected(groupMembers,selectedIds):selectedIds.has(problem.id);
+    var mismatchHint=getProblemFilterMismatchHint(problem.id,st,pr);
+    var unmatched=mismatchHint!=null;
+    var titleClass=opts.variant==='parent'?'font-weight:600':'font-weight:500';
+    var meta=[problem.segment_name,problem.maturity_name].filter(Boolean).join(' · ');
+    var code=problem.catalog_code?'<span style="color:#94a3b8;font-family:monospace;font-size:10px;margin-right:4px">'+esc(problem.catalog_code)+'</span>':'';
+    return '<tr class="'+(opts.variant==='parent'?'problem-group':'')+'">'+
+      '<td style="padding-left:'+(8+indent)+'px">'+
+      (opts.variant==='parent'&&opts.groupParentId!=null?
+        '<button type="button" class="fs-grp-toggle" data-problem-grp-toggle="'+opts.groupParentId+'">'+(opts.groupOpen?'▼':'▶')+'</button> ':'')+
+      '<div style="'+titleClass+(unmatched?';font-style:italic;color:#64748b':'')+'">'+code+esc(problem.name)+'</div>'+
+      (unmatched?'<div class="problem-hint">'+esc(mismatchHint)+'</div>':'')+
+      (meta?'<div class="problem-meta">'+esc(meta)+'</div>':'')+
+      '</td>'+
+      '<td style="text-align:center;width:4rem">'+
+      (isGroupParent?
+        '<button type="button" class="yesno '+(isYes?'yes':'no')+(unmatched&&!isYes?' unmatched':'')+'" data-problem-group="'+groupMembers.map(function(m){return m.id;}).join(',')+'" data-val="'+(isYes?1:0)+'">'+(isYes?'Да':'Нет')+'</button>':
+        yesNoBtn(isYes,unmatched&&!isYes).replace('<button','<button data-problem-id="'+problem.id+'"'))+
+      '</td></tr>';
+  }
+
+  function renderProblemsTable(){
+    var pr=data.problems; if(!pr||!pr.catalog||!data.customer) return '';
+    var st=problemFilterState(pr);
+    var selectedIds=selectedProblemIds(pr);
+    var filterActive=problemCustomerFilterActive(st);
+    var anyFilter=filterActive||st.hypothesisFilterIds.length>0;
+    var matchingIds=new Set();
+    (pr.catalog||[]).forEach(function(p){
+      if(matchesProblemActivity(p.id,st,pr)&&matchesProblemHypothesis(p,st)) matchingIds.add(p.id);
+    });
+    var visibleIds;
+    if(!anyFilter||st.showAllProblems){
+      visibleIds=new Set((pr.catalog||[]).map(function(p){return p.id;}));
+    } else {
+      visibleIds=collectProblemWithAncestors(pr.catalog,matchingIds);
+      selectedIds.forEach(function(id){ visibleIds.add(id); });
+      visibleIds=collectProblemWithAncestors(pr.catalog,visibleIds);
+    }
+    var visible=(pr.catalog||[]).filter(function(p){ return visibleIds.has(p.id); });
+    var units=buildProblemDisplayUnits(visible);
+    var collapsedGroups=new Set((data.ui_state&&data.ui_state.problem_groups)||[]);
+    var rows='';
+    units.forEach(function(unit){
+      if(unit.kind==='group'){
+        var parent=unit.parent;
+        var children=unit.children;
+        var groupOpen=!collapsedGroups.has(parent.id);
+        rows+=renderProblemRow(parent,{variant:'parent',groupParentId:parent.id,groupChildren:children,groupOpen:groupOpen,indent:0},st,pr,selectedIds);
+        if(groupOpen){
+          children.forEach(function(child){
+            rows+=renderProblemRow(child,{variant:'child',indent:20},st,pr,selectedIds);
+          });
+        }
+      } else {
+        rows+=renderProblemRow(unit.item,{variant:'standalone',indent:0},st,pr,selectedIds);
+      }
+    });
+    if(!rows) return '';
+    return '<table class="tbl problem-tbl"><thead><tr><th>Проблематика</th><th style="width:4rem;text-align:center">Да/Нет</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }
+
+  function renderProblemsLegacy(){
+    var pr=data.problems; if(!pr||!pr.catalog||data.customer) return '';
+    var st=problemFilterState(pr);
+    var selectedIds=selectedProblemIds(pr);
+    var filterActive=problemCustomerFilterActive(st);
+    var anyFilter=filterActive||st.hypothesisFilterIds.length>0;
+    var matchingIds=new Set();
+    (pr.catalog||[]).forEach(function(p){
+      if(matchesProblemActivity(p.id,st,pr)&&matchesProblemHypothesis(p,st)) matchingIds.add(p.id);
+    });
+    var visibleIds;
+    if(!anyFilter||st.showAllProblems){
+      visibleIds=new Set((pr.catalog||[]).map(function(p){return p.id;}));
+    } else {
+      visibleIds=collectProblemWithAncestors(pr.catalog,matchingIds);
+      selectedIds.forEach(function(id){ visibleIds.add(id); });
+      visibleIds=collectProblemWithAncestors(pr.catalog,visibleIds);
+    }
+    var visible=(pr.catalog||[]).filter(function(p){ return visibleIds.has(p.id); });
+    var units=buildProblemDisplayUnits(visible);
+    var collapsedGroups=new Set((data.ui_state&&data.ui_state.problem_groups)||[]);
+    var filterBar='';
+    if(!data.customer||!data.customer.activity_types){
+      var actTypes=pr.activity_types||[];
+      if(actTypes.length){
+        var selAct=new Set(st.activityTypeIds);
+        var chips=actTypes.map(function(at){
+          return '<button type="button" class="problem-chip'+(selAct.has(at.id)?' selected':'')+'" data-problem-activity-type="'+at.id+'">'+esc(at.name)+'</button>';
+        }).join('');
+        filterBar+='<div class="problem-filter-bar"><span class="filter-label">Виды деятельности</span><div class="problem-filter-chips">'+chips+'</div></div>';
+      }
+    }
+    if(filterActive){
+      var avail=availableHypothesesForFilter(st,pr);
+      var hypSel=new Set(st.hypothesisFilterIds);
+      var hypChips=avail.length?avail.map(function(h){
+        return '<button type="button" class="problem-chip'+(hypSel.has(h.id)?' selected':'')+'" data-problem-hypothesis="'+h.id+'">'+esc(h.name)+'</button>';
+      }).join(''):'<span style="font-size:11px;color:#94a3b8">нет по текущему фильтру</span>';
+      filterBar+='<div class="problem-filter-bar"><span class="filter-label">Гипотезы</span><div class="problem-filter-chips">'+hypChips+'</div>'+
+        (anyFilter?'<button type="button" class="problem-filter-btn" data-problem-show-all>'+(st.showAllProblems?'Только по фильтру':'Показать все')+'</button>':'')+
+        '</div>';
+    }
+    var rows='';
+    units.forEach(function(unit){
+      if(unit.kind==='group'){
+        var parent=unit.parent;
+        var children=unit.children;
+        var groupOpen=!collapsedGroups.has(parent.id);
+        rows+=renderProblemRow(parent,{variant:'parent',groupParentId:parent.id,groupChildren:children,groupOpen:groupOpen,indent:0},st,pr,selectedIds);
+        if(groupOpen){
+          children.forEach(function(child){
+            rows+=renderProblemRow(child,{variant:'child',indent:20},st,pr,selectedIds);
+          });
+        }
+      } else {
+        rows+=renderProblemRow(unit.item,{variant:'standalone',indent:0},st,pr,selectedIds);
+      }
+    });
+    return sectionWrap('problems', 'Проблематики',
+      filterBar+
+      '<table class="tbl problem-tbl"><thead><tr><th>Проблематика</th><th style="width:4rem;text-align:center">Да/Нет</th></tr></thead><tbody>'+rows+'</tbody></table>'
+    );
   }
 
   function renderSolutions(){
@@ -478,18 +801,62 @@ ${getFsClientJs()}
     return sectionWrap('solutions', 'Решения', '<div class="chk-list">'+items+'</div>');
   }
 
+  function buildWidgetDisplayGroups(catalog){
+    var groups=[];
+    var map={};
+    (catalog||[]).forEach(function(wd){
+      var key=wd.data_slice_id!=null?String(wd.data_slice_id):'none';
+      var label=(wd.data_slice_name&&String(wd.data_slice_name).trim())||'Без разреза';
+      if(!map[key]){ map[key]={key:key,label:label,items:[]}; groups.push(map[key]); }
+      map[key].items.push(wd);
+    });
+    groups.sort(function(a,b){
+      if(a.key==='none') return 1;
+      if(b.key==='none') return -1;
+      return a.label.localeCompare(b.label,'ru');
+    });
+    groups.forEach(function(g){
+      g.items.sort(function(a,b){ return a.name.localeCompare(b.name,'ru'); });
+    });
+    return groups;
+  }
+
   function renderWidgets(){
     var w=data.widgets; if(!w) return '';
     var sel=new Set((w.selections||[]).map(function(s){return s.widget_id+':'+s.solution_id;}));
-    var items=(w.catalog||[]).map(function(wd){
-      var k=wd.id+':'+wd.solution_id;
-      var img=wd.image_base64?'<img src="'+wd.image_base64+'" alt="">':'';
-      return '<label class="widget-card"><input type="checkbox" data-widget="'+k+'"'+(sel.has(k)?' checked':'')+'>'+img+'<div style="font-size:11px;margin-top:4px">'+esc(wd.solution_name)+'</div><div>'+esc(wd.name)+'</div></label>';
-    }).join('');
-    return sectionWrap('widgets', 'Виджеты', '<div class="widget-grid">'+items+'</div>');
+    var groups=buildWidgetDisplayGroups(w.catalog||[]);
+    var groupKeys=groups.map(function(g){return g.key;});
+    var allCollapsed=groupKeys.length>1&&groupKeys.every(function(key){return !uiOpen('widget_groups',key,true);});
+    var toolbar=groupKeys.length>1?'<div class="widget-toolbar"><button type="button" data-widget-collapse-all>'+(allCollapsed?'Развернуть все группы':'Свернуть все группы')+'</button></div>':'';
+    var body='';
+    groups.forEach(function(group){
+      var open=uiOpen('widget_groups',group.key,true);
+      body+='<div class="widget-group'+(open?' open':'')+'" data-widget-group="'+esc(group.key)+'">'+
+        '<div class="widget-group-hd" data-widget-group-toggle="'+esc(group.key)+'">'+
+        '<span class="arrow">'+(open?'▼':'▶')+'</span><span>'+esc(group.label)+' <span style="font-weight:400;color:#94a3b8">('+group.items.length+')</span></span></div>';
+      if(open){
+        body+='<div class="widget-grid">';
+        group.items.forEach(function(wd){
+          var k=wd.id+':'+wd.solution_id;
+          var img=wd.image_base64?'<img src="'+wd.image_base64+'" alt="">':'';
+          body+='<label class="widget-card"><input type="checkbox" data-widget="'+k+'"'+(sel.has(k)?' checked':'')+'>'+img+
+            '<div style="font-size:11px;margin-top:4px">'+esc(wd.solution_name)+'</div><div>'+esc(wd.name)+'</div></label>';
+        });
+        body+='</div>';
+      }
+      body+='</div>';
+    });
+    return sectionWrap('widgets', 'Виджеты', toolbar+body);
+  }
+
+  function renderOrgVolumeSection(){
+    var ctx=orgVolumeContext();
+    if(!ctx) return '';
+    return sectionWrap('assessment_org_volume','Орг. объём',renderOrgVolumeBlock(ctx));
   }
 
   function renderOrgVolumeLegacy(){
+    if(data.assessment_org_volume&&data.assessment_org_volume.org_volume) return '';
     if(data.customer && data.customer.org_volume) return '';
     var ov=data.assessment_org_volume;
     if(!ov||!ov.org_volume||!ov.org_volume.queues) return '';
@@ -524,16 +891,17 @@ ${getFsClientJs()}
     var exported=new Date(data.exported_at).toLocaleString('ru-RU');
     app.innerHTML='<div class="hdr"><h1>'+esc(data.briefing_name)+'</h1>'+
       '<div class="meta">Предоценка для заполнения · экспорт '+exported+'</div>'+
-      '<div class="instr">Заполните поля ниже и нажмите «Скачать заполненный файл» внизу страницы. Сохранённый файл передайте исполнителю для загрузки в систему.</div></div>'+
-      renderCustomer()+renderFs()+renderCriteria()+renderContract()+renderHeadcountLegacy()+renderOrgVolumeLegacy()+renderProblems()+renderSolutions()+renderWidgets();
+      '<div class="instr">Заполните разделы по порядку: заказчик, решения, виджеты, ФС, орг. объём, параметры оценки. Нажмите «Скачать заполненный файл» внизу и передайте исполнителю.</div></div>'+
+      renderCustomer()+renderSolutions()+renderWidgets()+renderFs()+renderOrgVolumeSection()+renderCriteria()+renderContract()+renderHeadcountLegacy()+renderOrgVolumeLegacy()+renderProblemsLegacy();
     bindEvents();
   }
 
   function syncOrgActiveFromFs(){
-    if(!data.customer||!data.customer.org_volume||!data.fs) return;
-    var keys=data.customer.queue_keys||data.fs.queue_keys||['1','2','3','4'];
+    var ov=getOrgVolume();
+    if(!ov||!data.fs) return;
+    var keys=data.customer&&data.customer.queue_keys||data.fs.queue_keys||['1','2','3','4'];
     keys.forEach(function(q){
-      var row=data.customer.org_volume.queues[q];
+      var row=ov.queues[q];
       if(!row) return;
       row.active=data.fs.items.some(function(it){ return it.queues_json&&it.queues_json[q]===1; });
     });
@@ -648,24 +1016,44 @@ ${getFsClientJs()}
     if(data.customer){
       var c=data.customer;
       var n=document.querySelector('[data-c=name]'); if(n) c.name=n.value;
-      var ind=document.querySelector('[data-c=industry_id]'); if(ind) c.industry_id=ind.value?Number(ind.value):null;
       var seg=document.querySelector('[data-c=segment_id]'); if(seg) c.segment_id=seg.value?Number(seg.value):null;
-      var sc=document.querySelector('[data-c=scenario]'); if(sc) c.scenario=sc.value;
+      var sc=document.querySelector('[data-c=scenario]'); if(sc) c.scenario=sc.value||null;
       var hc=document.querySelector('[data-c=headcount_category]'); if(hc) c.headcount_category=hc.value;
-      syncOrgVolumeFromDom(c.org_volume, c.queue_keys);
-      syncOrgActiveFromFs();
     }
-    if(data.assessment_org_volume){
-      syncOrgVolumeFromDom(data.assessment_org_volume.org_volume, ['1','2','3','4']);
+    var orgCtx=orgVolumeContext();
+    if(orgCtx){
+      if(!data.assessment_org_volume) data.assessment_org_volume={};
+      data.assessment_org_volume.org_volume=orgCtx.org_volume;
+      syncOrgVolumeFromDom(orgCtx.org_volume, orgCtx.queue_keys);
     }
     syncFsFromDom();
     if(data.fs) syncOrgActiveFromFs();
     syncAssessmentCriteriaFromDom();
     syncAssessmentContractFromDom();
     if(data.problems){
-      data.problems.selections=[];
-      document.querySelectorAll('[data-problem]:checked').forEach(function(el){
-        data.problems.selections.push({problem_id:Number(el.getAttribute('data-problem')),custom_text:null});
+      var pr=data.problems;
+      if(data.customer&&data.customer.activity_type_ids) pr.activity_type_ids=data.customer.activity_type_ids.slice();
+      if(data.customer) pr.segment_id=data.customer.segment_id;
+      var customSelections=(pr.selections||[]).filter(function(s){return s.custom_text;});
+      var selections=customSelections.slice();
+      document.querySelectorAll('[data-problem-id]').forEach(function(btn){
+        if(btn.getAttribute('data-val')==='1'){
+          selections.push({problem_id:Number(btn.getAttribute('data-problem-id')),custom_text:null});
+        }
+      });
+      document.querySelectorAll('[data-problem-group]').forEach(function(btn){
+        if(btn.getAttribute('data-val')!=='1') return;
+        String(btn.getAttribute('data-problem-group')||'').split(',').forEach(function(id){
+          if(!id) return;
+          selections.push({problem_id:Number(id),custom_text:null});
+        });
+      });
+      var seen=new Set();
+      pr.selections=selections.filter(function(s){
+        var key=s.problem_id||s.custom_text;
+        if(seen.has(key)) return false;
+        seen.add(key);
+        return true;
       });
     }
     if(data.solutions){
@@ -819,11 +1207,126 @@ ${getFsClientJs()}
         if(row) row.label=inp.value;
       });
     });
-    var indSel=document.querySelector('[data-c=industry_id]');
-    if(indSel) indSel.addEventListener('change',function(){
-      var c=data.customer;
-      c.industry_id=indSel.value?Number(indSel.value):null;
-      c.segment_id=null;
+    var segSel=document.querySelector('[data-c=segment_id]');
+    if(segSel) segSel.addEventListener('change',function(){
+      if(!data.customer) return;
+      data.customer.segment_id=segSel.value?Number(segSel.value):null;
+      if(data.problems) data.problems.segment_id=data.customer.segment_id;
+      if(data.problems) data.problems.hypothesis_filter_ids=[];
+      syncUiState();
+      render();
+    });
+    document.querySelectorAll('[data-activity-type]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        if(!data.customer) return;
+        var id=Number(btn.getAttribute('data-activity-type'));
+        var ids=new Set(data.customer.activity_type_ids||[]);
+        if(ids.has(id)) ids.delete(id); else ids.add(id);
+        data.customer.activity_type_ids=[...ids];
+        ensureValidCustomerSegment();
+        if(data.problems){
+          data.problems.activity_type_ids=data.customer.activity_type_ids.slice();
+          data.problems.segment_id=data.customer.segment_id;
+          data.problems.hypothesis_filter_ids=[];
+        }
+        syncUiState();
+        render();
+      });
+    });
+    document.querySelectorAll('[data-problem-activity-type]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        if(!data.problems) return;
+        var id=Number(btn.getAttribute('data-problem-activity-type'));
+        var ids=new Set(data.problems.activity_type_ids||[]);
+        if(ids.has(id)) ids.delete(id); else ids.add(id);
+        data.problems.activity_type_ids=[...ids];
+        syncUiState();
+        render();
+      });
+    });
+    document.querySelectorAll('[data-problem-hypothesis]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        if(!data.problems) return;
+        var id=Number(btn.getAttribute('data-problem-hypothesis'));
+        var ids=new Set(data.problems.hypothesis_filter_ids||[]);
+        if(ids.has(id)) ids.delete(id); else ids.add(id);
+        data.problems.hypothesis_filter_ids=[...ids];
+        syncUiState();
+        render();
+      });
+    });
+    var showAllBtn=document.querySelector('[data-problem-show-all]');
+    if(showAllBtn) showAllBtn.addEventListener('click',function(){
+      if(!data.problems) return;
+      data.problems.show_all_problems=!data.problems.show_all_problems;
+      syncUiState();
+      render();
+    });
+    document.querySelectorAll('[data-problem-grp-toggle]').forEach(function(btn){
+      btn.addEventListener('click',function(e){
+        e.stopPropagation();
+        var id=Number(btn.getAttribute('data-problem-grp-toggle'));
+        data.ui_state=data.ui_state||{};
+        data.ui_state.problem_groups=data.ui_state.problem_groups||[];
+        var set=new Set(data.ui_state.problem_groups);
+        if(set.has(id)) set.delete(id); else set.add(id);
+        data.ui_state.problem_groups=[...set];
+        syncUiState();
+        render();
+      });
+    });
+    function toggleProblemSelection(problemIds, turnOn){
+      if(!data.problems) return;
+      var ids=new Set(problemIds);
+      var kept=(data.problems.selections||[]).filter(function(s){
+        if(s.custom_text) return true;
+        return !ids.has(s.problem_id);
+      });
+      if(turnOn){
+        ids.forEach(function(id){ kept.push({problem_id:id,custom_text:null}); });
+      }
+      data.problems.selections=kept;
+    }
+    document.querySelectorAll('[data-problem-id]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        var id=Number(btn.getAttribute('data-problem-id'));
+        var turnOn=btn.getAttribute('data-val')!=='1';
+        toggleProblemSelection([id], turnOn);
+        syncUiState();
+        render();
+      });
+    });
+    document.querySelectorAll('[data-problem-group]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        var ids=String(btn.getAttribute('data-problem-group')||'').split(',').map(Number).filter(Boolean);
+        var turnOn=btn.getAttribute('data-val')!=='1';
+        toggleProblemSelection(ids, turnOn);
+        syncUiState();
+        render();
+      });
+    });
+    document.querySelectorAll('[data-widget-group-toggle]').forEach(function(btn){
+      btn.addEventListener('click',function(){
+        var key=btn.getAttribute('data-widget-group-toggle');
+        if(!key) return;
+        data.ui_state=data.ui_state||{};
+        data.ui_state.widget_groups=data.ui_state.widget_groups||{};
+        data.ui_state.widget_groups[key]=!uiOpen('widget_groups',key,true);
+        syncUiState();
+        render();
+      });
+    });
+    var widgetCollapseBtn=document.querySelector('[data-widget-collapse-all]');
+    if(widgetCollapseBtn) widgetCollapseBtn.addEventListener('click',function(){
+      if(!data.widgets) return;
+      var groups=buildWidgetDisplayGroups(data.widgets.catalog||[]);
+      var keys=groups.map(function(g){return g.key;});
+      var allCollapsed=keys.length>1&&keys.every(function(key){return !uiOpen('widget_groups',key,true);});
+      data.ui_state=data.ui_state||{};
+      data.ui_state.widget_groups={};
+      if(allCollapsed){
+        keys.forEach(function(key){ data.ui_state.widget_groups[key]=true; });
+      }
       syncUiState();
       render();
     });
