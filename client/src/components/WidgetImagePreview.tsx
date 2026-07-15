@@ -89,6 +89,7 @@ export function WidgetImageThumbnail({
       return (
         <button
           type="button"
+          data-readonly-allow
           className={`${className} flex items-center justify-center text-[10px] text-slate-400 bg-slate-50`}
           title={`${name} — открыть карточку`}
           onClick={handleClick}

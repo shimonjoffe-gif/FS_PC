@@ -43,6 +43,8 @@ export default function BriefingExportImportModal({
 
   const [file, setFile] = useState<File | null>(null);
   const [importMode, setImportMode] = useState<'replace' | 'merge'>('replace');
+  const [createNewVersion, setCreateNewVersion] = useState(false);
+  const [versionNote, setVersionNote] = useState('');
   const [importBlocks, setImportBlocks] = useState<Partial<ExportBlocks>>({});
   const [preview, setPreview] = useState<{
     blocks: ExportBlockKey[];
@@ -153,6 +155,10 @@ export default function BriefingExportImportModal({
       const res = await importBriefingHtml(briefingId, html, {
         mode: importMode,
         blocks: importMode === 'merge' ? importBlocks : undefined,
+        create_new_version: createNewVersion,
+        version_note: createNewVersion
+          ? (versionNote.trim() || `Импорт HTML ${new Date().toLocaleDateString('ru-RU')}`)
+          : undefined,
       });
       setResult(res);
       setStep('done');
@@ -236,6 +242,31 @@ export default function BriefingExportImportModal({
                     />
                     Обновить только выбранные разделы
                   </label>
+
+                  <div className="border-t border-slate-100 pt-2 mt-2 space-y-2">
+                    <label className="flex items-start gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={createNewVersion}
+                        onChange={e => setCreateNewVersion(e.target.checked)}
+                      />
+                      <span>
+                        <span className="font-medium">Создать новую версию</span>
+                        <span className="block text-xs text-slate-500">
+                          Текущий черновик заморозить; импорт — в чистую v+1 (без оценки РП и сценариев)
+                        </span>
+                      </span>
+                    </label>
+                    {createNewVersion && (
+                      <input
+                        className="w-full text-xs border rounded px-2 py-1.5"
+                        placeholder="Примечание (файл от …)"
+                        value={versionNote}
+                        onChange={e => setVersionNote(e.target.value)}
+                      />
+                    )}
+                  </div>
                 </div>
               )}
 

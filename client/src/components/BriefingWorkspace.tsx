@@ -4,7 +4,7 @@ import type {
   BriefingFsSel, BriefingSolutionSel, BriefingProblemSel, BriefingCustomerWidgetSel, BriefingParams,
   TeamProportions, BriefingFsDetailLine,
   FsQueueKey, FsQueuesMap, BriefingAssessment, QueueLabelsMap, FsNmdValue, FsCatalogItem,
-  ActivityType, HypothesisListItem, CatalogLink, ProblemSolutionUsage,
+  ActivityType, HypothesisListItem, CatalogLink, ProblemSolutionUsage, StakeholderRole,
 } from '../types';
 import {
   FS_QUEUE_KEYS, FS_QUEUE_LABELS, FS_NMD_VALUES, FS_FUNC_TYPE_VALUES,
@@ -20,7 +20,7 @@ import {
   getIndustries, getSegments, getSegmentsByIndustry, getMaturityLevels, getProblems, getSolutions,
   getProblemSolutionLinks,
   getWidgets, getWidgetsBySolution, getSolutionWidgetLinks, getWidgetFsLinks,
-  getActivityTypes, getHypotheses, getSolutionFsLinksAll,
+  getActivityTypes, getHypotheses, getSolutionFsLinksAll, getStakeholderRoles,
 } from '../api';
 import {
   applyAssessmentPatch, recomputeAssessmentDerived, computeAutoUnifiedRate, isUnifiedRateAutoMode,
@@ -95,7 +95,13 @@ import {
 import CollapsibleSection from './CollapsibleSection';
 import QueueSwitcher from './QueueSwitcher';
 import AssessmentScenariosTab from './AssessmentScenariosTab';
-import SummaryScenarioMatrixTable from './SummaryScenarioMatrixTable';
+import BriefingVersionBar from './BriefingVersionBar';
+import {
+  BriefingReadOnlyContext,
+  BriefingReadOnlyLayer,
+  YesNoButton,
+  useBriefingReadOnly,
+} from '../briefingReadOnly';
 import { computeSummaryScenarioMatrix } from '../summaryScenarioMatrix';
 import {
   mergePhaseCalcParams,
@@ -131,7 +137,7 @@ import {
 import { numericInputHandlers } from '../utils/numericInputHandlers';
 import { OverridableNumberInput } from './OverridableNumberInput';
 
-type Tab = 'customer' | 'widgets' | 'solutions' | 'fs' | 'assessment' | 'params' | 'scenarios' | 'summary';
+type Tab = 'customer' | 'widgets' | 'solutions' | 'fs' | 'assessment' | 'params' | 'scenarios';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'customer', label: 'Заказчик' },
@@ -141,7 +147,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'assessment', label: 'Параметры оценки' },
   { id: 'params', label: 'Оценка РП' },
   { id: 'scenarios', label: 'Варианты оценки' },
-  { id: 'summary', label: 'Итоги' },
 ];
 
 const SCENARIOS = ['Кейс', 'ПРОФ', 'Совм.запуск'];
@@ -249,6 +254,7 @@ function QueueCommentModal({
           </div>
           <button
             type="button"
+            data-readonly-allow
             onClick={onClose}
             className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0"
             aria-label="Закрыть"
@@ -268,6 +274,7 @@ function QueueCommentModal({
         <div className="flex justify-end gap-2 px-4 py-3 border-t border-slate-100">
           <button
             type="button"
+            data-readonly-allow
             className="px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 rounded-lg"
             onClick={onClose}
           >
@@ -604,12 +611,17 @@ function EditableQueueHeader({
   label: string;
   onChange: (next: string) => void;
 }) {
+  const readOnly = useBriefingReadOnly();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(label);
 
   useEffect(() => {
     setDraft(label);
   }, [label]);
+
+  if (readOnly) {
+    return <span className="w-full text-center truncate">{label}</span>;
+  }
 
   if (editing) {
     return (
@@ -654,16 +666,37 @@ function briefingActivityTypeIds(data: Pick<BriefingFull, 'activity_type_ids' | 
   return [];
 }
 
+function hypothesisMatchesCustomerFilter(h: HypothesisListItem, data: BriefingFull): boolean {
+  const activityIds = briefingActivityTypeIds(data);
+  if (activityIds.length > 0) {
+    const hypActs = h.activity_type_ids ?? [];
+    if (!activityIds.some(id => hypActs.includes(id))) return false;
+  }
+  if (data.segment_id != null) {
+    const segs = h.segment_ids ?? [];
+    if (!segs.includes(data.segment_id)) return false;
+  }
+  const roleIds = data.stakeholder_role_ids ?? [];
+  if (roleIds.length > 0) {
+    const hypRoles = h.stakeholder_role_ids ?? [];
+    if (!roleIds.some(id => hypRoles.includes(id))) return false;
+  }
+  return true;
+}
+
 function ChipMultiSelect({
   items,
   selectedIds,
   onChange,
   emptyLabel = 'Справочник пуст',
+  navigationOnly = false,
 }: {
   items: { id: number; name: string }[];
   selectedIds: number[];
   onChange: (ids: number[]) => void;
   emptyLabel?: string;
+  /** Фильтр просмотра — доступен и в замороженной версии. */
+  navigationOnly?: boolean;
 }) {
   function toggle(id: number) {
     onChange(selectedIds.includes(id) ? selectedIds.filter(x => x !== id) : [...selectedIds, id]);
@@ -681,6 +714,7 @@ function ChipMultiSelect({
           <button
             key={item.id}
             type="button"
+            {...(navigationOnly ? { 'data-readonly-allow': true } : {})}
             className={`text-[11px] leading-tight px-1.5 py-0.5 rounded border whitespace-nowrap ${
               on ? 'bg-blue-50 border-blue-300 text-blue-800' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
             }`}
@@ -799,6 +833,7 @@ function ProblemsSelectTable({
             {opts.variant === 'parent' && opts.groupParentId != null ? (
               <button
                 type="button"
+                data-readonly-allow
                 className="text-slate-500 hover:text-slate-800 w-5 h-5 leading-none shrink-0 mt-0.5"
                 title={collapsedGroups.has(opts.groupParentId) ? 'Развернуть группу' : 'Свернуть группу'}
                 onClick={() => toggleGroup(opts.groupParentId!)}
@@ -811,6 +846,7 @@ function ProblemsSelectTable({
             {solutions.length > 0 ? (
               <button
                 type="button"
+                data-readonly-allow
                 className="text-slate-400 hover:text-slate-700 shrink-0 mt-0.5 text-[10px] leading-none px-0.5"
                 title="Показать/скрыть решения"
                 onClick={() => toggleSolutionsExpand(problem.id)}
@@ -852,16 +888,12 @@ function ProblemsSelectTable({
               {yesNoLabel(isYes)}
             </span>
           ) : (
-            <button
-              type="button"
-              className={`px-2 py-0.5 rounded min-w-[36px] cursor-pointer ${
-                yesNoClass(isYes, !isYes && unmatched)
-              }`}
+            <YesNoButton
+              isYes={isYes}
+              unmatched={!isYes && unmatched}
               title={isYes ? 'Клик — снять выбор' : 'Клик — выбрать проблематику'}
               onClick={() => toggleProblem(problem, groupCtx)}
-            >
-              {yesNoLabel(isYes)}
-            </button>
+            />
           )}
         </td>
       </tr>
@@ -1172,6 +1204,7 @@ function SolutionsQueueTable({
             {opts.variant === 'parent' && opts.groupParentId != null ? (
               <button
                 type="button"
+                data-readonly-allow
                 className="text-slate-500 hover:text-slate-800 w-5 h-5 leading-none shrink-0 mt-0.5"
                 title={collapsedGroups.has(opts.groupParentId) ? 'Развернуть группу' : 'Свернуть группу'}
                 onClick={() => toggleGroup(opts.groupParentId!)}
@@ -1184,6 +1217,7 @@ function SolutionsQueueTable({
             <div className="min-w-0">
               <button
                 type="button"
+                data-readonly-allow
                 className={`text-left w-full hover:text-blue-700 ${titleClass} ${unmatchedProblem ? 'italic text-slate-500' : ''}`}
                 onClick={() => onOpenSolution(sol)}
                 title="Открыть карточку решения"
@@ -1254,16 +1288,12 @@ function SolutionsQueueTable({
                   {yesNoLabel(isYes)}
                 </span>
               ) : (
-                <button
-                  type="button"
-                  className={`px-2 py-0.5 rounded min-w-[36px] cursor-pointer ${
-                    yesNoClass(isYes, unmatched && !isYes)
-                  }`}
+                <YesNoButton
+                  isYes={isYes}
+                  unmatched={unmatched && !isYes}
                   title={isYes ? 'Клик — снять решение с очереди' : 'Клик — назначить решение в очередь'}
                   onClick={() => toggleSolutionQueue(sol, q, groupCtx)}
-                >
-                  {yesNoLabel(isYes)}
-                </button>
+                />
               )}
             </td>,
             renderCommentCell(sol, q, isGroupParent),
@@ -1415,6 +1445,7 @@ function FsQueueTable({
   requiredSolutionsByFsItemId?: Map<number, { id: number; name: string }[]>;
   onOpenWidgetCard: (widgetId: number) => void;
 }) {
+  const readOnly = useBriefingReadOnly();
   const [dragPayload, setDragPayload] = useState<FsDragPayload | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [expandedQueues, setExpandedQueues] = useState<Set<FsQueueKey>>(() => new Set());
@@ -1491,6 +1522,18 @@ function FsQueueTable({
     const spManual = isFsItemSpManualForQueue(row, q);
     const nmdManual = isFsItemNmdManualForQueue(row, q);
     const catalogSp = catalogSpForItem(item);
+    if (readOnly) {
+      return (
+        <td
+          key={`${item.fs_item_id}-${q}-yes`}
+          className="p-1 border text-center align-top"
+        >
+          <span className={`inline-block px-2 py-0.5 rounded min-w-[36px] ${yesNoClass(isYes, unmatched && !isYes)}`}>
+            {yesNoLabel(isYes)}
+          </span>
+        </td>
+      );
+    }
     return (
       <td
         key={`${item.fs_item_id}-${q}-yes`}
@@ -1902,6 +1945,7 @@ function FsQueueTable({
       <div className="flex flex-wrap justify-end gap-2">
         <button
           type="button"
+          data-readonly-allow
           onClick={() => (allFsGroupsCollapsed ? expandAllSections() : collapseAllSections())}
           className="text-xs text-slate-600 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-50"
           disabled={displayGroups.length === 0}
@@ -1911,6 +1955,7 @@ function FsQueueTable({
         {yesFilter && (
           <button
             type="button"
+            data-readonly-allow
             onClick={() => setYesFilter(null)}
             className="text-xs text-blue-700 border border-blue-200 bg-blue-50 px-3 py-1.5 rounded hover:bg-blue-100"
           >
@@ -1919,6 +1964,7 @@ function FsQueueTable({
         )}
         <button
           type="button"
+          data-readonly-allow
           onClick={() => setShowNsiColumns(v => !v)}
           className="text-xs text-slate-600 border border-slate-200 px-3 py-1.5 rounded hover:bg-slate-50"
         >
@@ -2021,6 +2067,7 @@ function FsQueueTable({
                 <div className="flex items-center justify-center gap-1">
                   <button
                     type="button"
+                    data-readonly-allow
                     onClick={() => toggleQueueExpand(q)}
                     className="text-slate-500 hover:text-slate-800 w-5 h-5 leading-none shrink-0"
                     title={expandedQueues.has(q) ? 'Свернуть колонки очереди' : 'Развернуть: Да/Нет, SP, НМД'}
@@ -2104,6 +2151,7 @@ function FsQueueTable({
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
+                      data-readonly-allow
                       onMouseDown={e => e.preventDefault()}
                       onClick={e => toggleGroup(group, e.currentTarget.closest('tr'))}
                       className="text-slate-600 hover:text-slate-900 w-6 h-6 leading-none shrink-0"
@@ -2212,6 +2260,7 @@ function FsQueueTable({
                       <td className="p-2 border">
                         <button
                           type="button"
+                          data-readonly-allow
                           className="text-left w-full min-w-0 group"
                           onClick={() => setCardModalItem(item)}
                           title="Открыть карточку пункта ФС"
@@ -2387,18 +2436,24 @@ function FsQueueTable({
 type SaveFeedback = { tab: Tab; type: 'success' | 'error'; message: string };
 
 function TabSaveBar({
-  tabId, onSave, savingTab, feedback,
+  tabId, onSave, savingTab, feedback, disabled,
 }: {
   tabId: Tab;
   onSave: () => void;
   savingTab: Tab | null;
   feedback: SaveFeedback | null;
+  disabled?: boolean;
 }) {
   const saving = savingTab === tabId;
   const fb = feedback?.tab === tabId ? feedback : null;
   return (
     <div className="flex items-center gap-3">
-      <button onClick={onSave} disabled={saving} className={SAVE_BTN_CLASS}>
+      <button
+        onClick={onSave}
+        disabled={saving || disabled}
+        data-readonly-skip
+        className={SAVE_BTN_CLASS}
+      >
         {saving ? 'Сохранение...' : 'Сохранить'}
       </button>
       {fb && (
@@ -2428,6 +2483,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   const [data, setData] = useState<BriefingFull | null>(null);
   const [industries, setIndustries] = useState<Industry[]>([]);
   const [activityTypes, setActivityTypes] = useState<ActivityType[]>([]);
+  const [stakeholderRoles, setStakeholderRoles] = useState<StakeholderRole[]>([]);
   const [hypothesesCatalog, setHypothesesCatalog] = useState<HypothesisListItem[]>([]);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [maturityLevels, setMaturityLevels] = useState<MaturityLevel[]>([]);
@@ -2532,6 +2588,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   useEffect(() => {
     getIndustries().then(setIndustries);
     getActivityTypes().then(setActivityTypes);
+    getStakeholderRoles().then(setStakeholderRoles);
     getHypotheses().then(setHypothesesCatalog);
     getMaturityLevels().then(setMaturityLevels);
   }, []);
@@ -2587,7 +2644,34 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   useEffect(() => {
     setShowAllProblems(false);
     setHypothesisFilterIds([]);
-  }, [data?.activity_type_ids, data?.segment_id]);
+  }, [data?.activity_type_ids, data?.segment_id, data?.stakeholder_role_ids]);
+
+  const hasActivityOrSegmentFilter =
+    (data?.activity_type_ids?.length ?? 0) > 0 || data?.segment_id != null;
+  const hasStakeholderFilter = (data?.stakeholder_role_ids?.length ?? 0) > 0;
+
+  const customerProblemFilterActive = hasActivityOrSegmentFilter || hasStakeholderFilter;
+
+  const stakeholderOnlyProblemIds = useMemo(() => {
+    if (!data || hasActivityOrSegmentFilter || !hasStakeholderFilter) return new Set<number>();
+    const matchingNames = new Set(
+      hypothesesCatalog
+        .filter(h => hypothesisMatchesCustomerFilter(h, data))
+        .map(h => h.name),
+    );
+    const ids = new Set<number>();
+    for (const p of allProblemsCatalog) {
+      if ((p.used_in_hypotheses ?? []).some(name => matchingNames.has(name))) ids.add(p.id);
+    }
+    return ids;
+  }, [allProblemsCatalog, data, hasActivityOrSegmentFilter, hasStakeholderFilter, hypothesesCatalog]);
+
+  const baseProblemFilterIds = hasActivityOrSegmentFilter ? filteredProblemIds : stakeholderOnlyProblemIds;
+
+  const strictFilterPoolIds = useMemo(() => {
+    if (!customerProblemFilterActive) return new Set<number>();
+    return collectProblemWithAncestors(allProblemsCatalog, baseProblemFilterIds);
+  }, [allProblemsCatalog, baseProblemFilterIds, customerProblemFilterActive]);
 
   const selectedProblemIds = useMemo(() => {
     const ids = new Set<number>();
@@ -2597,25 +2681,17 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     return ids;
   }, [data?.problems]);
 
-  const customerProblemFilterActive =
-    (data?.activity_type_ids?.length ?? 0) > 0 || data?.segment_id != null;
-
-  const strictFilterPoolIds = useMemo(() => {
-    if (!customerProblemFilterActive) return new Set<number>();
-    return collectProblemWithAncestors(allProblemsCatalog, filteredProblemIds);
-  }, [allProblemsCatalog, filteredProblemIds, customerProblemFilterActive]);
-
   const availableHypothesesForFilter = useMemo(() => {
-    if (!customerProblemFilterActive) return [];
+    if (!customerProblemFilterActive || !data) return [];
     const namesInPool = new Set<string>();
     for (const p of allProblemsCatalog) {
       if (!strictFilterPoolIds.has(p.id)) continue;
       for (const name of p.used_in_hypotheses ?? []) namesInPool.add(name);
     }
     return hypothesesCatalog
-      .filter(h => namesInPool.has(h.name))
+      .filter(h => namesInPool.has(h.name) && hypothesisMatchesCustomerFilter(h, data))
       .map(h => ({ id: h.id, name: h.name }));
-  }, [allProblemsCatalog, strictFilterPoolIds, hypothesesCatalog, customerProblemFilterActive]);
+  }, [allProblemsCatalog, strictFilterPoolIds, hypothesesCatalog, customerProblemFilterActive, data]);
 
   useEffect(() => {
     const available = new Set(availableHypothesesForFilter.map(h => h.id));
@@ -2631,7 +2707,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
 
     function matchesActivity(problemId: number): boolean {
       if (!activityFilterActive) return true;
-      return filteredProblemIds.has(problemId);
+      return baseProblemFilterIds.has(problemId);
     }
 
     function matchesHypothesis(problem: Problem): boolean {
@@ -2669,9 +2745,9 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
       const hypothesisFail = hypothesisFilterActive && !matchesHypothesis(problem);
       if (!activityFail && !hypothesisFail) return null;
       if (activityFail && hypothesisFail) {
-        return 'не подходит под виды деятельности/сегмент и гипотезы';
+        return 'не подходит под виды деятельности/сегмент/роли и гипотезы';
       }
-      if (activityFail) return 'не подходит под виды деятельности/сегмент';
+      if (activityFail) return 'не подходит под виды деятельности, сегмент или роли заказчика';
       return 'не подходит под выбранные гипотезы';
     }
 
@@ -2679,7 +2755,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }, [
     allProblemsCatalog,
     customerProblemFilterActive,
-    filteredProblemIds,
+    baseProblemFilterIds,
     hypothesisFilterIds,
     hypothesesCatalog,
     selectedProblemIds,
@@ -2860,6 +2936,14 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }, [data, assessmentRecalcFlash, assessmentNsi]);
 
   async function runTabSave(tabId: Tab, fn: () => Promise<void>) {
+    if (data?.read_only) {
+      setSaveFeedback({
+        tab: tabId,
+        type: 'error',
+        message: 'Замороженная версия — только просмотр',
+      });
+      return;
+    }
     setSavingTab(tabId);
     setSaveFeedback(null);
     try {
@@ -2875,12 +2959,17 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }
 
   function setBriefingActivityTypeIds(ids: number[]) {
-    if (!data) return;
+    if (!data || data.read_only) return;
     setData({
       ...data,
       activity_type_ids: ids,
       segment_id: ids.length === 0 ? null : data.segment_id,
     });
+  }
+
+  function setBriefingStakeholderRoleIds(ids: number[]) {
+    if (!data || data.read_only) return;
+    setData({ ...data, stakeholder_role_ids: ids });
   }
 
   function saveCustomerTab() {
@@ -2891,6 +2980,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
         name: data.name,
         activity_type_ids,
         segment_id: data.segment_id,
+        stakeholder_role_ids: data.stakeholder_role_ids ?? [],
         scenario: data.scenario,
         headcount: data.headcount,
       });
@@ -2994,6 +3084,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     | ((assessment: BriefingAssessment) => Record<string, unknown>);
 
   function updateAssessment(patch: AssessmentPatch) {
+    if (data?.read_only) return;
     if (typeof patch !== 'function' && !isOrgVolumeOnlyPatch(patch)) {
       setAssessmentRecalcFlash(k => k + 1);
     } else if (typeof patch === 'function') {
@@ -3036,6 +3127,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }
 
   function handleAssessmentChange(patch: Record<string, unknown>) {
+    if (data?.read_only) return;
     if (patch.reset_project_type) {
       void patchBriefingAssessment(briefingId, { reset_project_type: true })
         .then(applyAssessmentFromServer);
@@ -3142,12 +3234,8 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     });
   }
 
-  function saveSummaryTab() {
-    void runTabSave('summary', async () => {});
-  }
-
   function updateProblemSelections(changes: { problemId: number; selected: boolean }[]) {
-    if (!data || changes.length === 0) return;
+    if (!data || data.read_only || changes.length === 0) return;
     setData(d => {
       if (!d) return d;
       const custom = d.problems.filter(p => p.custom_text);
@@ -3171,7 +3259,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }
 
   function addCustomProblem() {
-    if (!data || !customProblem.trim()) return;
+    if (!data || data.read_only || !customProblem.trim()) return;
     setData(d => (d ? {
       ...d,
       problems: [...d.problems, { problem_id: null, custom_text: customProblem.trim(), linked_problem_id: null }],
@@ -3341,7 +3429,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }
 
   function updateSolutionSelections(changes: { solutionId: number; next: BriefingSolutionSel | null }[]) {
-    if (!data || changes.length === 0) return;
+    if (!data || data.read_only || changes.length === 0) return;
     for (const { solutionId, next } of changes) {
       if (next) manualSolutionIdsRef.current.add(solutionId);
       else manualSolutionIdsRef.current.delete(solutionId);
@@ -3516,7 +3604,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }
 
   async function updateFsItem(item: BriefingFsSel, patch: Partial<BriefingFsSel>) {
-    if (!data) return;
+    if (!data || data.read_only) return;
     const current = data.fs_items.find(i => i.fs_item_id === item.fs_item_id) ?? item;
     const merged: BriefingFsSel = {
       ...current,
@@ -3585,7 +3673,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   }
 
   async function updateFsItems(updates: { item: BriefingFsSel; patch: Partial<BriefingFsSel> }[]) {
-    if (!data || updates.length === 0) return;
+    if (!data || data.read_only || updates.length === 0) return;
     const byId = new Map<number, BriefingFsSel>();
     for (const { item, patch } of updates) {
       const current = byId.get(item.fs_item_id) ?? data.fs_items.find(i => i.fs_item_id === item.fs_item_id) ?? item;
@@ -3818,8 +3906,10 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
   const params = data.params;
   const team = parseJson<TeamProportions>(params.team_json, DEFAULT_TEAM);
   const queueLabels = parseQueueLabels(params.queue_labels_json);
+  const readOnly = !!data.read_only;
 
   function updateQueueLabel(q: FsQueueKey, name: string) {
+    if (data?.read_only) return;
     setData(d => {
       if (!d) return d;
       const labels = parseQueueLabels(d.params.queue_labels_json);
@@ -3837,10 +3927,30 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
     assessment: saveAssessmentTab,
     params: saveParamsTab,
     scenarios: saveScenariosTab,
-    summary: saveSummaryTab,
   };
 
+  function renderGenerateProjectButton() {
+    if (!data) return null;
+    if (data.project_id) {
+      return (
+        <span className="text-sm text-green-600">
+          Проект уже создан (ID: {data.project_id})
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => void handleGenerateProject()}
+        className="text-sm bg-emerald-600 text-white px-4 py-2 rounded hover:bg-emerald-700"
+      >
+        Сформировать калькулятор
+      </button>
+    );
+  }
+
   return (
+    <BriefingReadOnlyContext.Provider value={readOnly}>
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <div className="bg-white border-b border-slate-200 px-4 flex gap-0 shrink-0 overflow-x-auto">
         {TABS.map(t => (
@@ -3855,6 +3965,25 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
         ))}
       </div>
 
+      {data && (
+        <BriefingVersionBar
+          briefingId={briefingId}
+          data={data}
+          onViewVersion={viewed => {
+            if (viewed.assessment?.phase_calc_params) {
+              viewed.assessment.phase_calc_params = mergePhaseCalcParams(viewed.assessment.phase_calc_params);
+            }
+            setData({
+              ...viewed,
+              activity_type_ids: viewed.activity_type_ids ?? [],
+              customer_widgets: viewed.customer_widgets ?? [],
+            });
+          }}
+          onReloadDraft={() => { void load(); }}
+        />
+      )}
+
+      <BriefingReadOnlyLayer className="flex flex-col flex-1 min-h-0 overflow-hidden">
       <div className="bg-white border-b border-slate-200 px-4 py-2 shrink-0">
         <div className="flex items-center gap-3 flex-wrap">
           <TabSaveBar
@@ -3862,6 +3991,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
             onSave={tabSaveHandlers[tab]}
             savingTab={savingTab}
             feedback={saveFeedback}
+            disabled={!!data?.read_only}
           />
           {tab === 'customer' && (
             <div className="flex flex-wrap items-end gap-3 flex-1 min-w-0">
@@ -3919,6 +4049,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
               Обновить из выборов
             </button>
           )}
+          {(tab === 'params' || tab === 'scenarios') && renderGenerateProjectButton()}
         </div>
       </div>
 
@@ -3954,12 +4085,22 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
               {customerProblemFilterActive && (
                 <button
                   type="button"
+                  data-readonly-allow
                   className="text-[11px] px-2 py-0.5 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 whitespace-nowrap shrink-0 justify-self-end"
                   onClick={() => setShowAllProblems(v => !v)}
                 >
                   {showAllProblems ? 'Только по фильтру' : 'Показать все'}
                 </button>
               )}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              <span className="text-[11px] text-slate-500 shrink-0">Заказчик (роли)</span>
+              <ChipMultiSelect
+                items={stakeholderRoles}
+                selectedIds={data.stakeholder_role_ids ?? []}
+                onChange={setBriefingStakeholderRoleIds}
+                emptyLabel="Справочник ролей пуст"
+              />
             </div>
             {customerProblemFilterActive && (
               <div className="flex flex-wrap items-center gap-1.5 shrink-0">
@@ -3970,6 +4111,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
                     selectedIds={hypothesisFilterIds}
                     onChange={setHypothesisFilterIds}
                     emptyLabel=""
+                    navigationOnly
                   />
                 ) : (
                   <span className="text-[11px] text-slate-400">нет по текущему фильтру</span>
@@ -4062,6 +4204,7 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
               </p>
               <button
                 type="button"
+                data-readonly-allow
                 className="text-xs px-3 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-slate-50 whitespace-nowrap shrink-0"
                 onClick={() => setShowAllSolutions(v => !v)}
               >
@@ -4511,43 +4654,18 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
               defaultTeam={team}
               nsi={assessmentNsi ?? undefined}
               snapshots={data.assessment_snapshots ?? []}
+              queueLabels={queueLabels}
+              summaryMatrix={summaryScenarioMatrix}
               onChange={scenarios => updateAssessment({ assessment_scenarios: scenarios })}
-              onSnapshotsChange={snaps => setData(d => d ? { ...d, assessment_snapshots: snaps } : d)}
+              onSnapshotsChange={snaps => {
+                if (data.read_only) return;
+                setData(d => d ? { ...d, assessment_snapshots: snaps } : d);
+              }}
             />
           </div>
         )}
-
-        {tab === 'summary' && (
-          <div className="space-y-4">
-            {summaryScenarioMatrix ? (
-              <SummaryScenarioMatrixTable
-                data={summaryScenarioMatrix}
-                queueLabels={queueLabels}
-              />
-            ) : (
-              <p className="text-sm text-slate-400">
-                {!data.assessment
-                  ? 'Нет данных оценки.'
-                  : getEvaluatedQueueKeys(
-                    data.assessment.org_volume?.queues
-                      ? data.assessment.org_volume
-                      : data.assessment.auto_org_volume,
-                  ).length === 0
-                    ? 'Нет оцениваемых очередей — включите «Оценивать» на вкладке «Оценка РП».'
-                    : 'Нет данных для сводки ДО. Проверьте включение фаз на вкладке «Оценка РП».'}
-              </p>
-            )}
-            {data.project_id ? (
-              <p className="text-sm text-green-600">Проект уже создан (ID: {data.project_id})</p>
-            ) : (
-              <button onClick={handleGenerateProject}
-                className="text-sm bg-blue-600 text-white px-6 py-2.5 rounded hover:bg-blue-700">
-                Сформировать калькулятор
-              </button>
-            )}
-          </div>
-        )}
       </div>
+      </BriefingReadOnlyLayer>
 
       {widgetCardId != null && (
         <BriefingWidgetCardModal
@@ -4558,5 +4676,6 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
         />
       )}
     </div>
+    </BriefingReadOnlyContext.Provider>
   );
 }

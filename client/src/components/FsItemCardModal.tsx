@@ -209,7 +209,7 @@ export default function FsItemCardModal({
               </span>
             </div>
           </div>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0">✕</button>
+          <button type="button" data-readonly-allow onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0">✕</button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
@@ -377,7 +377,7 @@ export default function FsItemCardModal({
         </div>
 
         <div className="px-4 py-3 border-t border-slate-100 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="text-sm px-3 py-1.5 rounded border border-slate-200 text-slate-600">Отмена</button>
+          <button type="button" data-readonly-allow onClick={onClose} className="text-sm px-3 py-1.5 rounded border border-slate-200 text-slate-600">Отмена</button>
           <button
             type="button"
             onClick={handleSave}

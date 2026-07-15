@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { db } from './db';
 
-const UPLOADS_DIR = path.join(process.cwd(), '..', 'data', 'uploads');
+import { UPLOADS_DIR } from './paths';
 const WIDGETS_DIR = path.join(UPLOADS_DIR, 'widgets');
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const ALLOWED_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);

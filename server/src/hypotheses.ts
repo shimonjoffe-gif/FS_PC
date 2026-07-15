@@ -1,7 +1,15 @@
 import { db } from './db';
 import { loadHypothesisActivityTypes, syncHypothesisActivityTypes } from './activityTypes';
+import {
+  loadHypothesisSegmentIds,
+  loadHypothesisStakeholderRoles,
+  syncHypothesisSegments,
+  syncHypothesisStakeholderRoles,
+  type HypothesisStakeholderRoleInput,
+} from './stakeholderRoles';
 import { recomputeCatalogCodes, recomputeHypothesisSolutionCodes } from './solutionNumbering';
-import { recomputeAllProblemCodes, pruneProblemsWithoutHypothesis, createProblem } from './problems';
+import { recomputeAllProblemCodes } from './problemNumbering';
+import { pruneProblemsWithoutHypothesis, createProblem } from './problems';
 import { pruneSolutionsWithoutHypothesis } from './solutions';
 
 export { createProblem };
@@ -23,6 +31,9 @@ export interface HypothesisListRow {
   activity_type_count: number;
   activity_type_names?: string | null;
   activity_type_ids?: number[];
+  segment_ids?: number[];
+  segment_names?: string | null;
+  stakeholder_role_ids?: number[];
   updated_at: string;
 }
 
@@ -50,13 +61,29 @@ export interface HypothesisProblemRow {
   solutions: HypothesisSolutionRow[];
 }
 
-export interface HypothesisDetail {
+export interface HypothesisCanvasFields {
+  unique_value_proposition: string | null;
+  key_metrics: string | null;
+  unfair_advantage: string | null;
+  channels: string | null;
+  revenue_streams: string | null;
+  cost_structure: string | null;
+  product: string | null;
+  market: string | null;
+  alternatives: string | null;
+  early_adopters: string | null;
+}
+
+export interface HypothesisDetail extends HypothesisCanvasFields {
   id: number;
   name: string;
   target_audience: string | null;
+  triggers: string | null;
   maturity_id: number | null;
   maturity_name: string | null;
   activity_types: { id: number; name: string }[];
+  segments: { id: number; name: string }[];
+  stakeholder_roles: { id: number; name: string; description: string | null }[];
   problems: HypothesisProblemRow[];
 }
 
@@ -71,16 +98,36 @@ export function listHypotheses(): HypothesisListRow[] {
             WHERE hat.hypothesis_id = h.id) as activity_type_names,
            (SELECT GROUP_CONCAT(hat.activity_type_id)
             FROM hypothesis_activity_types hat
-            WHERE hat.hypothesis_id = h.id) as activity_type_ids_csv
+            WHERE hat.hypothesis_id = h.id) as activity_type_ids_csv,
+           (SELECT GROUP_CONCAT(hs.segment_id)
+            FROM hypothesis_segments hs
+            WHERE hs.hypothesis_id = h.id) as segment_ids_csv,
+           (SELECT GROUP_CONCAT(seg.name, ', ')
+            FROM hypothesis_segments hs
+            JOIN segments seg ON seg.id = hs.segment_id
+            WHERE hs.hypothesis_id = h.id) as segment_names,
+           (SELECT GROUP_CONCAT(hsr.stakeholder_role_id)
+            FROM hypothesis_stakeholder_roles hsr
+            WHERE hsr.hypothesis_id = h.id) as stakeholder_role_ids_csv
     FROM hypotheses h
     LEFT JOIN maturity_levels m ON m.id = h.maturity_id
     ORDER BY h.name, h.id
-  `).all() as (HypothesisListRow & { activity_type_ids_csv: string | null })[];
+  `).all() as (HypothesisListRow & {
+    activity_type_ids_csv: string | null;
+    segment_ids_csv: string | null;
+    stakeholder_role_ids_csv: string | null;
+  })[];
 
   return rows.map(row => ({
     ...row,
     activity_type_ids: row.activity_type_ids_csv
       ? row.activity_type_ids_csv.split(',').map(Number).filter(Boolean)
+      : [],
+    segment_ids: row.segment_ids_csv
+      ? row.segment_ids_csv.split(',').map(Number).filter(Boolean)
+      : [],
+    stakeholder_role_ids: row.stakeholder_role_ids_csv
+      ? row.stakeholder_role_ids_csv.split(',').map(Number).filter(Boolean)
       : [],
   }));
 }
@@ -118,13 +165,26 @@ function computeDepths(items: { id: number; parent_id: number | null }[]): Map<n
 
 export function loadHypothesisById(id: number): HypothesisDetail | null {
   const row = db.prepare(`
-    SELECT h.id, h.name, h.target_audience, h.maturity_id, m.name as maturity_name
+    SELECT h.id, h.name, h.target_audience, h.triggers, h.maturity_id, m.name as maturity_name,
+           h.unique_value_proposition, h.key_metrics, h.unfair_advantage,
+           h.channels, h.revenue_streams, h.cost_structure,
+           h.product, h.market, h.alternatives, h.early_adopters
     FROM hypotheses h
     LEFT JOIN maturity_levels m ON m.id = h.maturity_id
     WHERE h.id=?
   `).get(id) as {
-    id: number; name: string; target_audience: string | null;
+    id: number; name: string; target_audience: string | null; triggers: string | null;
     maturity_id: number | null; maturity_name: string | null;
+    unique_value_proposition: string | null;
+    key_metrics: string | null;
+    unfair_advantage: string | null;
+    channels: string | null;
+    revenue_streams: string | null;
+    cost_structure: string | null;
+    product: string | null;
+    market: string | null;
+    alternatives: string | null;
+    early_adopters: string | null;
   } | undefined;
   if (!row) return null;
 
@@ -145,10 +205,16 @@ export function loadHypothesisById(id: number): HypothesisDetail | null {
 
   const depths = computeDepths(problems.map(p => ({ id: p.id, parent_id: p.parent_id })));
 
-  return {
-    ...row,
-    activity_types: loadHypothesisActivityTypes(id),
-    problems: problems.map(p => ({
+  const segmentIds = loadHypothesisSegmentIds(id);
+  const segments = segmentIds.length
+    ? db.prepare(`
+        SELECT id, name FROM segments WHERE id IN (${segmentIds.map(() => '?').join(',')}) ORDER BY name
+      `).all(...segmentIds) as { id: number; name: string }[]
+    : [];
+
+  const problemsWithSolutions: HypothesisProblemRow[] = [];
+  for (const p of problems) {
+    problemsWithSolutions.push({
       id: p.id,
       name: p.name,
       industry_name: p.industry_name,
@@ -159,7 +225,15 @@ export function loadHypothesisById(id: number): HypothesisDetail | null {
       lcm_code: p.lcm_code,
       depth: depths.get(p.id) ?? 0,
       solutions: loadProblemSolutions(p.id, id),
-    })),
+    });
+  }
+
+  return {
+    ...row,
+    activity_types: loadHypothesisActivityTypes(id),
+    segments,
+    stakeholder_roles: loadHypothesisStakeholderRoles(id),
+    problems: problemsWithSolutions,
   };
 }
 
@@ -226,6 +300,19 @@ export function saveHypothesis(
     maturity_id?: number | null;
     activity_type_ids?: number[];
     problems?: HypothesisProblemInput[];
+    unique_value_proposition?: string | null;
+    key_metrics?: string | null;
+    unfair_advantage?: string | null;
+    channels?: string | null;
+    revenue_streams?: string | null;
+    cost_structure?: string | null;
+    product?: string | null;
+    market?: string | null;
+    alternatives?: string | null;
+    early_adopters?: string | null;
+    triggers?: string | null;
+    segment_ids?: number[];
+    stakeholder_roles?: HypothesisStakeholderRoleInput[];
   },
 ): HypothesisDetail {
   const trimmed = data.name?.trim();
@@ -233,13 +320,42 @@ export function saveHypothesis(
   const existing = db.prepare(`SELECT id FROM hypotheses WHERE id=?`).get(id);
   if (!existing) throw new Error('not found');
 
-  const tx = db.transaction(() => {
+  db.transaction(() => {
     db.prepare(`
-      UPDATE hypotheses SET name=?, target_audience=?, maturity_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?
-    `).run(trimmed, data.target_audience?.trim() || null, data.maturity_id ?? null, id);
+      UPDATE hypotheses SET
+        name=?, target_audience=?, maturity_id=?,
+        unique_value_proposition=?, key_metrics=?, unfair_advantage=?,
+        channels=?, revenue_streams=?, cost_structure=?,
+        product=?, market=?, alternatives=?, early_adopters=?,
+        triggers=?,
+        updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).run(
+      trimmed,
+      data.target_audience?.trim() || null,
+      data.maturity_id ?? null,
+      data.unique_value_proposition?.trim() || null,
+      data.key_metrics?.trim() || null,
+      data.unfair_advantage?.trim() || null,
+      data.channels?.trim() || null,
+      data.revenue_streams?.trim() || null,
+      data.cost_structure?.trim() || null,
+      data.product?.trim() || null,
+      data.market?.trim() || null,
+      data.alternatives?.trim() || null,
+      data.early_adopters?.trim() || null,
+      data.triggers?.trim() || null,
+      id,
+    );
 
     if (data.activity_type_ids !== undefined) {
       syncHypothesisActivityTypes(id, data.activity_type_ids);
+    }
+    if (data.segment_ids !== undefined) {
+      syncHypothesisSegments(id, data.segment_ids);
+    }
+    if (data.stakeholder_roles !== undefined) {
+      syncHypothesisStakeholderRoles(id, data.stakeholder_roles);
     }
 
     if (data.problems !== undefined) {
@@ -267,7 +383,6 @@ export function saveHypothesis(
       }
     }
   });
-  tx();
   recomputeCatalogCodes();
   recomputeHypothesisSolutionCodes(id);
   recomputeAllProblemCodes();

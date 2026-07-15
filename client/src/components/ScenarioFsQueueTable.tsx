@@ -117,6 +117,7 @@ export default function ScenarioFsQueueTable({
       <div className="flex flex-wrap justify-end gap-2">
         <button
           type="button"
+          data-readonly-allow
           onClick={() => setExpandedGroups(
             allCollapsed ? new Set(groups.map(g => g.group)) : new Set(),
           )}
@@ -246,6 +247,7 @@ function GroupRows({
           <div className="flex items-center gap-1">
             <button
               type="button"
+              data-readonly-allow
               onClick={onToggleGroup}
               className="text-slate-600 hover:text-slate-900 w-6 h-6 leading-none shrink-0"
               title={isExpanded ? 'Свернуть группу' : 'Развернуть группу'}

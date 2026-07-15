@@ -9,6 +9,7 @@ import {
   listHypotheses, loadHypothesisById, saveHypothesis,
 } from '../hypotheses';
 import { createActivityType, listActivityTypes } from '../activityTypes';
+import { createStakeholderRole, deleteStakeholderRole, listStakeholderRoles } from '../stakeholderRoles';
 import { createDataSlice, listDataSlices } from '../dataSlices';
 import {
   applyFsCatalogReorder,
@@ -631,6 +632,23 @@ catalogRouter.put('/hypotheses/:id', (req, res) => {
       solution_ids?: number[];
       new_solutions?: { name: string }[];
     }[];
+    unique_value_proposition?: string | null;
+    key_metrics?: string | null;
+    unfair_advantage?: string | null;
+    channels?: string | null;
+    revenue_streams?: string | null;
+    cost_structure?: string | null;
+    product?: string | null;
+    market?: string | null;
+    alternatives?: string | null;
+    early_adopters?: string | null;
+    triggers?: string | null;
+    segment_ids?: number[];
+    stakeholder_roles?: {
+      stakeholder_role_id?: number;
+      name?: string;
+      description?: string | null;
+    }[];
   };
   try {
     res.json(saveHypothesis(id, {
@@ -639,6 +657,19 @@ catalogRouter.put('/hypotheses/:id', (req, res) => {
       maturity_id: body.maturity_id,
       activity_type_ids: body.activity_type_ids,
       problems: body.problems,
+      unique_value_proposition: body.unique_value_proposition,
+      key_metrics: body.key_metrics,
+      unfair_advantage: body.unfair_advantage,
+      channels: body.channels,
+      revenue_streams: body.revenue_streams,
+      cost_structure: body.cost_structure,
+      product: body.product,
+      market: body.market,
+      alternatives: body.alternatives,
+      early_adopters: body.early_adopters,
+      triggers: body.triggers,
+      segment_ids: body.segment_ids,
+      stakeholder_roles: body.stakeholder_roles,
     }));
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'save failed';
@@ -719,6 +750,26 @@ catalogRouter.post('/activity-types', (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
   }
+});
+
+catalogRouter.get('/stakeholder-roles', (_req, res) => {
+  res.json(listStakeholderRoles());
+});
+
+catalogRouter.post('/stakeholder-roles', (req, res) => {
+  const { name } = req.body as { name?: string };
+  try {
+    res.status(201).json(createStakeholderRole(name ?? ''));
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
+});
+
+catalogRouter.delete('/stakeholder-roles/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const ok = deleteStakeholderRole(id);
+  if (!ok) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 });
 
 catalogRouter.get('/data-slices', (_req, res) => {

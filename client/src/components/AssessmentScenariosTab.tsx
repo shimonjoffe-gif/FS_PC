@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type {
   AssessmentScenario, AssessmentScenarioSnapshot, BriefingAssessment, BriefingFsSel, FsQueueKey,
-  TeamProportions,
+  QueueLabelsMap, TeamProportions,
 } from '../types';
 import { FS_QUEUE_KEYS, FS_QUEUE_LABELS } from '../types';
 import type { AssessmentNsiCache } from '../assessmentNsi';
@@ -33,8 +33,10 @@ import {
 import { formatMoneyRub } from '../utils/formatNumber';
 import ScenarioDetailComparisonTable from './ScenarioDetailComparisonTable';
 import ScenarioFsQueueTable from './ScenarioFsQueueTable';
+import SummaryScenarioMatrixTable from './SummaryScenarioMatrixTable';
+import type { SummaryScenarioMatrix } from '../summaryScenarioMatrix';
 
-type ScenarioEditorTab = 'phases' | 'technology' | 'fs';
+type ScenarioEditorTab = 'phases' | 'technology' | 'fs' | 'summary';
 
 type Props = {
   briefingId: number;
@@ -45,6 +47,8 @@ type Props = {
   defaultTeam: TeamProportions;
   nsi?: AssessmentNsiCache;
   snapshots: AssessmentScenarioSnapshot[];
+  queueLabels: QueueLabelsMap;
+  summaryMatrix: SummaryScenarioMatrix | null;
   onChange: (scenarios: AssessmentScenario[]) => void;
   onSnapshotsChange: (snapshots: AssessmentScenarioSnapshot[]) => void;
 };
@@ -66,6 +70,8 @@ export default function AssessmentScenariosTab({
   defaultTeam,
   nsi,
   snapshots,
+  queueLabels,
+  summaryMatrix,
   onChange,
   onSnapshotsChange,
 }: Props) {
@@ -306,7 +312,46 @@ export default function AssessmentScenariosTab({
       </aside>
 
       <div className="flex-1 min-w-0 space-y-4">
-        {!selected ? (
+        <div className="flex gap-1 border-b border-slate-200">
+          {([
+            ['phases', 'Фазы и сравнение'],
+            ['technology', 'Технология'],
+            ['fs', 'ФС'],
+            ['summary', 'Итоги'],
+          ] as const).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              data-readonly-allow
+              onClick={() => setEditorTab(tab)}
+              className={`text-xs px-3 py-2 border-b-2 -mb-px ${
+                editorTab === tab
+                  ? 'border-blue-500 text-blue-800 font-medium'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {editorTab === 'summary' ? (
+          <div>
+            {summaryMatrix ? (
+              <SummaryScenarioMatrixTable data={summaryMatrix} queueLabels={queueLabels} />
+            ) : (
+              <p className="text-sm text-slate-400">
+                {getEvaluatedQueueKeys(
+                  assessment.org_volume?.queues
+                    ? assessment.org_volume
+                    : assessment.auto_org_volume,
+                ).length === 0
+                  ? 'Нет оцениваемых очередей — включите «Оценивать» на вкладке «Оценка РП».'
+                  : 'Нет данных для сводки ДО. Проверьте включение фаз на вкладке «Оценка РП».'}
+              </p>
+            )}
+          </div>
+        ) : !selected ? (
           <p className="text-sm text-slate-500">
             Создайте сценарий, чтобы сравнить вариант оценки с базой.
           </p>
@@ -332,27 +377,6 @@ export default function AssessmentScenariosTab({
                   placeholder="Необязательно"
                 />
               </div>
-            </div>
-
-            <div className="flex gap-1 border-b border-slate-200">
-              {([
-                ['phases', 'Фазы и сравнение'],
-                ['technology', 'Технология'],
-                ['fs', 'ФС'],
-              ] as const).map(([tab, label]) => (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => setEditorTab(tab)}
-                  className={`text-xs px-3 py-2 border-b-2 -mb-px ${
-                    editorTab === tab
-                      ? 'border-blue-500 text-blue-800 font-medium'
-                      : 'border-transparent text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
             </div>
 
             {editorTab === 'phases' && comparison && (

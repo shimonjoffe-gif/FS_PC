@@ -29,6 +29,7 @@ export default function QueueSwitcher({
         <button
           key={q}
           type="button"
+          data-readonly-allow
           onClick={() => onChange(q)}
           className={`text-[10px] px-2 py-1 rounded border transition-colors ${
             value === q

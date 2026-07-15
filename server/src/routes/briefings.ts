@@ -30,6 +30,7 @@ import { applyBriefingHtmlImport, previewBriefingHtmlImport } from '../export/br
 import { mergeExportBlocks, type ExportBlocks, type ImportOptions } from '../export/briefingExportTypes';
 import { listStandardDocuments, listStandardDocumentExclusions } from '../standardDocumentsSeed';
 import { mergeStandardDocumentsIntoCriteria } from '../standardDocuments';
+import { loadBriefingStakeholderRoleIds, saveBriefingStakeholderRoleIds } from '../stakeholderRoles';
 
 function loadBriefingActivityTypeIds(briefingId: number): number[] {
   return (db.prepare(`
@@ -423,6 +424,11 @@ export function getBriefingFull(id: number) {
       const row = db.prepare(`SELECT name FROM activity_types WHERE id=?`).get(atId) as { name: string } | undefined;
       return row?.name ?? String(atId);
     }),
+    stakeholder_role_ids: loadBriefingStakeholderRoleIds(id),
+    stakeholder_role_names: loadBriefingStakeholderRoleIds(id).map(roleId => {
+      const row = db.prepare(`SELECT name FROM stakeholder_roles WHERE id=?`).get(roleId) as { name: string } | undefined;
+      return row?.name ?? String(roleId);
+    }),
     problems,
     solutions,
     widgets,
@@ -472,12 +478,13 @@ briefingsRouter.patch('/:id', (req, res) => {
   const existing = db.prepare(`SELECT * FROM briefings WHERE id=?`).get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
 
-  const { name, industry_id, industry_ids, activity_type_ids, segment_id, scenario, headcount } = req.body as {
+  const { name, industry_id, industry_ids, activity_type_ids, segment_id, stakeholder_role_ids, scenario, headcount } = req.body as {
     name?: string;
     industry_id?: number | null;
     industry_ids?: number[];
     activity_type_ids?: number[];
     segment_id?: number | null;
+    stakeholder_role_ids?: number[];
     scenario?: string;
     headcount?: number | null;
   };
@@ -497,6 +504,9 @@ briefingsRouter.patch('/:id', (req, res) => {
     saveBriefingActivityTypeIds(id, atIds);
   } else if (industry_id !== undefined) {
     saveBriefingIndustryIds(id, industry_id != null ? [industry_id] : []);
+  }
+  if (stakeholder_role_ids !== undefined) {
+    saveBriefingStakeholderRoleIds(id, stakeholder_role_ids);
   }
   const syncedIndustryId = activity_type_ids !== undefined
     ? (db.prepare(`SELECT industry_id FROM briefings WHERE id=?`).get(id) as { industry_id: number | null }).industry_id

@@ -5,10 +5,13 @@ import type {
   ProjectType, ProjectTypeRate, HeadcountCoefficient, BriefingAssessment,
   AssessmentScenarioSnapshot, FsNmdValue, HypothesisListItem, HypothesisDetail, ActivityType, DataSlice,
   ExportBlocks, ImportMode, BriefingImportPreview, BriefingImportResult,
+  BriefingVersion, VersionCompareResult,
 } from './types';
 import type { CreateSnapshotPayload } from './scenarioCalc';
 
-const BASE = '/api';
+const BASE = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL.replace(/\/$/, '')}/api`
+  : '/api';
 
 async function req<T>(url: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(BASE + url, {
@@ -91,7 +94,11 @@ export const getBriefings = () => req<Briefing[]>('/briefings');
 export const getBriefing = (id: number) => req<BriefingFull>(`/briefings/${id}`);
 export const createBriefing = (data: { name?: string; created_by?: number }) =>
   req<{ id: number }>('/briefings', { method: 'POST', body: JSON.stringify(data) });
-export const updateBriefing = (id: number, data: Partial<Briefing> & { industry_ids?: number[]; activity_type_ids?: number[] }) =>
+export const updateBriefing = (id: number, data: Partial<Briefing> & {
+  industry_ids?: number[];
+  activity_type_ids?: number[];
+  stakeholder_role_ids?: number[];
+}) =>
   req<{ ok: boolean }>(`/briefings/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
 export const deleteBriefing = (id: number) =>
   req<{ ok: boolean }>(`/briefings/${id}`, { method: 'DELETE' });
@@ -235,12 +242,35 @@ export const previewBriefingHtmlImport = (
 export const importBriefingHtml = (
   id: number,
   html: string,
-  options: { mode: ImportMode; blocks?: Partial<ExportBlocks> },
+  options: {
+    mode: ImportMode;
+    blocks?: Partial<ExportBlocks>;
+    create_new_version?: boolean;
+    version_label?: string;
+    version_note?: string;
+  },
 ) =>
-  req<BriefingImportResult>(`/briefings/${id}/import`, {
+  req<BriefingImportResult & {
+    version?: { frozen: BriefingVersion; draft: BriefingVersion };
+  }>(`/briefings/${id}/import`, {
     method: 'POST',
     body: JSON.stringify({ html, ...options }),
   });
+
+export const listBriefingVersions = (id: number) =>
+  req<{ versions: BriefingVersion[]; active_version_id: number | null }>(`/briefings/${id}/versions`);
+
+export const createBriefingVersion = (id: number, data?: { label?: string; note?: string }) =>
+  req<{ frozen: BriefingVersion; draft: BriefingVersion }>(`/briefings/${id}/versions`, {
+    method: 'POST',
+    body: JSON.stringify(data ?? {}),
+  });
+
+export const getBriefingVersionView = (id: number, versionId: number) =>
+  req<{ meta: BriefingVersion; data: BriefingFull }>(`/briefings/${id}/versions/${versionId}`);
+
+export const compareBriefingVersions = (id: number, a: number, b: number) =>
+  req<VersionCompareResult>(`/briefings/${id}/versions/compare?a=${a}&b=${b}`);
 
 // === Catalog ===
 export const getIndustries = () => req<Industry[]>('/catalog/industries');
@@ -350,12 +380,34 @@ export const saveHypothesis = (id: number, data: {
     solution_ids?: number[];
     new_solutions?: { name: string }[];
   }[];
+  unique_value_proposition?: string | null;
+  key_metrics?: string | null;
+  unfair_advantage?: string | null;
+  channels?: string | null;
+  revenue_streams?: string | null;
+  cost_structure?: string | null;
+  product?: string | null;
+  market?: string | null;
+  alternatives?: string | null;
+  early_adopters?: string | null;
+  triggers?: string | null;
+  segment_ids?: number[];
+  stakeholder_roles?: {
+    stakeholder_role_id?: number;
+    name?: string;
+    description?: string | null;
+  }[];
 }) => req<HypothesisDetail>(`/catalog/hypotheses/${id}`, { method: 'PUT', body: JSON.stringify(data) });
 export const deleteHypothesis = (id: number) =>
   req<{ ok: boolean }>(`/catalog/hypotheses/${id}`, { method: 'DELETE' });
 export const getActivityTypes = () => req<ActivityType[]>('/catalog/activity-types');
 export const createActivityType = (name: string) =>
   req<ActivityType>('/catalog/activity-types', { method: 'POST', body: JSON.stringify({ name }) });
+export const getStakeholderRoles = () => req<import('./types').StakeholderRole[]>('/catalog/stakeholder-roles');
+export const createStakeholderRole = (name: string) =>
+  req<import('./types').StakeholderRole>('/catalog/stakeholder-roles', { method: 'POST', body: JSON.stringify({ name }) });
+export const deleteStakeholderRole = (id: number) =>
+  req<{ ok: boolean }>(`/catalog/stakeholder-roles/${id}`, { method: 'DELETE' });
 
 export const getDataSlices = () => req<DataSlice[]>('/catalog/data-slices');
 export const createDataSlice = (name: string) =>

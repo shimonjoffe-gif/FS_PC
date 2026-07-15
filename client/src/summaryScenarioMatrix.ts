@@ -1,6 +1,7 @@
 import type {
   AssessmentScenario, BriefingAssessment, BriefingFsSel, FsQueueKey, TeamProportions,
 } from './types';
+import { FS_QUEUE_KEYS, itemQueues } from './types';
 import type { AssessmentNsiCache } from './assessmentNsi';
 import { getEvaluatedQueueKeys } from './assessmentCalc';
 import { computeAllPhaseBases } from './phaseCalc';
@@ -8,11 +9,21 @@ import { computeAllPhaseProds } from './phaseCalcProd';
 import { resolveScenarioAssessment, resolveScenarioFsItems } from './scenarioCalc';
 
 export const SUMMARY_BASE_COLUMN_ID = 'base';
+export const SUMMARY_TOTAL_GROUP_ID = 'total';
 
 export interface SummaryScenarioColumn {
   id: string;
   name: string;
   isBase: boolean;
+}
+
+/** Header group: one queue or the final «Итого» block. */
+export interface SummaryMatrixGroup {
+  id: string;
+  kind: 'queue' | 'total';
+  queue?: FsQueueKey;
+  /** Variants shown under this group (always База first, then scenarios with relevant deltas). */
+  variants: SummaryScenarioColumn[];
 }
 
 export interface SummaryScenarioMatrixRow {
@@ -26,12 +37,68 @@ export interface SummaryScenarioMatrixRow {
 
 export interface SummaryScenarioMatrix {
   activeQueues: FsQueueKey[];
+  /** All columns that appear somewhere (for lookups). */
   columns: SummaryScenarioColumn[];
+  /** Column groups in display order: queues then Итого. */
+  groups: SummaryMatrixGroup[];
   rows: SummaryScenarioMatrixRow[];
   /** columnId → queue → ДО total */
   queueTotals: Record<string, Partial<Record<FsQueueKey, number>>>;
   /** columnId → grand ДО total */
   grandTotals: Record<string, number>;
+}
+
+/**
+ * Whether scenario delta affects this queue (by intent, not by DO numbers):
+ * phases, technology, FS exclusion or FS queue overrides.
+ */
+export function scenarioAffectsQueue(
+  scenario: AssessmentScenario,
+  fsItems: BriefingFsSel[],
+  queue: FsQueueKey,
+): boolean {
+  const phaseDelta = scenario.phase_enabled?.[queue];
+  if (phaseDelta && Object.keys(phaseDelta).length > 0) return true;
+
+  if (scenario.queue_technology?.[queue]) return true;
+
+  const overrides = scenario.fs_queue_overrides;
+  if (overrides) {
+    for (const itemOverride of Object.values(overrides)) {
+      if (!itemOverride) continue;
+      if (itemOverride[queue] !== undefined) return true;
+    }
+  }
+
+  const excluded = scenario.fs_excluded;
+  if (excluded?.length) {
+    const excludedSet = new Set(excluded);
+    for (const item of fsItems) {
+      if (!excludedSet.has(item.fs_item_id)) continue;
+      if (itemQueues(item)[queue] === 1) return true;
+    }
+  }
+
+  return false;
+}
+
+export function scenarioHasAnyChanges(
+  scenario: AssessmentScenario,
+): boolean {
+  if (scenario.phase_enabled) {
+    for (const q of FS_QUEUE_KEYS) {
+      const delta = scenario.phase_enabled[q];
+      if (delta && Object.keys(delta).length > 0) return true;
+    }
+  }
+  if (scenario.queue_technology && Object.keys(scenario.queue_technology).length > 0) {
+    return true;
+  }
+  if (scenario.fs_excluded && scenario.fs_excluded.length > 0) return true;
+  if (scenario.fs_queue_overrides && Object.keys(scenario.fs_queue_overrides).length > 0) {
+    return true;
+  }
+  return false;
 }
 
 function computeQueueDoByPhase(
@@ -120,10 +187,41 @@ export function computeSummaryScenarioMatrix(
   const phaseDefs = (assessment.phase_calc_defs ?? []).filter(d => d.is_phase);
   if (phaseDefs.length === 0) return null;
 
-  const columns: SummaryScenarioColumn[] = [
-    { id: SUMMARY_BASE_COLUMN_ID, name: 'База', isBase: true },
-    ...scenarios.map(s => ({ id: s.id, name: s.name, isBase: false })),
+  const baseCol: SummaryScenarioColumn = {
+    id: SUMMARY_BASE_COLUMN_ID,
+    name: 'База',
+    isBase: true,
+  };
+  const scenarioCols = scenarios.map(s => ({
+    id: s.id,
+    name: s.name,
+    isBase: false,
+  }));
+  const columns: SummaryScenarioColumn[] = [baseCol, ...scenarioCols];
+
+  const groups: SummaryMatrixGroup[] = activeQueues.map(q => ({
+    id: `queue-${q}`,
+    kind: 'queue' as const,
+    queue: q,
+    variants: [
+      baseCol,
+      ...scenarios
+        .filter(s => scenarioAffectsQueue(s, fsItems, q))
+        .map(s => scenarioCols.find(c => c.id === s.id)!),
+    ],
+  }));
+
+  const totalVariants = [
+    baseCol,
+    ...scenarios
+      .filter(s => scenarioHasAnyChanges(s))
+      .map(s => scenarioCols.find(c => c.id === s.id)!),
   ];
+  groups.push({
+    id: SUMMARY_TOTAL_GROUP_ID,
+    kind: 'total',
+    variants: totalVariants,
+  });
 
   const rowByPhase = new Map<string, SummaryScenarioMatrixRow>();
   for (const def of phaseDefs) {
@@ -174,6 +272,7 @@ export function computeSummaryScenarioMatrix(
   return {
     activeQueues,
     columns,
+    groups,
     rows,
     queueTotals: target.queueTotals,
     grandTotals: target.grandTotals,

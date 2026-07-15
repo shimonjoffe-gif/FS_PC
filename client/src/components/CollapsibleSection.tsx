@@ -22,6 +22,7 @@ export default function CollapsibleSection({
       <div className="flex items-center gap-2 px-3 py-2.5 border-b border-slate-100">
         <button
           type="button"
+          data-readonly-allow
           onClick={() => setOpen(v => !v)}
           className="text-slate-400 hover:text-slate-600 w-4 shrink-0 text-xs leading-none"
           aria-expanded={open}
@@ -30,6 +31,7 @@ export default function CollapsibleSection({
         </button>
         <button
           type="button"
+          data-readonly-allow
           onClick={() => setOpen(v => !v)}
           className="flex-1 min-w-0 text-left"
         >

@@ -21,7 +21,7 @@ import { listProblemsCatalog } from '../problems';
 import { listSolutionsCatalog } from '../solutions';
 import { loadWidgetById } from '../widgets';
 
-const UPLOADS_DIR = path.join(process.cwd(), '..', 'data', 'uploads');
+import { UPLOADS_DIR } from '../paths';
 const SCENARIOS = ['Кейс', 'ПРОФ', 'Совм.запуск'];
 const HEADCOUNT_CATEGORIES = ['до 200', '201-500', '501-1000', '1001+'];
 

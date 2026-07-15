@@ -16,16 +16,16 @@ function formatDo(value: number | null | undefined): string {
 }
 
 export default function SummaryScenarioMatrixTable({ data, queueLabels }: Props) {
-  const { activeQueues, columns, rows, queueTotals, grandTotals } = data;
-  const subColsPerColumn = activeQueues.length + 1;
+  const { groups, rows, queueTotals, grandTotals } = data;
+  const totalCols = groups.reduce((sum, g) => sum + g.variants.length, 0);
 
   return (
     <div className="space-y-2">
       <div>
-        <h3 className="text-sm font-semibold text-slate-700">Сводка ДО: база и варианты по очередям</h3>
+        <h3 className="text-sm font-semibold text-slate-700">Сводка ДО: очереди и варианты</h3>
         <p className="text-xs text-slate-500 mt-1">
-          Колонки — база и сценарии; подколонки — оцениваемые очереди и сумма Σ.
-          Каждый сценарий считается поверх базы (дельта сценария + неизменённые очереди).
+          Колонки — оцениваемые очереди; подколонки — База и сценарии с изменениями по этой очереди
+          (фазы, технология или ФС). Группа «Итого» — сумма по очередям для Базы и сценариев с любыми отличиями.
         </p>
       </div>
 
@@ -39,40 +39,43 @@ export default function SummaryScenarioMatrixTable({ data, queueLabels }: Props)
               >
                 Фаза
               </th>
-              {columns.map(col => (
+              {groups.map(group => (
                 <th
-                  key={col.id}
-                  colSpan={subColsPerColumn}
-                  className={`p-2 border text-center ${col.isBase ? 'bg-slate-100' : 'bg-blue-50/70'}`}
+                  key={group.id}
+                  colSpan={group.variants.length}
+                  className={`p-2 border text-center ${
+                    group.kind === 'total' ? 'bg-blue-50/80' : 'bg-slate-100'
+                  }`}
                 >
-                  {col.name}
+                  {group.kind === 'total'
+                    ? 'Итого'
+                    : queueLabel(queueLabels, group.queue!)}
                 </th>
               ))}
             </tr>
             <tr className="bg-slate-50 text-slate-500">
-              {columns.flatMap(col => (
-                [
-                  ...activeQueues.map(q => (
-                    <th key={`${col.id}-${q}`} className="p-1 border text-center whitespace-nowrap min-w-[5.5rem]">
-                      {queueLabel(queueLabels, q)}
-                    </th>
-                  )),
+              {groups.flatMap(group =>
+                group.variants.map(v => (
                   <th
-                    key={`${col.id}-sum`}
-                    className={`p-1 border text-center whitespace-nowrap min-w-[5.5rem] font-medium ${
-                      col.isBase ? 'bg-slate-100/80' : 'bg-blue-50/50'
+                    key={`${group.id}-${v.id}`}
+                    className={`p-1 border text-center whitespace-nowrap min-w-[5.5rem] ${
+                      v.isBase
+                        ? 'bg-slate-100/80'
+                        : group.kind === 'total'
+                          ? 'bg-blue-50/50'
+                          : 'bg-amber-50/40'
                     }`}
                   >
-                    Σ
-                  </th>,
-                ]
-              ))}
+                    {v.name}
+                  </th>
+                )),
+              )}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={1 + columns.length * subColsPerColumn} className="p-3 border text-center text-slate-400">
+                <td colSpan={1 + totalCols} className="p-3 border text-center text-slate-400">
                   Нет сумм ДО по фазам — проверьте включение фаз и расчёт на вкладке «Оценка РП».
                 </td>
               </tr>
@@ -82,50 +85,52 @@ export default function SummaryScenarioMatrixTable({ data, queueLabels }: Props)
                 <td className="p-2 border text-left sticky left-0 z-10 bg-white">
                   {row.label}
                 </td>
-                {columns.flatMap(col => (
-                  [
-                    ...activeQueues.map(q => (
+                {groups.flatMap(group =>
+                  group.variants.map(v => {
+                    const value = group.kind === 'total'
+                      ? row.byColumnTotal[v.id]
+                      : row.byColumnByQueue[v.id]?.[group.queue!];
+                    return (
                       <td
-                        key={`${row.lineId}-${col.id}-${q}`}
-                        className="p-2 border text-right tabular-nums whitespace-nowrap"
+                        key={`${row.lineId}-${group.id}-${v.id}`}
+                        className={`p-2 border text-right tabular-nums whitespace-nowrap ${
+                          v.isBase
+                            ? 'bg-slate-50/40'
+                            : group.kind === 'total'
+                              ? 'bg-blue-50/30'
+                              : ''
+                        }`}
                       >
-                        {formatDo(row.byColumnByQueue[col.id]?.[q])}
+                        {formatDo(value)}
                       </td>
-                    )),
-                    <td
-                      key={`${row.lineId}-${col.id}-sum`}
-                      className={`p-2 border text-right tabular-nums whitespace-nowrap font-medium ${
-                        col.isBase ? 'bg-slate-50/40' : 'bg-blue-50/30'
-                      }`}
-                    >
-                      {formatDo(row.byColumnTotal[col.id])}
-                    </td>,
-                  ]
-                ))}
+                    );
+                  }),
+                )}
               </tr>
             ))}
             <tr className="font-semibold bg-blue-50/60">
               <td className="p-2 border sticky left-0 z-10 bg-blue-50/60">Итого ДО</td>
-              {columns.flatMap(col => (
-                [
-                  ...activeQueues.map(q => (
+              {groups.flatMap(group =>
+                group.variants.map(v => {
+                  const value = group.kind === 'total'
+                    ? grandTotals[v.id]
+                    : queueTotals[v.id]?.[group.queue!];
+                  return (
                     <td
-                      key={`total-${col.id}-${q}`}
-                      className="p-2 border text-right tabular-nums whitespace-nowrap"
+                      key={`total-${group.id}-${v.id}`}
+                      className={`p-2 border text-right tabular-nums whitespace-nowrap ${
+                        v.isBase
+                          ? 'bg-slate-100/80'
+                          : group.kind === 'total'
+                            ? 'bg-blue-100/70'
+                            : ''
+                      }`}
                     >
-                      {formatDo(queueTotals[col.id]?.[q])}
+                      {formatDo(value)}
                     </td>
-                  )),
-                  <td
-                    key={`total-${col.id}-sum`}
-                    className={`p-2 border text-right tabular-nums whitespace-nowrap ${
-                      col.isBase ? 'bg-slate-100/80' : 'bg-blue-100/70'
-                    }`}
-                  >
-                    {formatDo(grandTotals[col.id])}
-                  </td>,
-                ]
-              ))}
+                  );
+                }),
+              )}
             </tr>
           </tbody>
         </table>

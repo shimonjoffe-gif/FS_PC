@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { Widget, Solution, Problem, FsCatalogItem, FsCatalogGroup, ProjectType, ProjectTypeRate, HeadcountCoefficient, HypothesisListItem, HypothesisProblemDraft, ActivityType } from '../types';
+import type { Widget, Solution, Problem, FsCatalogItem, FsCatalogGroup, ProjectType, ProjectTypeRate, HeadcountCoefficient, HypothesisListItem, HypothesisProblemDraft, ActivityType, StakeholderRole } from '../types';
 import {
   getWidgets, createWidget, updateWidget, deleteWidget, getWidget,
   uploadWidgetImage, removeWidgetImage,
@@ -16,11 +16,13 @@ import {
   getProjectTypeRates, addProjectTypeRate, getProjectTypeCoefficients, saveProjectTypeCoefficients,
   getStandardDocuments, createStandardDocument, updateStandardDocument, deleteStandardDocument,
   getStandardDocumentExclusions, createStandardDocumentExclusion, deleteStandardDocumentExclusion,
+  getStakeholderRoles,
   type StandardDocument, type StandardDocumentExclusion,
 } from '../api';
 import { filterFsCatalogItems } from '../utils/fsDisplayGroups';
 import FsNsiTable from './FsNsiTable';
 import HypothesesNsi from './HypothesesNsi';
+import StakeholderRolesNsi from './StakeholderRolesNsi';
 import ProblemsNsi from './ProblemsNsi';
 import SolutionsNsi from './SolutionsNsi';
 import WidgetsNsi from './WidgetsNsi';
@@ -33,12 +35,13 @@ type FsCatalogUsageRow = {
   recorded_at: string;
 };
 
-type LinkTab = 'widgets' | 'nsi-fs' | 'hypotheses' | 'problems' | 'solutions' | 'project-types' | 'standard-documents';
+type LinkTab = 'widgets' | 'nsi-fs' | 'hypotheses' | 'stakeholder-roles' | 'problems' | 'solutions' | 'project-types' | 'standard-documents';
 
 const LINK_TABS: { id: LinkTab; label: string }[] = [
   { id: 'widgets', label: 'Виджеты' },
   { id: 'nsi-fs', label: 'НСИ → ФС' },
   { id: 'hypotheses', label: 'Гипотезы' },
+  { id: 'stakeholder-roles', label: 'Роли заказчика' },
   { id: 'problems', label: 'Проблематики' },
   { id: 'solutions', label: 'Решения' },
   { id: 'project-types', label: 'Типы проекта' },
@@ -53,6 +56,7 @@ export default function CatalogLinks() {
   const [fsCatalog, setFsCatalog] = useState<FsCatalogItem[]>([]);
   const [hypotheses, setHypotheses] = useState<HypothesisListItem[]>([]);
   const [activityTypes, setActivityTypes] = useState<ActivityType[]>([]);
+  const [stakeholderRoles, setStakeholderRoles] = useState<StakeholderRole[]>([]);
   const [maturityLevels, setMaturityLevels] = useState<import('../types').MaturityLevel[]>([]);
   const [projectTypes, setProjectTypes] = useState<ProjectType[]>([]);
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
@@ -195,6 +199,7 @@ export default function CatalogLinks() {
     await reloadFsNsi();
     setHypotheses(await getHypotheses());
     setActivityTypes(await getActivityTypes());
+    setStakeholderRoles(await getStakeholderRoles());
     setMaturityLevels(await getMaturityLevels());
     const pts = await getProjectTypes();
     setProjectTypes(pts);
@@ -346,6 +351,7 @@ export default function CatalogLinks() {
             allSolutions={solutions}
             maturityLevels={maturityLevels}
             activityTypes={activityTypes}
+            allStakeholderRoles={stakeholderRoles}
             onCreate={async name => {
               const created = await createHypothesis({ name });
               await reload();
@@ -363,6 +369,19 @@ export default function CatalogLinks() {
                   name: p.problem_id ? undefined : p.name,
                   solution_ids: p.solution_ids,
                 })),
+                unique_value_proposition: data.unique_value_proposition,
+                key_metrics: data.key_metrics,
+                unfair_advantage: data.unfair_advantage,
+                channels: data.channels,
+                revenue_streams: data.revenue_streams,
+                cost_structure: data.cost_structure,
+                product: data.product,
+                market: data.market,
+                alternatives: data.alternatives,
+                early_adopters: data.early_adopters,
+                triggers: data.triggers,
+                segment_ids: data.segment_ids,
+                stakeholder_roles: data.stakeholder_roles,
               });
               await reload();
             }}
@@ -379,7 +398,15 @@ export default function CatalogLinks() {
               if (prev.some(a => a.id === at.id)) return prev;
               return [...prev, at].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
             })}
+            onStakeholderRoleCreated={role => setStakeholderRoles(prev => {
+              if (prev.some(r => r.id === role.id)) return prev;
+              return [...prev, role].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+            })}
           />
+        )}
+
+        {linkTab === 'stakeholder-roles' && (
+          <StakeholderRolesNsi items={stakeholderRoles} onReload={reload} />
         )}
 
         {linkTab === 'problems' && (

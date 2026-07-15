@@ -1,12 +1,11 @@
 import Database from 'better-sqlite3';
 import path from 'path';
-import fs from 'fs';
 import { normalizeFsPrefix } from './fsPrefix';
 import { seedProjectTypesNsi } from './assessmentCalc';
 import { seedStandardDocumentsNsi, migrateStandardDocumentsSchema } from './standardDocumentsSeed';
+import { DATA_DIR, ensureDataDirs } from './paths';
 
-const DATA_DIR = path.join(process.cwd(), '..', 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+ensureDataDirs();
 
 export const db = new Database(path.join(DATA_DIR, 'projects.db'));
 db.pragma('journal_mode = WAL');
@@ -523,6 +522,62 @@ export function initDB() {
   if (!hypCols.has('maturity_id')) {
     db.exec(`ALTER TABLE hypotheses ADD COLUMN maturity_id INTEGER REFERENCES maturity_levels(id)`);
   }
+  const hypCanvasCols: { name: string; ddl: string }[] = [
+    { name: 'unique_value_proposition', ddl: 'TEXT' },
+    { name: 'key_metrics', ddl: 'TEXT' },
+    { name: 'unfair_advantage', ddl: 'TEXT' },
+    { name: 'channels', ddl: 'TEXT' },
+    { name: 'revenue_streams', ddl: 'TEXT' },
+    { name: 'cost_structure', ddl: 'TEXT' },
+    { name: 'product', ddl: 'TEXT' },
+    { name: 'market', ddl: 'TEXT' },
+    { name: 'alternatives', ddl: 'TEXT' },
+    { name: 'early_adopters', ddl: 'TEXT' },
+  ];
+  for (const col of hypCanvasCols) {
+    if (!hypCols.has(col.name)) {
+      db.exec(`ALTER TABLE hypotheses ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+  if (!hypCols.has('triggers')) {
+    db.exec(`ALTER TABLE hypotheses ADD COLUMN triggers TEXT`);
+    db.exec(`
+      UPDATE hypotheses SET triggers = target_audience
+      WHERE triggers IS NULL AND target_audience IS NOT NULL AND trim(target_audience) <> ''
+    `);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS stakeholder_roles (
+      id   INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hypothesis_segments (
+      hypothesis_id INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+      segment_id    INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+      PRIMARY KEY (hypothesis_id, segment_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hypothesis_stakeholder_roles (
+      hypothesis_id       INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+      stakeholder_role_id INTEGER NOT NULL REFERENCES stakeholder_roles(id) ON DELETE CASCADE,
+      description         TEXT,
+      PRIMARY KEY (hypothesis_id, stakeholder_role_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS briefing_stakeholder_role_sel (
+      briefing_id         INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      stakeholder_role_id INTEGER NOT NULL REFERENCES stakeholder_roles(id) ON DELETE CASCADE,
+      PRIMARY KEY (briefing_id, stakeholder_role_id)
+    )
+  `);
 
   const problemCols = new Set(
     (db.prepare(`PRAGMA table_info(problems)`).all() as { name: string }[]).map(c => c.name),
@@ -731,6 +786,32 @@ export function initDB() {
       base_revision TEXT
     )
   `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS briefing_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      briefing_id INTEGER NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+      version_no INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('draft', 'frozen')),
+      label TEXT NOT NULL,
+      note TEXT,
+      source TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      frozen_at TEXT,
+      dump_json TEXT,
+      UNIQUE(briefing_id, version_no)
+    )
+  `);
+
+  const briefingColNames = new Set(
+    (db.prepare(`PRAGMA table_info(briefings)`).all() as { name: string }[]).map(c => c.name),
+  );
+  if (!briefingColNames.has('active_version_id')) {
+    db.exec(`ALTER TABLE briefings ADD COLUMN active_version_id INTEGER REFERENCES briefing_versions(id)`);
+  }
+
+  const { migrateAllBriefingVersions } = require('./briefingVersions') as typeof import('./briefingVersions');
+  migrateAllBriefingVersions();
 
   const legacyAccuracy = db.prepare(`
     SELECT briefing_id, accuracy FROM briefing_params

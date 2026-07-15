@@ -197,6 +197,17 @@ export interface SolutionFsLink {
   link_type: SolutionFsLinkType;
 }
 
+export interface StakeholderRole {
+  id: number;
+  name: string;
+}
+
+export interface HypothesisStakeholderRoleRow {
+  id: number;
+  name: string;
+  description: string | null;
+}
+
 export interface HypothesisListItem {
   id: number;
   name: string;
@@ -207,6 +218,9 @@ export interface HypothesisListItem {
   activity_type_count: number;
   activity_type_names?: string | null;
   activity_type_ids?: number[];
+  segment_ids?: number[];
+  segment_names?: string | null;
+  stakeholder_role_ids?: number[];
   updated_at: string;
 }
 
@@ -228,13 +242,29 @@ export interface HypothesisProblemRow {
   solutions: { id: number; name: string; description?: string | null; parent_id?: number | null; sort_order?: number; lcm_code?: string | null; catalog_code?: string | null; hypothesis_code?: string | null }[];
 }
 
-export interface HypothesisDetail {
+export interface HypothesisCanvasFields {
+  unique_value_proposition: string | null;
+  key_metrics: string | null;
+  unfair_advantage: string | null;
+  channels: string | null;
+  revenue_streams: string | null;
+  cost_structure: string | null;
+  product: string | null;
+  market: string | null;
+  alternatives: string | null;
+  early_adopters: string | null;
+}
+
+export interface HypothesisDetail extends HypothesisCanvasFields {
   id: number;
   name: string;
   target_audience: string | null;
+  triggers: string | null;
   maturity_id: number | null;
   maturity_name: string | null;
   activity_types: ActivityType[];
+  segments: { id: number; name: string }[];
+  stakeholder_roles: HypothesisStakeholderRoleRow[];
   problems: HypothesisProblemRow[];
 }
 
@@ -415,6 +445,8 @@ export interface Briefing {
   industry_names?: string[];
   activity_type_ids?: number[];
   activity_type_names?: string[];
+  stakeholder_role_ids?: number[];
+  stakeholder_role_names?: string[];
   segment_id: number | null;
   scenario: string | null;
   headcount: number | null;
@@ -424,6 +456,19 @@ export interface Briefing {
   updated_at: string;
   industry_name?: string;
   segment_name?: string;
+  active_version_id?: number | null;
+}
+
+export interface BriefingVersion {
+  id: number;
+  briefing_id: number;
+  version_no: number;
+  status: 'draft' | 'frozen';
+  label: string;
+  note: string | null;
+  source: string | null;
+  created_at: string;
+  frozen_at: string | null;
 }
 
 export interface BriefingProblemSel {
@@ -848,6 +893,30 @@ export interface BriefingFull extends Briefing {
   params: BriefingParams;
   assessment: BriefingAssessment;
   assessment_snapshots?: AssessmentScenarioSnapshot[];
+  versions?: BriefingVersion[];
+  active_version_id?: number | null;
+  read_only?: boolean;
+  viewed_version_id?: number | null;
+}
+
+export interface VersionInputDiffItem {
+  key: string;
+  label: string;
+  change: 'added' | 'removed' | 'changed' | 'same';
+  detail?: string;
+}
+
+export interface VersionCompareResult {
+  a: BriefingVersion;
+  b: BriefingVersion;
+  input: {
+    problems: VersionInputDiffItem[];
+    solutions: VersionInputDiffItem[];
+    widgets: VersionInputDiffItem[];
+    fs: VersionInputDiffItem[];
+    summary: { added: number; removed: number; changed: number };
+  };
+  do_hint: { a_label: string; b_label: string; note: string };
 }
 
 export interface QueueSummary {

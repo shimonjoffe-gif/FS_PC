@@ -4,6 +4,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "build": "tsc",
+    "postinstall": "npm rebuild better-sqlite3",
     "import:briefing-data": "tsx src/import/briefingData.ts",
     "import:hypotheses": "tsx src/scripts/importHypothesesFromCa.ts",
     "import:lcm": "tsx src/scripts/importLcmFromFiles.ts",
