@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createActivityType, createSolution, getSolutions } from '../api';
 import type {
-  ActivityType, HypothesisDetail, HypothesisProblemDraft, MaturityLevel, Problem, Solution,
+  ActivityType, HypothesisDetail, HypothesisProblemDraft, MaturityLevel, Problem, Solution, StakeholderRole,
 } from '../types';
+import HypothesisLeanCanvas, { type HypothesisSavePayload } from './HypothesisLeanCanvas';
 
 function detailToDrafts(detail: HypothesisDetail): HypothesisProblemDraft[] {
   return [...detail.problems]
@@ -107,27 +108,28 @@ export default function HypothesisCardModal({
   allSolutions,
   maturityLevels,
   activityTypes,
+  allStakeholderRoles,
   onClose,
   onSave,
+  onReload,
   onSolutionCreated,
   onActivityTypeCreated,
+  onStakeholderRoleCreated,
 }: {
   hypothesis: HypothesisDetail;
   allProblems: Problem[];
   allSolutions: Solution[];
   maturityLevels: MaturityLevel[];
   activityTypes: ActivityType[];
+  allStakeholderRoles: StakeholderRole[];
   onClose: () => void;
-  onSave: (data: {
-    name: string;
-    target_audience: string | null;
-    maturity_id: number | null;
-    activity_type_ids: number[];
-    problems: HypothesisProblemDraft[];
-  }) => void | Promise<void>;
+  onSave: (data: HypothesisSavePayload) => void | Promise<void>;
+  onReload: () => Promise<HypothesisDetail>;
   onSolutionCreated?: (solution: Solution) => void;
   onActivityTypeCreated?: (type: ActivityType) => void;
+  onStakeholderRoleCreated?: (role: StakeholderRole) => void;
 }) {
+  const [viewMode, setViewMode] = useState<'table' | 'canvas'>('table');
   const [name, setName] = useState(hypothesis.name);
   const [targetAudience, setTargetAudience] = useState(hypothesis.target_audience ?? '');
   const [maturityId, setMaturityId] = useState<number | ''>(hypothesis.maturity_id ?? '');
@@ -142,6 +144,16 @@ export default function HypothesisCardModal({
   const [addProblemMode, setAddProblemMode] = useState<'pick' | 'new'>('pick');
   const [pickProblemId, setPickProblemId] = useState('');
   const [newProblemName, setNewProblemName] = useState('');
+  const [canvasHypothesis, setCanvasHypothesis] = useState(hypothesis);
+
+  useEffect(() => {
+    setCanvasHypothesis(hypothesis);
+    setName(hypothesis.name);
+    setTargetAudience(hypothesis.target_audience ?? '');
+    setMaturityId(hypothesis.maturity_id ?? '');
+    setSelectedActivityIds(new Set(hypothesis.activity_types.map(a => a.id)));
+    setProblems(detailToDrafts(hypothesis));
+  }, [hypothesis]);
 
   const solutionsList = useMemo(() => {
     const map = new Map(allSolutions.map(s => [s.id, s]));
@@ -272,11 +284,34 @@ export default function HypothesisCardModal({
         maturity_id: maturityId === '' ? null : maturityId,
         activity_type_ids: [...selectedActivityIds],
         problems,
+        solution_ids: hypothesis.solutions?.map(s => s.id),
+        unique_value_proposition: hypothesis.unique_value_proposition ?? null,
+        key_metrics: hypothesis.key_metrics ?? null,
+        unfair_advantage: hypothesis.unfair_advantage ?? null,
+        channels: hypothesis.channels ?? null,
+        revenue_streams: hypothesis.revenue_streams ?? null,
+        cost_structure: hypothesis.cost_structure ?? null,
+        product: hypothesis.product ?? null,
+        market: hypothesis.market ?? null,
+        alternatives: hypothesis.alternatives ?? null,
+        early_adopters: hypothesis.early_adopters ?? null,
+        triggers: hypothesis.triggers ?? null,
+        segments_description: hypothesis.segments_description ?? null,
+        segment_ids: hypothesis.segments?.map(s => s.id) ?? [],
+        stakeholder_roles: (hypothesis.stakeholder_roles ?? []).map(r => ({
+          stakeholder_role_id: r.id,
+          description: r.description ?? null,
+        })),
       });
       onClose();
     } finally {
       setSaving(false);
     }
+  }
+
+  async function handleCanvasSave(data: HypothesisSavePayload) {
+    await onSave(data);
+    setCanvasHypothesis(await onReload());
   }
 
   function renderSolutionsBlock(prob: IndexedProblem) {
@@ -360,22 +395,66 @@ export default function HypothesisCardModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div
-        className="relative bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col"
+        className={`relative bg-white rounded-xl shadow-2xl w-full max-h-[90vh] flex flex-col ${
+          viewMode === 'canvas' ? 'max-w-[96vw]' : 'max-w-3xl'
+        }`}
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-start justify-between px-4 py-3 border-b border-slate-100 gap-3">
           <div className="min-w-0 flex-1">
             <div className="text-[10px] text-slate-400 mb-1">Lean Canvas · гипотеза</div>
-            <input
-              className="w-full text-sm font-semibold border rounded px-2 py-1 text-slate-800"
-              value={name}
-              placeholder="Название гипотезы"
-              onChange={e => setName(e.target.value)}
-            />
+            {viewMode === 'table' ? (
+              <input
+                className="w-full text-sm font-semibold border rounded px-2 py-1 text-slate-800"
+                value={name}
+                placeholder="Название гипотезы"
+                onChange={e => setName(e.target.value)}
+              />
+            ) : (
+              <div className="text-sm font-semibold text-slate-800 truncate" title={canvasHypothesis.name}>
+                {canvasHypothesis.name}
+              </div>
+            )}
           </div>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none shrink-0">✕</button>
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="flex rounded border border-slate-200 overflow-hidden text-xs">
+              <button
+                type="button"
+                className={`px-3 py-1 ${viewMode === 'table' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                onClick={() => setViewMode('table')}
+              >
+                Таблица
+              </button>
+              <button
+                type="button"
+                className={`px-3 py-1 ${viewMode === 'canvas' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                onClick={() => setViewMode('canvas')}
+              >
+                Canvas
+              </button>
+            </div>
+            <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+          </div>
         </div>
 
+        {viewMode === 'canvas' ? (
+          <div className="flex-1 overflow-y-auto p-3">
+            <HypothesisLeanCanvas
+              key={canvasHypothesis.id}
+              hypothesis={canvasHypothesis}
+              allProblems={allProblems}
+              allSolutions={allSolutions}
+              maturityLevels={maturityLevels}
+              activityTypes={activityTypes}
+              allStakeholderRoles={allStakeholderRoles}
+              onSave={handleCanvasSave}
+              onSolutionCreated={onSolutionCreated}
+              onActivityTypeCreated={onActivityTypeCreated}
+              onStakeholderRoleCreated={onStakeholderRoleCreated}
+            />
+          </div>
+        ) : (
+          <>
         <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
           <section>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1">
@@ -568,6 +647,8 @@ export default function HypothesisCardModal({
             {saving ? 'Сохранение…' : 'Сохранить'}
           </button>
         </div>
+          </>
+        )}
       </div>
     </div>
   );
