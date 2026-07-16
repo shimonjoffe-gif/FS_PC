@@ -1,0 +1,3 @@
+# better-sqlite3 — нативный модуль: нужны Python и gcc для node-gyp
+[phases.setup]
+nixPkgs = ["...", "python311", "gcc"]
