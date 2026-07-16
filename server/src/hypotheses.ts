@@ -21,6 +21,11 @@ export interface HypothesisProblemInput {
   new_solutions?: { name: string }[];
 }
 
+export interface HypothesisSolutionInput {
+  solution_id: number;
+  sort_order?: number;
+}
+
 export interface HypothesisListRow {
   id: number;
   name: string;
@@ -57,6 +62,7 @@ export interface HypothesisProblemRow {
   parent_id: number | null;
   sort_order: number;
   lcm_code: string | null;
+  hypothesis_code: string | null;
   depth: number;
   solutions: HypothesisSolutionRow[];
 }
@@ -79,12 +85,14 @@ export interface HypothesisDetail extends HypothesisCanvasFields {
   name: string;
   target_audience: string | null;
   triggers: string | null;
+  segments_description: string | null;
   maturity_id: number | null;
   maturity_name: string | null;
   activity_types: { id: number; name: string }[];
   segments: { id: number; name: string }[];
   stakeholder_roles: { id: number; name: string; description: string | null }[];
   problems: HypothesisProblemRow[];
+  solutions: HypothesisSolutionRow[];
 }
 
 export function listHypotheses(): HypothesisListRow[] {
@@ -145,6 +153,43 @@ function loadProblemSolutions(problemId: number, hypothesisId: number): Hypothes
   `).all(hypothesisId, problemId) as HypothesisSolutionRow[];
 }
 
+function loadHypothesisSolutions(hypothesisId: number): HypothesisSolutionRow[] {
+  const rows = db.prepare(`
+    SELECT s.id, s.name, s.description, s.parent_id, hs.sort_order, s.lcm_code, s.catalog_code,
+           shc.code AS hypothesis_code
+    FROM hypothesis_solutions hs
+    JOIN solutions s ON s.id = hs.solution_id
+    LEFT JOIN solution_hypothesis_codes shc
+      ON shc.solution_id = s.id AND shc.hypothesis_id = ?
+    WHERE hs.hypothesis_id=?
+    ORDER BY hs.sort_order, s.name, s.id
+  `).all(hypothesisId, hypothesisId) as HypothesisSolutionRow[];
+
+  if (rows.length > 0) return rows;
+
+  return db.prepare(`
+    SELECT DISTINCT s.id, s.name, s.description, s.parent_id, s.sort_order, s.lcm_code, s.catalog_code,
+           shc.code AS hypothesis_code
+    FROM problem_solution_map psm
+    JOIN hypothesis_problems hp ON hp.problem_id = psm.problem_id
+    JOIN solutions s ON s.id = psm.solution_id
+    LEFT JOIN solution_hypothesis_codes shc
+      ON shc.solution_id = s.id AND shc.hypothesis_id = ?
+    WHERE hp.hypothesis_id=?
+    ORDER BY s.sort_order, s.name, s.id
+  `).all(hypothesisId, hypothesisId) as HypothesisSolutionRow[];
+}
+
+function syncHypothesisSolutions(hypothesisId: number, solutionIds: number[]): void {
+  db.prepare(`DELETE FROM hypothesis_solutions WHERE hypothesis_id=?`).run(hypothesisId);
+  const ins = db.prepare(`
+    INSERT INTO hypothesis_solutions(hypothesis_id, solution_id, sort_order) VALUES (?,?,?)
+  `);
+  solutionIds.forEach((solutionId, idx) => {
+    if (solutionId > 0) ins.run(hypothesisId, solutionId, idx);
+  });
+}
+
 function computeDepths(items: { id: number; parent_id: number | null }[]): Map<number, number> {
   const byId = new Map(items.map(p => [p.id, p]));
   const cache = new Map<number, number>();
@@ -165,7 +210,7 @@ function computeDepths(items: { id: number; parent_id: number | null }[]): Map<n
 
 export function loadHypothesisById(id: number): HypothesisDetail | null {
   const row = db.prepare(`
-    SELECT h.id, h.name, h.target_audience, h.triggers, h.maturity_id, m.name as maturity_name,
+    SELECT h.id, h.name, h.target_audience, h.triggers, h.segments_description, h.maturity_id, m.name as maturity_name,
            h.unique_value_proposition, h.key_metrics, h.unfair_advantage,
            h.channels, h.revenue_streams, h.cost_structure,
            h.product, h.market, h.alternatives, h.early_adopters
@@ -174,6 +219,7 @@ export function loadHypothesisById(id: number): HypothesisDetail | null {
     WHERE h.id=?
   `).get(id) as {
     id: number; name: string; target_audience: string | null; triggers: string | null;
+    segments_description: string | null;
     maturity_id: number | null; maturity_name: string | null;
     unique_value_proposition: string | null;
     key_metrics: string | null;
@@ -190,17 +236,21 @@ export function loadHypothesisById(id: number): HypothesisDetail | null {
 
   const problems = db.prepare(`
     SELECT p.id, p.name, p.parent_id, p.sort_order, p.lcm_code,
-           i.name as industry_name, seg.name as segment_name, m.name as maturity_name, hp.sort_order as hp_sort
+           i.name as industry_name, seg.name as segment_name, m.name as maturity_name,
+           hp.sort_order as hp_sort, phc.code as hypothesis_code
     FROM hypothesis_problems hp
     JOIN problems p ON p.id = hp.problem_id
     LEFT JOIN industries i ON i.id = p.industry_id
     LEFT JOIN segments seg ON seg.id = p.segment_id
     LEFT JOIN maturity_levels m ON m.id = p.maturity_id
+    LEFT JOIN problem_hypothesis_codes phc
+      ON phc.problem_id = p.id AND phc.hypothesis_id = hp.hypothesis_id
     WHERE hp.hypothesis_id=?
     ORDER BY hp.sort_order, p.sort_order, p.id
   `).all(id) as {
     id: number; name: string; parent_id: number | null; sort_order: number; lcm_code: string | null;
-    industry_name: string | null; segment_name: string | null; maturity_name: string | null; hp_sort: number;
+    industry_name: string | null; segment_name: string | null; maturity_name: string | null;
+    hp_sort: number; hypothesis_code: string | null;
   }[];
 
   const depths = computeDepths(problems.map(p => ({ id: p.id, parent_id: p.parent_id })));
@@ -223,6 +273,7 @@ export function loadHypothesisById(id: number): HypothesisDetail | null {
       parent_id: p.parent_id,
       sort_order: p.hp_sort ?? p.sort_order,
       lcm_code: p.lcm_code,
+      hypothesis_code: p.hypothesis_code,
       depth: depths.get(p.id) ?? 0,
       solutions: loadProblemSolutions(p.id, id),
     });
@@ -234,6 +285,7 @@ export function loadHypothesisById(id: number): HypothesisDetail | null {
     segments,
     stakeholder_roles: loadHypothesisStakeholderRoles(id),
     problems: problemsWithSolutions,
+    solutions: loadHypothesisSolutions(id),
   };
 }
 
@@ -300,6 +352,7 @@ export function saveHypothesis(
     maturity_id?: number | null;
     activity_type_ids?: number[];
     problems?: HypothesisProblemInput[];
+    solution_ids?: number[];
     unique_value_proposition?: string | null;
     key_metrics?: string | null;
     unfair_advantage?: string | null;
@@ -311,6 +364,7 @@ export function saveHypothesis(
     alternatives?: string | null;
     early_adopters?: string | null;
     triggers?: string | null;
+    segments_description?: string | null;
     segment_ids?: number[];
     stakeholder_roles?: HypothesisStakeholderRoleInput[];
   },
@@ -327,7 +381,7 @@ export function saveHypothesis(
         unique_value_proposition=?, key_metrics=?, unfair_advantage=?,
         channels=?, revenue_streams=?, cost_structure=?,
         product=?, market=?, alternatives=?, early_adopters=?,
-        triggers=?,
+        triggers=?, segments_description=?,
         updated_at=CURRENT_TIMESTAMP
       WHERE id=?
     `).run(
@@ -345,6 +399,7 @@ export function saveHypothesis(
       data.alternatives?.trim() || null,
       data.early_adopters?.trim() || null,
       data.triggers?.trim() || null,
+      data.segments_description?.trim() || null,
       id,
     );
 
@@ -357,6 +412,8 @@ export function saveHypothesis(
     if (data.stakeholder_roles !== undefined) {
       syncHypothesisStakeholderRoles(id, data.stakeholder_roles);
     }
+
+    const linkedFromProblems = new Set<number>();
 
     if (data.problems !== undefined) {
       db.prepare(`DELETE FROM hypothesis_problems WHERE hypothesis_id=?`).run(id);
@@ -379,10 +436,29 @@ export function saveHypothesis(
             if (ns.name?.trim()) solutionIds.push(resolveSolutionId(ns.name));
           }
           syncProblemSolutions(problemId, solutionIds);
+          for (const sid of solutionIds) linkedFromProblems.add(sid);
+        } else {
+          const existingLinks = db.prepare(`
+            SELECT solution_id FROM problem_solution_map WHERE problem_id=?
+          `).all(problemId) as { solution_id: number }[];
+          for (const row of existingLinks) linkedFromProblems.add(row.solution_id);
         }
       }
     }
-  });
+
+    if (data.solution_ids !== undefined) {
+      syncHypothesisSolutions(id, data.solution_ids);
+    } else if (data.problems !== undefined) {
+      const existingHs = db.prepare(`
+        SELECT solution_id FROM hypothesis_solutions WHERE hypothesis_id=? ORDER BY sort_order
+      `).all(id) as { solution_id: number }[];
+      const ordered = existingHs.map(r => r.solution_id).filter(sid => linkedFromProblems.has(sid));
+      for (const sid of linkedFromProblems) {
+        if (!ordered.includes(sid)) ordered.push(sid);
+      }
+      syncHypothesisSolutions(id, ordered);
+    }
+  })();
   recomputeCatalogCodes();
   recomputeHypothesisSolutionCodes(id);
   recomputeAllProblemCodes();

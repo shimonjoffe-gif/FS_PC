@@ -88,7 +88,7 @@ export default function HypothesesNsi({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-slate-500">
-          Справочник гипотез (Lean Canvas). Решения общие для всех гипотез; связь проблематика ↔ решение задаётся у каждой проблематики.
+          Справочник гипотез (Lean Canvas). Проблемы и решения — независимые списки с нумерацией в рамках LCM; связи M:N — в карточках.
         </p>
         <div className="flex rounded border border-slate-200 overflow-hidden text-xs shrink-0">
           <button
@@ -151,6 +151,7 @@ export default function HypothesesNsi({
               alternatives: card.alternatives,
               early_adopters: card.early_adopters,
               triggers: card.triggers,
+              segments_description: card.segments_description,
               segment_ids: card.segments?.map(s => s.id) ?? [],
               stakeholder_roles: (card.stakeholder_roles ?? []).map(r => ({
                 stakeholder_role_id: r.id,

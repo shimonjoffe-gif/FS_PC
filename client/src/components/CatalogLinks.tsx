@@ -369,6 +369,7 @@ export default function CatalogLinks() {
                   name: p.problem_id ? undefined : p.name,
                   solution_ids: p.solution_ids,
                 })),
+                solution_ids: data.solution_ids,
                 unique_value_proposition: data.unique_value_proposition,
                 key_metrics: data.key_metrics,
                 unfair_advantage: data.unfair_advantage,
@@ -380,6 +381,7 @@ export default function CatalogLinks() {
                 alternatives: data.alternatives,
                 early_adopters: data.early_adopters,
                 triggers: data.triggers,
+                segments_description: data.segments_description,
                 segment_ids: data.segment_ids,
                 stakeholder_roles: data.stakeholder_roles,
               });

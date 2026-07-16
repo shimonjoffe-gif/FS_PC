@@ -143,9 +143,14 @@ export interface Problem {
 export interface ProblemSolutionUsage {
   id: number;
   name: string;
+  parent_id?: number | null;
   lcm_code?: string | null;
   catalog_code?: string | null;
+  /** Код решения в контексте гипотезы (solution_hypothesis_codes) */
+  hypothesis_code?: string | null;
   sort_order: number;
+  /** false = предок для структуры, без прямой связи с проблематикой */
+  linked?: boolean;
 }
 
 export interface ProblemHypothesisUsage {
@@ -181,8 +186,12 @@ export interface SolutionHypothesisUsage {
   problems: {
     id: number;
     name: string;
+    parent_id?: number | null;
     lcm_code?: string | null;
+    catalog_code?: string | null;
+    hypothesis_code?: string | null;
     sort_order: number;
+    linked?: boolean;
   }[];
 }
 
@@ -238,6 +247,7 @@ export interface HypothesisProblemRow {
   parent_id?: number | null;
   sort_order: number;
   lcm_code?: string | null;
+  hypothesis_code?: string | null;
   depth?: number;
   solutions: { id: number; name: string; description?: string | null; parent_id?: number | null; sort_order?: number; lcm_code?: string | null; catalog_code?: string | null; hypothesis_code?: string | null }[];
 }
@@ -260,12 +270,25 @@ export interface HypothesisDetail extends HypothesisCanvasFields {
   name: string;
   target_audience: string | null;
   triggers: string | null;
+  segments_description: string | null;
   maturity_id: number | null;
   maturity_name: string | null;
   activity_types: ActivityType[];
   segments: { id: number; name: string }[];
   stakeholder_roles: HypothesisStakeholderRoleRow[];
   problems: HypothesisProblemRow[];
+  solutions?: HypothesisSolutionRow[];
+}
+
+export interface HypothesisSolutionRow {
+  id: number;
+  name: string;
+  description?: string | null;
+  parent_id?: number | null;
+  sort_order: number;
+  lcm_code?: string | null;
+  catalog_code?: string | null;
+  hypothesis_code?: string | null;
 }
 
 export interface HypothesisProblemDraft {
@@ -277,6 +300,13 @@ export interface HypothesisProblemDraft {
   sort_order?: number;
   solution_ids: number[];
   new_solution_name: string;
+}
+
+export interface HypothesisSolutionDraft {
+  solution_id: number;
+  name: string;
+  parent_id?: number | null;
+  sort_order: number;
 }
 
 export interface DataSlice {

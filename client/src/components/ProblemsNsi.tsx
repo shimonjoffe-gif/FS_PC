@@ -253,6 +253,7 @@ export default function ProblemsNsi({
           onClose={() => setCard(null)}
           onSave={handleSaveExisting}
           onDelete={() => onDelete(card.problem.id)}
+          sortCodesBy="catalog"
         />
       ) : null}
 

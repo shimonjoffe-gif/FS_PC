@@ -18,8 +18,12 @@ export interface SolutionRow {
 export interface SolutionProblemUsage {
   id: number;
   name: string;
+  parent_id: number | null;
   lcm_code: string | null;
+  catalog_code: string | null;
+  hypothesis_code: string | null;
   sort_order: number;
+  linked: boolean;
 }
 
 export interface SolutionHypothesisUsage {
@@ -102,7 +106,9 @@ export function loadSolutionById(id: number): SolutionDetail | null {
       h.name as hypothesis_name,
       p.id as problem_id,
       p.name as problem_name,
+      p.parent_id as problem_parent_id,
       p.lcm_code,
+      p.catalog_code,
       COALESCE(hp.sort_order, p.sort_order, 0) as problem_sort
     FROM problem_solution_map psm
     JOIN problems p ON p.id = psm.problem_id
@@ -115,7 +121,9 @@ export function loadSolutionById(id: number): SolutionDetail | null {
     hypothesis_name: string;
     problem_id: number;
     problem_name: string;
+    problem_parent_id: number | null;
     lcm_code: string | null;
+    catalog_code: string | null;
     problem_sort: number;
   }[];
 
@@ -134,9 +142,57 @@ export function loadSolutionById(id: number): SolutionDetail | null {
     entry.problems.push({
       id: usage.problem_id,
       name: usage.problem_name,
+      parent_id: usage.problem_parent_id,
       lcm_code: usage.lcm_code,
+      catalog_code: usage.catalog_code,
+      hypothesis_code: null,
       sort_order: usage.problem_sort,
+      linked: true,
     });
+  }
+
+  for (const entry of byHypothesis.values()) {
+    const byId = new Map(entry.problems.map(p => [p.id, p]));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const item of [...byId.values()]) {
+        if (!item.parent_id || byId.has(item.parent_id)) continue;
+        const parent = db.prepare(`
+          SELECT id, name, parent_id, lcm_code, catalog_code, sort_order
+          FROM problems WHERE id=?
+        `).get(item.parent_id) as {
+          id: number; name: string; parent_id: number | null;
+          lcm_code: string | null; catalog_code: string | null; sort_order: number;
+        } | undefined;
+        if (!parent) continue;
+        byId.set(parent.id, {
+          id: parent.id,
+          name: parent.name,
+          parent_id: parent.parent_id,
+          lcm_code: parent.lcm_code,
+          catalog_code: parent.catalog_code,
+          hypothesis_code: null,
+          sort_order: parent.sort_order,
+          linked: false,
+        });
+        changed = true;
+      }
+    }
+
+    const ids = [...byId.keys()];
+    if (ids.length > 0) {
+      const codeRows = db.prepare(`
+        SELECT problem_id, code FROM problem_hypothesis_codes
+        WHERE hypothesis_id=? AND problem_id IN (${ids.map(() => '?').join(',')})
+      `).all(entry.hypothesis_id, ...ids) as { problem_id: number; code: string }[];
+      for (const row of codeRows) {
+        const prob = byId.get(row.problem_id);
+        if (prob) prob.hypothesis_code = row.code;
+      }
+    }
+
+    entry.problems = [...byId.values()];
   }
 
   return {

@@ -286,6 +286,7 @@ export default function SolutionsNsi({
           onClose={() => setCard(null)}
           onSave={handleSaveExisting}
           onDelete={() => onDelete(card.solution.id)}
+          sortCodesBy="catalog"
         />
       ) : null}
 

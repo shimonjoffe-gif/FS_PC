@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { Problem, ProblemDetail } from '../types';
+import type { Problem, ProblemDetail, ProblemSolutionUsage } from '../types';
+import {
+  buildSolutionHierarchyRows,
+  type SolutionHierarchyInput,
+  type SolutionHierarchySortBy,
+} from '../utils/solutionHierarchyRows';
 
 export type ProblemDraft = {
   name: string;
@@ -19,6 +24,105 @@ export function emptyProblemDraft(): ProblemDraft {
   return { name: '', parent_id: '', lcm_code: '' };
 }
 
+export type LcmSolutionOption = {
+  id: number;
+  name: string;
+  parent_id?: number | null;
+  catalog_code?: string | null;
+  hypothesis_code?: string | null;
+  lcm_code?: string | null;
+  sort_order?: number;
+};
+
+function SolutionsHierarchyTable({
+  solutions,
+  sortBy,
+  catalog,
+  linkedIds,
+  onUnlink,
+}: {
+  solutions: SolutionHierarchyInput[];
+  sortBy: SolutionHierarchySortBy;
+  catalog?: SolutionHierarchyInput[];
+  linkedIds?: Set<number>;
+  onUnlink?: (id: number) => void;
+}) {
+  const rows = useMemo(
+    () => buildSolutionHierarchyRows(solutions, sortBy, catalog),
+    [solutions, sortBy, catalog],
+  );
+
+  if (rows.length === 0) {
+    return <p className="px-3 py-2 text-xs text-slate-400">Нет привязанных решений</p>;
+  }
+
+  return (
+    <table className="w-full text-xs border-collapse">
+      <thead>
+        <tr className="text-left text-slate-400 border-b border-slate-100">
+          <th className="px-3 py-1.5 font-medium w-16">Сквозной</th>
+          <th className="px-3 py-1.5 font-medium w-16">LCM</th>
+          <th className="px-3 py-1.5 font-medium">Решение</th>
+          {onUnlink ? <th className="px-2 py-1.5 w-8" /> : null}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(row => {
+          const isLinked = linkedIds ? linkedIds.has(row.id) : row.linked;
+          const muted = !isLinked;
+          return (
+            <tr
+              key={row.id}
+              className={`border-b border-slate-50 last:border-0 ${muted ? 'bg-slate-50/80' : ''}`}
+            >
+              <td className={`px-3 py-1.5 font-mono align-top ${muted ? 'text-slate-300' : 'text-slate-400'}`}>
+                {row.catalogCode}
+              </td>
+              <td className={`px-3 py-1.5 font-mono align-top ${muted ? 'text-slate-300' : 'text-slate-400'}`}>
+                {row.lcmCode}
+              </td>
+              <td
+                className={`px-3 py-1.5 whitespace-pre-wrap align-top ${muted ? 'text-slate-400 italic' : 'text-slate-700'}`}
+                style={{ paddingLeft: `${12 + row.depth * 12}px` }}
+              >
+                {row.name}
+                {muted ? <span className="ml-1 text-[9px] not-italic text-slate-300">(предок)</span> : null}
+              </td>
+              {onUnlink ? (
+                <td className="px-2 py-1.5 align-top">
+                  {isLinked ? (
+                    <button
+                      type="button"
+                      className="text-red-400 hover:text-red-600 text-[10px]"
+                      onClick={() => onUnlink(row.id)}
+                      title="Отвязать"
+                    >
+                      ✕
+                    </button>
+                  ) : null}
+                </td>
+              ) : null}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function usageToInputs(solutions: ProblemSolutionUsage[]): SolutionHierarchyInput[] {
+  return solutions.map(s => ({
+    id: s.id,
+    name: s.name,
+    parent_id: s.parent_id ?? null,
+    catalog_code: s.catalog_code ?? null,
+    hypothesis_code: s.hypothesis_code ?? null,
+    lcm_code: s.lcm_code ?? null,
+    sort_order: s.sort_order,
+    linked: s.linked !== false,
+  }));
+}
+
 export default function ProblemCardModal({
   mode,
   problem,
@@ -27,6 +131,8 @@ export default function ProblemCardModal({
   onClose,
   onSave,
   onDelete,
+  lcmLinks,
+  sortCodesBy,
 }: {
   mode: 'view' | 'edit' | 'create';
   problem?: ProblemDetail;
@@ -35,6 +141,16 @@ export default function ProblemCardModal({
   onClose: () => void;
   onSave: (draft: ProblemDraft) => void | Promise<void>;
   onDelete?: () => void | Promise<void>;
+  lcmLinks?: {
+    hypothesisId: number;
+    hypothesisName: string;
+    linkedSolutionIds: number[];
+    availableSolutions: LcmSolutionOption[];
+    solutionCatalog?: LcmSolutionOption[];
+    onChange: (ids: number[]) => void;
+  };
+  /** Из LCM — по коду гипотезы; из НСИ/брифа — по сквозному */
+  sortCodesBy?: SolutionHierarchySortBy;
 }) {
   const [editing, setEditing] = useState(mode !== 'view');
   const [draft, setDraft] = useState<ProblemDraft>(
@@ -42,6 +158,8 @@ export default function ProblemCardModal({
   );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  const effectiveSort: SolutionHierarchySortBy = sortCodesBy ?? (lcmLinks ? 'lcm' : 'catalog');
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -54,6 +172,29 @@ export default function ProblemCardModal({
   const parentOptions = useMemo(() => {
     return allProblems.filter(p => !problem || p.id !== problem.id);
   }, [allProblems, problem]);
+
+  const lcmLinkedSet = useMemo(
+    () => new Set(lcmLinks?.linkedSolutionIds ?? []),
+    [lcmLinks?.linkedSolutionIds],
+  );
+
+  const lcmSolutionInputs = useMemo((): SolutionHierarchyInput[] => {
+    if (!lcmLinks) return [];
+    return lcmLinks.linkedSolutionIds.map(sid => {
+      const sol = lcmLinks.availableSolutions.find(s => s.id === sid)
+        ?? lcmLinks.solutionCatalog?.find(s => s.id === sid);
+      return {
+        id: sid,
+        name: sol?.name ?? `ID ${sid}`,
+        parent_id: sol?.parent_id ?? null,
+        catalog_code: sol?.catalog_code ?? null,
+        hypothesis_code: sol?.hypothesis_code ?? null,
+        lcm_code: sol?.lcm_code ?? null,
+        sort_order: sol?.sort_order ?? 0,
+        linked: true,
+      };
+    });
+  }, [lcmLinks]);
 
   async function handleSave() {
     if (!draft.name.trim()) return;
@@ -162,41 +303,66 @@ export default function ProblemCardModal({
 
         {!editing && problem ? (
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-            {problem.hypothesis_usages.length === 0 ? (
+            {lcmLinks ? (
+              <section className="border border-blue-100 rounded-lg overflow-hidden">
+                <div className="px-3 py-2 bg-blue-50 text-xs font-semibold text-slate-700 flex items-center justify-between gap-2">
+                  <span>{lcmLinks.hypothesisName}</span>
+                  <span className="text-[10px] font-normal text-blue-600">связи в LCM · сортировка по LCM</span>
+                </div>
+                <SolutionsHierarchyTable
+                  solutions={lcmSolutionInputs}
+                  sortBy={effectiveSort}
+                  catalog={[...(lcmLinks.availableSolutions), ...(lcmLinks.solutionCatalog ?? [])]}
+                  linkedIds={lcmLinkedSet}
+                  onUnlink={id => lcmLinks.onChange(lcmLinks.linkedSolutionIds.filter(x => x !== id))}
+                />
+                <div className="flex gap-1 px-3 py-2 border-t border-slate-100">
+                  <select
+                    className="flex-1 text-[11px] border rounded px-1.5 py-1 min-w-0"
+                    defaultValue=""
+                    onChange={e => {
+                      const id = Number(e.target.value);
+                      if (!id) return;
+                      if (!lcmLinks.linkedSolutionIds.includes(id)) {
+                        lcmLinks.onChange([...lcmLinks.linkedSolutionIds, id]);
+                      }
+                      e.target.value = '';
+                    }}
+                  >
+                    <option value="">+ связать решение…</option>
+                    {lcmLinks.availableSolutions
+                      .filter(s => !lcmLinks.linkedSolutionIds.includes(s.id))
+                      .map(s => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                  </select>
+                </div>
+              </section>
+            ) : null}
+
+            {problem.hypothesis_usages.filter(u => !lcmLinks || u.hypothesis_id !== lcmLinks.hypothesisId).length === 0
+              && !lcmLinks ? (
               <p className="text-sm text-slate-400">Нет связей с гипотезами</p>
             ) : (
-              problem.hypothesis_usages.map(usage => (
+              problem.hypothesis_usages
+                .filter(u => !lcmLinks || u.hypothesis_id !== lcmLinks.hypothesisId)
+                .map(usage => (
                 <section key={usage.hypothesis_id} className="border border-slate-100 rounded-lg overflow-hidden">
                   <div className="px-3 py-2 bg-slate-50 text-xs font-semibold text-slate-700 flex items-center justify-between gap-2">
                     <span>{usage.hypothesis_name}</span>
-                    {usage.code ? (
-                      <span className="text-[10px] font-mono font-normal text-slate-400">№ {usage.code}</span>
-                    ) : null}
+                    <span className="flex items-center gap-2">
+                      {usage.code ? (
+                        <span className="text-[10px] font-mono font-normal text-slate-400">№ {usage.code}</span>
+                      ) : null}
+                      <span className="text-[9px] font-normal text-slate-400">
+                        {effectiveSort === 'lcm' ? 'по LCM' : 'по сквозному'}
+                      </span>
+                    </span>
                   </div>
-                  {usage.solutions.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-slate-400">Нет привязанных решений</p>
-                  ) : (
-                    <table className="w-full text-xs border-collapse">
-                      <thead>
-                        <tr className="text-left text-slate-400 border-b border-slate-100">
-                          <th className="px-3 py-1.5 font-medium w-16">Код</th>
-                          <th className="px-3 py-1.5 font-medium">Решение</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {usage.solutions.map(solution => (
-                          <tr key={solution.id} className="border-b border-slate-50 last:border-0">
-                            <td className="px-3 py-1.5 text-slate-400 font-mono align-top">
-                              {solution.catalog_code ?? solution.lcm_code ?? '—'}
-                            </td>
-                            <td className="px-3 py-1.5 text-slate-700 whitespace-pre-wrap align-top">
-                              {solution.name}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
+                  <SolutionsHierarchyTable
+                    solutions={usageToInputs(usage.solutions)}
+                    sortBy={effectiveSort}
+                  />
                 </section>
               ))
             )}

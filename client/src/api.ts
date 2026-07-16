@@ -275,6 +275,8 @@ export const compareBriefingVersions = (id: number, a: number, b: number) =>
 // === Catalog ===
 export const getIndustries = () => req<Industry[]>('/catalog/industries');
 export const getSegments = () => req<Segment[]>('/catalog/segments');
+export const createSegment = (name: string) =>
+  req<Segment>('/catalog/segments', { method: 'POST', body: JSON.stringify({ name }) });
 export const getSegmentsByIndustry = (industryId: number) => req<Segment[]>(`/catalog/industry-segments/${industryId}`);
 export const getMaturityLevels = () => req<MaturityLevel[]>('/catalog/maturity-levels');
 export const getProblems = (filters?: {
@@ -380,6 +382,7 @@ export const saveHypothesis = (id: number, data: {
     solution_ids?: number[];
     new_solutions?: { name: string }[];
   }[];
+  solution_ids?: number[];
   unique_value_proposition?: string | null;
   key_metrics?: string | null;
   unfair_advantage?: string | null;
@@ -391,6 +394,7 @@ export const saveHypothesis = (id: number, data: {
   alternatives?: string | null;
   early_adopters?: string | null;
   triggers?: string | null;
+  segments_description?: string | null;
   segment_ids?: number[];
   stakeholder_roles?: {
     stakeholder_role_id?: number;

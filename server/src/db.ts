@@ -550,6 +550,9 @@ export function initDB() {
       WHERE triggers IS NULL AND target_audience IS NOT NULL AND trim(target_audience) <> ''
     `);
   }
+  if (!hypCols.has('segments_description')) {
+    db.exec(`ALTER TABLE hypotheses ADD COLUMN segments_description TEXT`);
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS stakeholder_roles (
@@ -565,6 +568,33 @@ export function initDB() {
       PRIMARY KEY (hypothesis_id, segment_id)
     )
   `);
+
+  // Бывшие chip-сегменты гипотезы — не целевые сегменты LCM: имена → triggers, связи очистить.
+  const legacySegLinks = db.prepare(`
+    SELECT hs.hypothesis_id,
+           GROUP_CONCAT(s.name, ', ') as names
+    FROM hypothesis_segments hs
+    JOIN segments s ON s.id = hs.segment_id
+    GROUP BY hs.hypothesis_id
+  `).all() as { hypothesis_id: number; names: string }[];
+  if (legacySegLinks.length > 0) {
+    const getHyp = db.prepare(`SELECT triggers, target_audience FROM hypotheses WHERE id=?`);
+    const updHyp = db.prepare(`UPDATE hypotheses SET triggers=? WHERE id=?`);
+    for (const row of legacySegLinks) {
+      const hyp = getHyp.get(row.hypothesis_id) as {
+        triggers: string | null;
+        target_audience: string | null;
+      } | undefined;
+      if (!hyp) continue;
+      let triggers = hyp.triggers ?? hyp.target_audience ?? '';
+      const names = (row.names ?? '').trim();
+      if (names && !triggers.includes(names)) {
+        triggers = triggers.trim() ? `${triggers.trim()}\n${names}` : names;
+      }
+      updHyp.run(triggers || null, row.hypothesis_id);
+    }
+    db.exec(`DELETE FROM hypothesis_segments`);
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS hypothesis_stakeholder_roles (
@@ -635,6 +665,27 @@ export function initDB() {
       PRIMARY KEY (solution_id, hypothesis_id)
     )
   `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS hypothesis_solutions (
+      hypothesis_id INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+      solution_id   INTEGER NOT NULL REFERENCES solutions(id) ON DELETE CASCADE,
+      sort_order    INTEGER DEFAULT 0,
+      PRIMARY KEY (hypothesis_id, solution_id)
+    )
+  `);
+
+  const hsCount = (db.prepare(`SELECT COUNT(*) AS c FROM hypothesis_solutions`).get() as { c: number }).c;
+  if (hsCount === 0) {
+    db.exec(`
+      INSERT OR IGNORE INTO hypothesis_solutions(hypothesis_id, solution_id, sort_order)
+      SELECT hp.hypothesis_id, psm.solution_id, MIN(s.sort_order)
+      FROM hypothesis_problems hp
+      JOIN problem_solution_map psm ON psm.problem_id = hp.problem_id
+      JOIN solutions s ON s.id = psm.solution_id
+      GROUP BY hp.hypothesis_id, psm.solution_id
+    `);
+  }
 
   const paramsColNames = new Set(
     (db.prepare(`PRAGMA table_info(briefing_params)`).all() as { name: string }[]).map(c => c.name),

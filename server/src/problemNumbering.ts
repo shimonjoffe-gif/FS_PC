@@ -91,27 +91,33 @@ export function recomputeHypothesisProblemCodes(hypothesisId?: number): number {
     }
 
     for (const hyp of hypotheses) {
-      const linkedIds = db.prepare(`
-        SELECT DISTINCT hp.problem_id AS id
+      const linked = db.prepare(`
+        SELECT p.id, p.parent_id, hp.sort_order AS sort_order
         FROM hypothesis_problems hp
+        JOIN problems p ON p.id = hp.problem_id
         WHERE hp.hypothesis_id=?
-      `).all(hyp.id) as { id: number }[];
+      `).all(hyp.id) as NumberedItem[];
 
-      if (!linkedIds.length) continue;
+      if (!linked.length) continue;
 
-      const idSet = new Set(linkedIds.map(r => r.id));
-      const allItems = db.prepare(`
-        SELECT id, parent_id, sort_order FROM problems WHERE id IN (${[...idSet].map(() => '?').join(',')})
-      `).all(...[...idSet]) as NumberedItem[];
+      const idSet = new Set(linked.map(r => r.id));
+      const allItems = [...linked];
 
       const expanded = new Set(idSet);
       let changed = true;
       while (changed) {
         changed = false;
-        for (const item of allItems) {
+        for (const item of [...allItems]) {
           if (item.parent_id && !expanded.has(item.parent_id)) {
-            const parent = db.prepare(`SELECT id, parent_id, sort_order FROM problems WHERE id=?`)
-              .get(item.parent_id) as NumberedItem | undefined;
+            const parent = db.prepare(`
+              SELECT p.id, p.parent_id,
+                     COALESCE(
+                       (SELECT hp.sort_order FROM hypothesis_problems hp
+                        WHERE hp.hypothesis_id=? AND hp.problem_id=p.id),
+                       p.sort_order
+                     ) AS sort_order
+              FROM problems p WHERE p.id=?
+            `).get(hyp.id, item.parent_id) as NumberedItem | undefined;
             if (parent) {
               expanded.add(parent.id);
               if (!allItems.some(i => i.id === parent.id)) allItems.push(parent);

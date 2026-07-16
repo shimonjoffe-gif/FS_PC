@@ -21,9 +21,12 @@ export interface ProblemRow {
 export interface ProblemSolutionUsage {
   id: number;
   name: string;
+  parent_id: number | null;
   lcm_code: string | null;
   catalog_code: string | null;
+  hypothesis_code: string | null;
   sort_order: number;
+  linked: boolean;
 }
 
 export interface ProblemHypothesisUsage {
@@ -139,14 +142,52 @@ export function listProblemsCatalog(filters?: ProblemCatalogFilters): ProblemRow
   }));
 }
 
-function loadProblemSolutions(problemId: number): ProblemSolutionUsage[] {
-  return db.prepare(`
-    SELECT s.id, s.name, s.lcm_code, s.catalog_code, s.sort_order
+function loadProblemSolutions(problemId: number, hypothesisId?: number): ProblemSolutionUsage[] {
+  const linked = db.prepare(`
+    SELECT s.id, s.name, s.parent_id, s.lcm_code, s.catalog_code, s.sort_order
     FROM solutions s
     JOIN problem_solution_map psm ON psm.solution_id = s.id
     WHERE psm.problem_id=?
     ORDER BY s.sort_order, s.name, s.id
-  `).all(problemId) as ProblemSolutionUsage[];
+  `).all(problemId) as Omit<ProblemSolutionUsage, 'hypothesis_code' | 'linked'>[];
+
+  const byId = new Map<number, ProblemSolutionUsage>();
+  for (const row of linked) {
+    byId.set(row.id, {
+      ...row,
+      hypothesis_code: null,
+      linked: true,
+    });
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of [...byId.values()]) {
+      if (!item.parent_id || byId.has(item.parent_id)) continue;
+      const parent = db.prepare(`
+        SELECT id, name, parent_id, lcm_code, catalog_code, sort_order
+        FROM solutions WHERE id=?
+      `).get(item.parent_id) as Omit<ProblemSolutionUsage, 'hypothesis_code' | 'linked'> | undefined;
+      if (!parent) continue;
+      byId.set(parent.id, { ...parent, hypothesis_code: null, linked: false });
+      changed = true;
+    }
+  }
+
+  if (hypothesisId != null && byId.size > 0) {
+    const ids = [...byId.keys()];
+    const codeRows = db.prepare(`
+      SELECT solution_id, code FROM solution_hypothesis_codes
+      WHERE hypothesis_id=? AND solution_id IN (${ids.map(() => '?').join(',')})
+    `).all(hypothesisId, ...ids) as { solution_id: number; code: string }[];
+    for (const row of codeRows) {
+      const sol = byId.get(row.solution_id);
+      if (sol) sol.hypothesis_code = row.code;
+    }
+  }
+
+  return [...byId.values()];
 }
 
 export function loadProblemById(id: number): ProblemDetail | null {
@@ -175,12 +216,11 @@ export function loadProblemById(id: number): ProblemDetail | null {
     ORDER BY h.name
   `).all(id) as { hypothesis_id: number; hypothesis_name: string }[];
 
-  const solutions = loadProblemSolutions(id);
   const hypothesis_usages: ProblemHypothesisUsage[] = hypRows.map(h => ({
     hypothesis_id: h.hypothesis_id,
     hypothesis_name: h.hypothesis_name,
     code: hypCodeById.get(h.hypothesis_id) ?? null,
-    solutions,
+    solutions: loadProblemSolutions(id, h.hypothesis_id),
   }));
 
   return {

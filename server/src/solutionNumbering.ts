@@ -91,29 +91,45 @@ export function recomputeHypothesisSolutionCodes(hypothesisId?: number): number 
     }
 
     for (const hyp of hypotheses) {
-      const linkedIds = db.prepare(`
-        SELECT DISTINCT psm.solution_id AS id
-        FROM problem_solution_map psm
-        JOIN hypothesis_problems hp ON hp.problem_id = psm.problem_id
-        WHERE hp.hypothesis_id=?
-      `).all(hyp.id) as { id: number }[];
+      const linked = db.prepare(`
+        SELECT s.id, s.parent_id, hs.sort_order AS sort_order
+        FROM hypothesis_solutions hs
+        JOIN solutions s ON s.id = hs.solution_id
+        WHERE hs.hypothesis_id=?
+      `).all(hyp.id) as NumberedItem[];
 
-      if (!linkedIds.length) continue;
+      // Fallback: solutions linked via problems if hypothesis_solutions empty for this hyp
+      const items = linked.length
+        ? linked
+        : (db.prepare(`
+            SELECT DISTINCT s.id, s.parent_id, s.sort_order
+            FROM problem_solution_map psm
+            JOIN hypothesis_problems hp ON hp.problem_id = psm.problem_id
+            JOIN solutions s ON s.id = psm.solution_id
+            WHERE hp.hypothesis_id=?
+          `).all(hyp.id) as NumberedItem[]);
 
-      const idSet = new Set(linkedIds.map(r => r.id));
-      const allItems = db.prepare(`
-        SELECT id, parent_id, sort_order FROM solutions WHERE id IN (${[...idSet].map(() => '?').join(',')})
-      `).all(...[...idSet]) as NumberedItem[];
+      if (!items.length) continue;
+
+      const idSet = new Set(items.map(r => r.id));
+      const allItems = [...items];
 
       // Включить предков, попадающих в цепочку
       const expanded = new Set(idSet);
       let changed = true;
       while (changed) {
         changed = false;
-        for (const item of allItems) {
+        for (const item of [...allItems]) {
           if (item.parent_id && !expanded.has(item.parent_id)) {
-            const parent = db.prepare(`SELECT id, parent_id, sort_order FROM solutions WHERE id=?`)
-              .get(item.parent_id) as NumberedItem | undefined;
+            const parent = db.prepare(`
+              SELECT s.id, s.parent_id,
+                     COALESCE(
+                       (SELECT hs.sort_order FROM hypothesis_solutions hs
+                        WHERE hs.hypothesis_id=? AND hs.solution_id=s.id),
+                       s.sort_order
+                     ) AS sort_order
+              FROM solutions s WHERE s.id=?
+            `).get(hyp.id, item.parent_id) as NumberedItem | undefined;
             if (parent) {
               expanded.add(parent.id);
               if (!allItems.some(i => i.id === parent.id)) allItems.push(parent);

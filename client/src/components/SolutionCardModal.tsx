@@ -2,6 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { FsCatalogGroup, FsCatalogItem, Solution, SolutionDetail, SolutionFsLink, SolutionFsLinkType, Widget } from '../types';
 import { YES_NO_BADGE_CLASS, yesNoClass, yesNoLabel } from '../utils/yesNoBadge';
 import { fsLinksFromMap, fsLinksToMap } from '../utils/fsLinkBadge';
+import {
+  buildSolutionHierarchyRows,
+  type SolutionHierarchyInput,
+  type SolutionHierarchySortBy,
+} from '../utils/solutionHierarchyRows';
 import SolutionFsPanel from './SolutionFsPanel';
 import SolutionWidgetsPanel from './SolutionWidgetsPanel';
 import { WidgetGroupedSections } from './WidgetGroupedList';
@@ -31,43 +36,211 @@ export function emptySolutionDraft(hypothesis = ''): SolutionDraft {
   return { name: '', description: '', hypothesis, parent_id: '', lcm_code: '', fs_mapped: false };
 }
 
-function HypothesisContextPanel({ solution }: { solution: SolutionDetail }) {
+export type LcmProblemOption = {
+  id: number;
+  name: string;
+  parent_id?: number | null;
+  catalog_code?: string | null;
+  hypothesis_code?: string | null;
+  lcm_code?: string | null;
+  sort_order?: number;
+};
+
+function ProblemsHierarchyTable({
+  problems,
+  sortBy,
+  catalog,
+  linkedIds,
+  onUnlink,
+}: {
+  problems: SolutionHierarchyInput[];
+  sortBy: SolutionHierarchySortBy;
+  catalog?: SolutionHierarchyInput[];
+  linkedIds?: Set<number>;
+  onUnlink?: (id: number) => void;
+}) {
+  const rows = useMemo(
+    () => buildSolutionHierarchyRows(problems, sortBy, catalog),
+    [problems, sortBy, catalog],
+  );
+
+  if (rows.length === 0) {
+    return <p className="px-3 py-2 text-xs text-slate-400">Нет привязанных проблематик</p>;
+  }
+
+  return (
+    <table className="w-full text-xs border-collapse">
+      <thead>
+        <tr className="text-left text-slate-400 border-b border-slate-100">
+          <th className="px-3 py-1.5 font-medium w-16">Сквозной</th>
+          <th className="px-3 py-1.5 font-medium w-16">LCM</th>
+          <th className="px-3 py-1.5 font-medium">Проблематика</th>
+          {onUnlink ? <th className="px-2 py-1.5 w-8" /> : null}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(row => {
+          const isLinked = linkedIds ? linkedIds.has(row.id) : row.linked;
+          const muted = !isLinked;
+          return (
+            <tr
+              key={row.id}
+              className={`border-b border-slate-50 last:border-0 ${muted ? 'bg-slate-50/80' : ''}`}
+            >
+              <td className={`px-3 py-1.5 font-mono align-top ${muted ? 'text-slate-300' : 'text-slate-400'}`}>
+                {row.catalogCode}
+              </td>
+              <td className={`px-3 py-1.5 font-mono align-top ${muted ? 'text-slate-300' : 'text-slate-400'}`}>
+                {row.lcmCode}
+              </td>
+              <td
+                className={`px-3 py-1.5 whitespace-pre-wrap align-top ${muted ? 'text-slate-400 italic' : 'text-slate-700'}`}
+                style={{ paddingLeft: `${12 + row.depth * 12}px` }}
+              >
+                {row.name}
+                {muted ? <span className="ml-1 text-[9px] not-italic text-slate-300">(предок)</span> : null}
+              </td>
+              {onUnlink ? (
+                <td className="px-2 py-1.5 align-top">
+                  {isLinked ? (
+                    <button
+                      type="button"
+                      className="text-red-400 hover:text-red-600 text-[10px]"
+                      onClick={() => onUnlink(row.id)}
+                      title="Отвязать"
+                    >
+                      ✕
+                    </button>
+                  ) : null}
+                </td>
+              ) : null}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function usageProblemsToInputs(
+  problems: SolutionDetail['hypothesis_usages'][number]['problems'],
+): SolutionHierarchyInput[] {
+  return problems.map(p => ({
+    id: p.id,
+    name: p.name,
+    parent_id: p.parent_id ?? null,
+    catalog_code: p.catalog_code ?? null,
+    hypothesis_code: p.hypothesis_code ?? null,
+    lcm_code: p.lcm_code ?? null,
+    sort_order: p.sort_order,
+    linked: p.linked !== false,
+  }));
+}
+
+function HypothesisUsagesPanel({
+  solution,
+  sortBy,
+  focusHypothesisId,
+  compactOthersAsLinks,
+}: {
+  solution: SolutionDetail;
+  sortBy: SolutionHierarchySortBy;
+  focusHypothesisId?: number;
+  /** Из LCM: другие гипотезы — гиперссылки с inline-раскрытием */
+  compactOthersAsLinks?: boolean;
+}) {
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(() => new Set());
+
   if (solution.hypothesis_usages.length === 0) {
     return <p className="text-sm text-slate-400">Нет связей с проблематиками в гипотезах</p>;
   }
 
+  const primary = focusHypothesisId != null
+    ? solution.hypothesis_usages.find(u => u.hypothesis_id === focusHypothesisId)
+    : null;
+  const others = focusHypothesisId != null
+    ? solution.hypothesis_usages.filter(u => u.hypothesis_id !== focusHypothesisId)
+    : solution.hypothesis_usages;
+
+  function toggle(id: number) {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   return (
     <div className="space-y-3">
-      {solution.hypothesis_usages.map(usage => (
-        <section key={usage.hypothesis_id} className="border border-slate-100 rounded-lg overflow-hidden">
+      {primary && !compactOthersAsLinks ? (
+        <section className="border border-slate-100 rounded-lg overflow-hidden">
           <div className="px-3 py-2 bg-slate-50 text-xs font-semibold text-slate-700 flex items-center justify-between gap-2">
-            <span>{usage.hypothesis_name}</span>
-            {usage.code ? (
-              <span className="text-[10px] font-mono font-normal text-slate-400">№ {usage.code}</span>
+            <span>{primary.hypothesis_name}</span>
+            {primary.code ? (
+              <span className="text-[10px] font-mono font-normal text-slate-400">№ {primary.code}</span>
             ) : null}
           </div>
-          <table className="w-full text-xs border-collapse">
-            <thead>
-              <tr className="text-left text-slate-400 border-b border-slate-100">
-                <th className="px-3 py-1.5 font-medium w-16">Код</th>
-                <th className="px-3 py-1.5 font-medium">Проблематика</th>
-              </tr>
-            </thead>
-            <tbody>
-              {usage.problems.map(problem => (
-                <tr key={problem.id} className="border-b border-slate-50 last:border-0">
-                  <td className="px-3 py-1.5 text-slate-400 font-mono align-top">
-                    {problem.lcm_code ?? '—'}
-                  </td>
-                  <td className="px-3 py-1.5 text-slate-700 whitespace-pre-wrap align-top">
-                    {problem.name}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ProblemsHierarchyTable
+            problems={usageProblemsToInputs(primary.problems)}
+            sortBy={sortBy}
+          />
         </section>
-      ))}
+      ) : null}
+
+      {compactOthersAsLinks ? (
+        <div className="space-y-2">
+          <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Другие гипотезы</div>
+          {others.length === 0 ? (
+            <p className="text-xs text-slate-400">Нет других гипотез</p>
+          ) : (
+            others.map(usage => {
+              const open = expandedIds.has(usage.hypothesis_id);
+              return (
+                <div key={usage.hypothesis_id} className="border border-slate-100 rounded-lg overflow-hidden">
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-xs text-blue-600 hover:bg-blue-50 flex items-center justify-between gap-2"
+                    onClick={() => toggle(usage.hypothesis_id)}
+                  >
+                    <span className="underline-offset-2 hover:underline font-medium">{usage.hypothesis_name}</span>
+                    <span className="flex items-center gap-2 shrink-0 text-slate-400 no-underline">
+                      {usage.code ? <span className="font-mono text-[10px]">№ {usage.code}</span> : null}
+                      <span className="text-[10px]">{open ? '▾' : '▸'}</span>
+                    </span>
+                  </button>
+                  {open ? (
+                    <ProblemsHierarchyTable
+                      problems={usageProblemsToInputs(usage.problems)}
+                      sortBy={sortBy}
+                    />
+                  ) : null}
+                </div>
+              );
+            })
+          )}
+        </div>
+      ) : (
+        others.map(usage => (
+          <section key={usage.hypothesis_id} className="border border-slate-100 rounded-lg overflow-hidden">
+            <div className="px-3 py-2 bg-slate-50 text-xs font-semibold text-slate-700 flex items-center justify-between gap-2">
+              <span>{usage.hypothesis_name}</span>
+              <span className="flex items-center gap-2">
+                {usage.code ? (
+                  <span className="text-[10px] font-mono font-normal text-slate-400">№ {usage.code}</span>
+                ) : null}
+                <span className="text-[9px] font-normal text-slate-400">
+                  {sortBy === 'lcm' ? 'по LCM' : 'по сквозному'}
+                </span>
+              </span>
+            </div>
+            <ProblemsHierarchyTable
+              problems={usageProblemsToInputs(usage.problems)}
+              sortBy={sortBy}
+            />
+          </section>
+        ))
+      )}
     </div>
   );
 }
@@ -180,6 +353,8 @@ export default function SolutionCardModal({
   onClose,
   onSave,
   onDelete,
+  lcmLinks,
+  sortCodesBy,
 }: {
   mode: 'view' | 'edit' | 'create';
   solution?: SolutionDetail;
@@ -196,6 +371,16 @@ export default function SolutionCardModal({
   onClose: () => void;
   onSave: (draft: SolutionDraft) => void | Promise<void>;
   onDelete?: () => void | Promise<void>;
+  lcmLinks?: {
+    hypothesisId: number;
+    hypothesisName: string;
+    linkedProblemIds: number[];
+    availableProblems: LcmProblemOption[];
+    problemCatalog?: LcmProblemOption[];
+    onChange: (ids: number[]) => void;
+  };
+  /** Из LCM — по коду гипотезы; из НСИ/брифа — по сквозному */
+  sortCodesBy?: SolutionHierarchySortBy;
 }) {
   const [editing, setEditing] = useState(mode !== 'view');
   const [pickFsOpen, setPickFsOpen] = useState(false);
@@ -211,6 +396,31 @@ export default function SolutionCardModal({
   const [fsDraft, setFsDraft] = useState<Map<number, SolutionFsLinkType>>(() => new Map());
   const [widgetIds, setWidgetIds] = useState<Set<number>>(() => new Set());
   const [widgetDraft, setWidgetDraft] = useState<Set<number>>(() => new Set());
+
+  const effectiveSort: SolutionHierarchySortBy = sortCodesBy ?? (lcmLinks ? 'lcm' : 'catalog');
+
+  const lcmLinkedSet = useMemo(
+    () => new Set(lcmLinks?.linkedProblemIds ?? []),
+    [lcmLinks?.linkedProblemIds],
+  );
+
+  const lcmProblemInputs = useMemo((): SolutionHierarchyInput[] => {
+    if (!lcmLinks) return [];
+    return lcmLinks.linkedProblemIds.map(pid => {
+      const prob = lcmLinks.availableProblems.find(p => p.id === pid)
+        ?? lcmLinks.problemCatalog?.find(p => p.id === pid);
+      return {
+        id: pid,
+        name: prob?.name ?? `ID ${pid}`,
+        parent_id: prob?.parent_id ?? null,
+        catalog_code: prob?.catalog_code ?? null,
+        hypothesis_code: prob?.hypothesis_code ?? null,
+        lcm_code: prob?.lcm_code ?? null,
+        sort_order: prob?.sort_order ?? 0,
+        linked: true,
+      };
+    });
+  }, [lcmLinks]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -438,9 +648,63 @@ export default function SolutionCardModal({
 
         {showSplitView ? (
           <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-0 overflow-hidden">
-            <div className="overflow-y-auto px-4 py-3 border-b lg:border-b-0 lg:border-r border-slate-100">
-              <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Гипотезы и проблематики</div>
-              <HypothesisContextPanel solution={solution} />
+            <div className="overflow-y-auto px-4 py-3 border-b lg:border-b-0 lg:border-r border-slate-100 space-y-4">
+              {lcmLinks ? (
+                <>
+                  <section className="border border-blue-100 rounded-lg overflow-hidden">
+                    <div className="px-3 py-2 bg-blue-50 text-xs font-semibold text-slate-700 flex items-center justify-between gap-2">
+                      <span>{lcmLinks.hypothesisName}</span>
+                      <span className="text-[10px] font-normal text-blue-600">связи в LCM · по LCM</span>
+                    </div>
+                    <ProblemsHierarchyTable
+                      problems={lcmProblemInputs}
+                      sortBy={effectiveSort}
+                      catalog={[...(lcmLinks.availableProblems), ...(lcmLinks.problemCatalog ?? [])]}
+                      linkedIds={lcmLinkedSet}
+                      onUnlink={id => lcmLinks.onChange(lcmLinks.linkedProblemIds.filter(x => x !== id))}
+                    />
+                    <div className="flex gap-1 px-3 py-2 border-t border-slate-100">
+                      <select
+                        className="flex-1 text-[11px] border rounded px-1.5 py-1 min-w-0"
+                        defaultValue=""
+                        onChange={e => {
+                          const id = Number(e.target.value);
+                          if (!id) return;
+                          if (!lcmLinks.linkedProblemIds.includes(id)) {
+                            lcmLinks.onChange([...lcmLinks.linkedProblemIds, id]);
+                          }
+                          e.target.value = '';
+                        }}
+                      >
+                        <option value="">+ связать проблематику…</option>
+                        {lcmLinks.availableProblems
+                          .filter(p => !lcmLinks.linkedProblemIds.includes(p.id))
+                          .map(p => (
+                            <option key={p.id} value={p.id}>{p.name}</option>
+                          ))}
+                      </select>
+                    </div>
+                  </section>
+                  {solution ? (
+                    <HypothesisUsagesPanel
+                      solution={solution}
+                      sortBy={effectiveSort}
+                      focusHypothesisId={lcmLinks.hypothesisId}
+                      compactOthersAsLinks
+                    />
+                  ) : null}
+                </>
+              ) : solution ? (
+                <div>
+                  <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                    Гипотезы и проблематики
+                    <span className="ml-1.5 font-normal text-slate-400 normal-case">
+                      ({effectiveSort === 'lcm' ? 'сорт. по LCM' : 'сорт. по сквозному'})
+                    </span>
+                  </div>
+                  <HypothesisUsagesPanel solution={solution} sortBy={effectiveSort} />
+                </div>
+              ) : null}
             </div>
             <div className="overflow-y-auto px-4 py-3 space-y-4">
               <section>

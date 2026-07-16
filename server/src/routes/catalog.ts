@@ -33,6 +33,19 @@ catalogRouter.get('/segments', (_req, res) => {
   res.json(db.prepare(`SELECT * FROM segments ORDER BY name`).all());
 });
 
+catalogRouter.post('/segments', (req, res) => {
+  const { name } = req.body as { name?: string };
+  const trimmed = name?.trim();
+  if (!trimmed) return res.status(400).json({ error: 'name is required' });
+  try {
+    db.prepare(`INSERT OR IGNORE INTO segments(name) VALUES (?)`).run(trimmed);
+    const row = db.prepare(`SELECT id, name FROM segments WHERE name=?`).get(trimmed) as { id: number; name: string };
+    res.status(201).json(row);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : 'create failed' });
+  }
+});
+
 catalogRouter.get('/industry-segments/:industryId', (req, res) => {
   res.json(db.prepare(`
     SELECT s.* FROM segments s
@@ -632,6 +645,7 @@ catalogRouter.put('/hypotheses/:id', (req, res) => {
       solution_ids?: number[];
       new_solutions?: { name: string }[];
     }[];
+    solution_ids?: number[];
     unique_value_proposition?: string | null;
     key_metrics?: string | null;
     unfair_advantage?: string | null;
@@ -643,6 +657,7 @@ catalogRouter.put('/hypotheses/:id', (req, res) => {
     alternatives?: string | null;
     early_adopters?: string | null;
     triggers?: string | null;
+    segments_description?: string | null;
     segment_ids?: number[];
     stakeholder_roles?: {
       stakeholder_role_id?: number;
@@ -657,6 +672,7 @@ catalogRouter.put('/hypotheses/:id', (req, res) => {
       maturity_id: body.maturity_id,
       activity_type_ids: body.activity_type_ids,
       problems: body.problems,
+      solution_ids: body.solution_ids,
       unique_value_proposition: body.unique_value_proposition,
       key_metrics: body.key_metrics,
       unfair_advantage: body.unfair_advantage,
@@ -668,6 +684,7 @@ catalogRouter.put('/hypotheses/:id', (req, res) => {
       alternatives: body.alternatives,
       early_adopters: body.early_adopters,
       triggers: body.triggers,
+      segments_description: body.segments_description,
       segment_ids: body.segment_ids,
       stakeholder_roles: body.stakeholder_roles,
     }));

@@ -8,11 +8,40 @@ export function detailToDrafts(detail: HypothesisDetail): HypothesisProblemDraft
       name: p.name,
       parent_id: p.parent_id ?? null,
       depth: p.depth ?? 0,
-      lcm_code: p.lcm_code ?? null,
+      lcm_code: p.hypothesis_code ?? p.lcm_code ?? null,
       sort_order: p.sort_order ?? 0,
       solution_ids: p.solutions.map(s => s.id),
       new_solution_name: '',
     }));
+}
+
+export function detailToSolutionDrafts(detail: HypothesisDetail): import('./types').HypothesisSolutionDraft[] {
+  const fromList = detail.solutions ?? [];
+  if (fromList.length > 0) {
+    return [...fromList]
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      .map((s, idx) => ({
+        solution_id: s.id,
+        name: s.name,
+        parent_id: s.parent_id ?? null,
+        sort_order: s.sort_order ?? idx,
+      }));
+  }
+  const seen = new Set<number>();
+  const drafts: import('./types').HypothesisSolutionDraft[] = [];
+  for (const p of detail.problems) {
+    for (const s of p.solutions) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      drafts.push({
+        solution_id: s.id,
+        name: s.name,
+        parent_id: s.parent_id ?? null,
+        sort_order: drafts.length,
+      });
+    }
+  }
+  return drafts;
 }
 
 export interface IndexedProblem extends HypothesisProblemDraft {
