@@ -1,13 +1,17 @@
 import Database from 'better-sqlite3';
-import path from 'path';
 import { normalizeFsPrefix } from './fsPrefix';
 import { seedProjectTypesNsi } from './assessmentCalc';
 import { seedStandardDocumentsNsi, migrateStandardDocumentsSchema } from './standardDocumentsSeed';
-import { DATA_DIR, ensureDataDirs } from './paths';
+import { DB_PATH, ensureDataDirs } from './paths';
+import fs from 'fs';
 
 ensureDataDirs();
 
-export const db = new Database(path.join(DATA_DIR, 'projects.db'));
+const dbExists = fs.existsSync(DB_PATH);
+const dbSize = dbExists ? fs.statSync(DB_PATH).size : 0;
+console.log(`SQLite: ${DB_PATH} exists=${dbExists} size=${dbSize}`);
+
+export const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 

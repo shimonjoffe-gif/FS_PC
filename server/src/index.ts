@@ -9,7 +9,9 @@ import { referencesRouter } from './routes/references';
 import { constantsRouter } from './routes/constants';
 import { briefingsRouter } from './routes/briefings';
 import { catalogRouter } from './routes/catalog';
-import { UPLOADS_DIR, ensureDataDirs } from './paths';
+import { UPLOADS_DIR, DB_PATH, DATA_DIR, ensureDataDirs } from './paths';
+import { db } from './db';
+import fs from 'fs';
 
 initDB();
 seed();
@@ -31,7 +33,24 @@ app.use(cors({
 app.use(express.json({ limit: '25mb' }));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true });
+  let counts: Record<string, number> = {};
+  try {
+    counts = {
+      projects: (db.prepare(`SELECT COUNT(*) as c FROM projects`).get() as { c: number }).c,
+      briefings: (db.prepare(`SELECT COUNT(*) as c FROM briefings`).get() as { c: number }).c,
+      hypotheses: (db.prepare(`SELECT COUNT(*) as c FROM hypotheses`).get() as { c: number }).c,
+      industries: (db.prepare(`SELECT COUNT(*) as c FROM industries`).get() as { c: number }).c,
+    };
+  } catch {
+    counts = {};
+  }
+  res.json({
+    ok: true,
+    dataDir: DATA_DIR,
+    dbPath: DB_PATH,
+    dbSize: fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0,
+    counts,
+  });
 });
 
 app.use('/api/uploads', express.static(UPLOADS_DIR));
