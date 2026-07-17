@@ -11,6 +11,7 @@ import type {
 import { getFsCatalogItems, getWidget, getWidgetFsLinksForWidget } from '../api';
 import SolutionFsPanel from './SolutionFsPanel';
 import { widgetDataSliceLabel } from '../utils/widgetDisplayGroups';
+import { widgetImageUrl } from './WidgetImagePreview';
 
 function filterWidgetHypothesisForBriefing(
   usages: WidgetHypothesisUsage[],
@@ -223,7 +224,7 @@ export default function BriefingWidgetCardModal({
             <div className="overflow-hidden px-4 py-3 border-b lg:border-b lg:border-r border-slate-100 flex items-center justify-center bg-slate-50/50">
               {widget.image_path ? (
                 <img
-                  src={`/api/uploads/${widget.image_path}`}
+                  src={widgetImageUrl(widget.image_path) ?? ''}
                   alt={widget.name}
                   className="max-w-full max-h-full object-contain"
                 />

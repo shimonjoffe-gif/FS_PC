@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from 'react';
 
 export function widgetImageUrl(imagePath?: string | null): string | null {
-  return imagePath ? `/api/uploads/${imagePath}` : null;
+  if (!imagePath) return null;
+  const apiBase = import.meta.env.VITE_API_URL?.replace(/\/$/, '');
+  return apiBase
+    ? `${apiBase}/api/uploads/${imagePath}`
+    : `/api/uploads/${imagePath}`;
 }
 
 export function WidgetImagePreviewModal({
