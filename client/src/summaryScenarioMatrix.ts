@@ -1,12 +1,18 @@
 import type {
-  AssessmentScenario, BriefingAssessment, BriefingFsSel, FsQueueKey, TeamProportions,
+  AssessmentScenario, BriefingAssessment, BriefingFsSel, FsQueueKey, ScenarioPhaseDetail,
+  TeamProportions,
 } from './types';
 import { FS_QUEUE_KEYS, itemQueues } from './types';
 import type { AssessmentNsiCache } from './assessmentNsi';
 import { getEvaluatedQueueKeys } from './assessmentCalc';
 import { computeAllPhaseBases } from './phaseCalc';
 import { computeAllPhaseProds } from './phaseCalcProd';
-import { resolveScenarioAssessment, resolveScenarioFsItems } from './scenarioCalc';
+import {
+  EMPTY_SCENARIO_PHASE_DETAIL,
+  addScenarioPhaseDetails,
+  detailFromProdSide,
+  resolveScenarioForCalc,
+} from './scenarioCalc';
 
 export const SUMMARY_BASE_COLUMN_ID = 'base';
 export const SUMMARY_TOTAL_GROUP_ID = 'total';
@@ -29,23 +35,21 @@ export interface SummaryMatrixGroup {
 export interface SummaryScenarioMatrixRow {
   lineId: string;
   label: string;
-  /** columnId → queue → ДО */
-  byColumnByQueue: Record<string, Partial<Record<FsQueueKey, number>>>;
+  /** columnId → queue → detail ДО */
+  byColumnByQueue: Record<string, Partial<Record<FsQueueKey, ScenarioPhaseDetail>>>;
   /** columnId → sum across queues */
-  byColumnTotal: Record<string, number>;
+  byColumnTotal: Record<string, ScenarioPhaseDetail>;
 }
 
 export interface SummaryScenarioMatrix {
   activeQueues: FsQueueKey[];
-  /** All columns that appear somewhere (for lookups). */
   columns: SummaryScenarioColumn[];
-  /** Column groups in display order: queues then Итого. */
   groups: SummaryMatrixGroup[];
   rows: SummaryScenarioMatrixRow[];
-  /** columnId → queue → ДО total */
-  queueTotals: Record<string, Partial<Record<FsQueueKey, number>>>;
-  /** columnId → grand ДО total */
-  grandTotals: Record<string, number>;
+  /** columnId → queue → detail */
+  queueTotals: Record<string, Partial<Record<FsQueueKey, ScenarioPhaseDetail>>>;
+  /** columnId → grand detail */
+  grandTotals: Record<string, ScenarioPhaseDetail>;
 }
 
 /**
@@ -107,12 +111,12 @@ function computeQueueDoByPhase(
   fsItems: BriefingFsSel[],
   accuracyPct: number,
   defaultTeam: TeamProportions,
-): { byPhase: Record<string, number>; total: number } {
+): { byPhase: Record<string, ScenarioPhaseDetail>; totalDetail: ScenarioPhaseDetail } {
+  const empty = { byPhase: {}, totalDetail: { ...EMPTY_SCENARIO_PHASE_DETAIL } };
   const otRisks = assessment.effective_risks_ot ?? assessment.auto_risks;
   const doRisks = assessment.effective_risks_do ?? assessment.auto_risks;
-  if (!otRisks || !doRisks) {
-    return { byPhase: {}, total: 0 };
-  }
+  if (!otRisks || !doRisks) return empty;
+
   const queueLines = assessment.phase_calc?.queues?.[queue] ?? {};
   const bases = computeAllPhaseBases(queue, assessment, fsItems);
   const prods = computeAllPhaseProds(
@@ -120,19 +124,20 @@ function computeQueueDoByPhase(
     accuracyPct, defaultTeam, queueLines, bases,
   );
 
-  const byPhase: Record<string, number> = {};
-  let total = 0;
+  const byPhase: Record<string, ScenarioPhaseDetail> = {};
+  let totalDetail = { ...EMPTY_SCENARIO_PHASE_DETAIL };
 
   for (const def of assessment.phase_calc_defs ?? []) {
     if (!def.is_phase) continue;
     const enabled = queueLines[def.id] ?? def.default_enabled;
-    const doTotal = prods[def.id]?.do?.total;
-    if (!enabled || doTotal == null || !Number.isFinite(doTotal) || doTotal <= 0) continue;
-    byPhase[def.id] = doTotal;
-    total += doTotal;
+    const doSide = prods[def.id]?.do;
+    if (!enabled || !doSide || !(doSide.total > 0)) continue;
+    const piece = detailFromProdSide(doSide, doRisks);
+    byPhase[def.id] = piece;
+    totalDetail = addScenarioPhaseDetails(totalDetail, piece);
   }
 
-  return { byPhase, total };
+  return { byPhase, totalDetail };
 }
 
 function computeColumnQueueDo(
@@ -143,29 +148,35 @@ function computeColumnQueueDo(
   accuracyPct: number,
   defaultTeam: TeamProportions,
   target: {
-    byColumnByQueue: Record<string, Partial<Record<FsQueueKey, number>>>;
-    byColumnTotal: Record<string, number>;
-    queueTotals: Record<string, Partial<Record<FsQueueKey, number>>>;
-    grandTotals: Record<string, number>;
+    queueTotals: Record<string, Partial<Record<FsQueueKey, ScenarioPhaseDetail>>>;
+    grandTotals: Record<string, ScenarioPhaseDetail>;
     rowByPhase: Map<string, SummaryScenarioMatrixRow>;
   },
 ): void {
-  target.byColumnTotal[columnId] = 0;
-  target.grandTotals[columnId] = 0;
+  target.grandTotals[columnId] = { ...EMPTY_SCENARIO_PHASE_DETAIL };
   target.queueTotals[columnId] = {};
 
   for (const q of activeQueues) {
-    const { byPhase, total } = computeQueueDoByPhase(q, assessment, fsItems, accuracyPct, defaultTeam);
-    target.queueTotals[columnId]![q] = total > 0 ? total : undefined;
-    target.byColumnTotal[columnId] += total;
-    target.grandTotals[columnId] += total;
+    const { byPhase, totalDetail } = computeQueueDoByPhase(
+      q, assessment, fsItems, accuracyPct, defaultTeam,
+    );
+    if (totalDetail.total > 0) {
+      target.queueTotals[columnId]![q] = totalDetail;
+      target.grandTotals[columnId] = addScenarioPhaseDetails(
+        target.grandTotals[columnId],
+        totalDetail,
+      );
+    }
 
-    for (const [lineId, amount] of Object.entries(byPhase)) {
+    for (const [lineId, detail] of Object.entries(byPhase)) {
       const row = target.rowByPhase.get(lineId);
       if (!row) continue;
       if (!row.byColumnByQueue[columnId]) row.byColumnByQueue[columnId] = {};
-      row.byColumnByQueue[columnId]![q] = amount;
-      row.byColumnTotal[columnId] = (row.byColumnTotal[columnId] ?? 0) + amount;
+      row.byColumnByQueue[columnId]![q] = detail;
+      row.byColumnTotal[columnId] = addScenarioPhaseDetails(
+        row.byColumnTotal[columnId] ?? { ...EMPTY_SCENARIO_PHASE_DETAIL },
+        detail,
+      );
     }
   }
 }
@@ -234,10 +245,8 @@ export function computeSummaryScenarioMatrix(
   }
 
   const target = {
-    byColumnByQueue: {} as Record<string, Partial<Record<FsQueueKey, number>>>,
-    byColumnTotal: {} as Record<string, number>,
-    queueTotals: {} as Record<string, Partial<Record<FsQueueKey, number>>>,
-    grandTotals: {} as Record<string, number>,
+    queueTotals: {} as Record<string, Partial<Record<FsQueueKey, ScenarioPhaseDetail>>>,
+    grandTotals: {} as Record<string, ScenarioPhaseDetail>,
     rowByPhase,
   };
 
@@ -252,8 +261,9 @@ export function computeSummaryScenarioMatrix(
   );
 
   for (const scenario of scenarios) {
-    const effective = resolveScenarioAssessment(assessment, scenario, nsi);
-    const scenarioFs = resolveScenarioFsItems(fsItems, scenario);
+    const { assessment: effective, fsItems: scenarioFs } = resolveScenarioForCalc(
+      assessment, scenario, fsItems, nsi,
+    );
     computeColumnQueueDo(
       scenario.id,
       effective,
@@ -267,7 +277,7 @@ export function computeSummaryScenarioMatrix(
 
   const rows = phaseDefs
     .map(def => rowByPhase.get(def.id)!)
-    .filter(row => columns.some(col => (row.byColumnTotal[col.id] ?? 0) > 0));
+    .filter(row => columns.some(col => (row.byColumnTotal[col.id]?.total ?? 0) > 0));
 
   return {
     activeQueues,

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { AssessmentScenario, BriefingFsSel, FsQueueKey, FsQueuesMap } from '../types';
 import { FS_QUEUE_KEYS, FS_QUEUE_LABELS, anyQueueEnabled, itemQueues } from '../types';
+import type { QueueSpTotals } from '../fsSpCalc';
 import { groupFsItemsSorted } from '../utils/fsDisplayGroups';
 import {
   baseEnabledFsItems,
@@ -15,6 +16,8 @@ type Props = {
   items: BriefingFsSel[];
   scenario: AssessmentScenario;
   queueKeys?: FsQueueKey[];
+  spBase: QueueSpTotals;
+  spScenario: QueueSpTotals;
   onToggleQueue: (item: BriefingFsSel, queue: FsQueueKey) => void;
   onMoveToQueue: (item: BriefingFsSel, fromQueue: FsQueueKey, targetQueue: FsQueueKey) => void;
   onToggleExcluded: (fsItemId: number) => void;
@@ -29,6 +32,20 @@ function yesNoClass(on: boolean, differs = false): string {
   return on
     ? 'bg-emerald-100 text-emerald-800'
     : 'bg-slate-100 text-slate-500';
+}
+
+function formatSpBaseToScenario(base: number, scenario: number): ReactNode {
+  const b = base || 0;
+  const s = scenario || 0;
+  if (b === 0 && s === 0) return '—';
+  if (b === s) return b;
+  return (
+    <>
+      {b}
+      <span className="text-slate-400 mx-0.5">→</span>
+      <span className="font-medium">{s}</span>
+    </>
+  );
 }
 
 function scenarioItemQueues(
@@ -48,6 +65,8 @@ export default function ScenarioFsQueueTable({
   items,
   scenario,
   queueKeys = [...FS_QUEUE_KEYS],
+  spBase,
+  spScenario,
   onToggleQueue,
   onMoveToQueue,
   onToggleExcluded,
@@ -112,6 +131,39 @@ export default function ScenarioFsQueueTable({
 
   const colCount = 3 + 1 + queueKeys.length + 1;
 
+  const totalRows: {
+    label: string;
+    title: string;
+    allBase: number;
+    allSc: number;
+    byQueue: (q: FsQueueKey) => { base: number; sc: number };
+  }[] = [
+    {
+      label: 'Итого SP функционала (C20)',
+      title: 'Сумма SP функциональных пунктов (C20), без интеграций и НМД',
+      allBase: spBase.all_queues,
+      allSc: spScenario.all_queues,
+      byQueue: q => ({ base: spBase.functional_sp[q], sc: spScenario.functional_sp[q] }),
+    },
+    {
+      label: 'Итого SP интеграций (C21)',
+      title: 'Сумма SP пунктов раздела 11 / «ФС интеграции» (C21)',
+      allBase: spBase.all_integrations,
+      allSc: spScenario.all_integrations,
+      byQueue: q => ({
+        base: spBase.integrations_sp_auto[q],
+        sc: spScenario.integrations_sp_auto[q],
+      }),
+    },
+    {
+      label: 'Итого SP НМД (D20)',
+      title: 'Сумма SP пунктов с требованием НМД (D20)',
+      allBase: spBase.all_nmd,
+      allSc: spScenario.all_nmd,
+      byQueue: q => ({ base: spBase.nmd_sp_auto[q], sc: spScenario.nmd_sp_auto[q] }),
+    },
+  ];
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap justify-end gap-2">
@@ -129,7 +181,7 @@ export default function ScenarioFsQueueTable({
       </div>
       <p className="text-[11px] text-slate-500">
         Показаны пункты с «Да» в базе. Перетащите «Да» в другую очередь (как на «ФС + очереди»).
-        Колонка «Исключить» убирает пункт из расчёта варианта.
+        Колонка «Исключить» убирает пункт из расчёта варианта. В итогах: база → сценарий.
       </p>
       <div className="border rounded overflow-auto max-h-[480px]">
         <table className="w-full text-xs border-collapse">
@@ -199,6 +251,27 @@ export default function ScenarioFsQueueTable({
               );
             })}
           </tbody>
+          <tfoot className="sticky bottom-0 z-10">
+            {totalRows.map(row => (
+              <tr key={row.label} className="bg-slate-100 font-semibold text-slate-700">
+                <td className="p-2 border" colSpan={3} title={row.title}>
+                  {row.label}
+                </td>
+                <td className="p-2 border text-center tabular-nums" title="База → сценарий">
+                  {formatSpBaseToScenario(row.allBase, row.allSc)}
+                </td>
+                {queueKeys.map(q => {
+                  const { base, sc } = row.byQueue(q);
+                  return (
+                    <td key={q} className="p-2 border text-center tabular-nums">
+                      {formatSpBaseToScenario(base, sc)}
+                    </td>
+                  );
+                })}
+                <td className="p-2 border" />
+              </tr>
+            ))}
+          </tfoot>
         </table>
       </div>
     </div>

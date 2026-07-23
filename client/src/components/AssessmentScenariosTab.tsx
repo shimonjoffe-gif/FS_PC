@@ -19,7 +19,6 @@ import {
   getScenarioPhaseEnabled,
   getScenarioQueueRate,
   getScenarioQueueTechnologyLabel,
-  hasScenarioFsChanges,
   getScenarioItemQueueEnabled,
   isFsExcludedInScenario,
   moveScenarioItemToQueue,
@@ -449,7 +448,7 @@ export default function AssessmentScenariosTab({
                       const scTech = getScenarioQueueTechnologyLabel(assessment, selected, q);
                       const differs = baseTech !== scTech;
                       const baseRate = getBaseQueueRate(assessment, q);
-                      const scRate = getScenarioQueueRate(assessment, selected, q, nsi);
+                      const scRate = getScenarioQueueRate(assessment, selected, q, nsi, fsItems);
                       return (
                         <tr key={q} className={differs ? 'bg-amber-50/40' : ''}>
                           <td className="p-2 border">{FS_QUEUE_LABELS[q]}</td>
@@ -497,25 +496,11 @@ export default function AssessmentScenariosTab({
                   {fsWarnings.map((w, i) => <p key={i}>{w}</p>)}
                 </div>
               )}
-              {spDelta && hasScenarioFsChanges(selected) && (
-                <div className="text-xs text-slate-600 space-y-0.5">
-                  <p>
-                    SP функционала (все очереди): база {spDelta.base.all_queues} → сценарий{' '}
-                    <span className="font-medium">{spDelta.scenario.all_queues}</span>
-                  </p>
-                  <div className="flex flex-wrap gap-x-4">
-                    {activeQueues.map(q => (
-                      <span key={q}>
-                        {FS_QUEUE_LABELS[q]}: {spDelta.base.functional_sp[q]} →{' '}
-                        <span className="font-medium">{spDelta.scenario.functional_sp[q]}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
               <ScenarioFsQueueTable
                 items={fsItems}
                 scenario={selected}
+                spBase={spDelta!.base}
+                spScenario={spDelta!.scenario}
                 onToggleQueue={toggleFsItemQueue}
                 onMoveToQueue={moveFsItemQueue}
                 onToggleExcluded={toggleFsExcluded}

@@ -80,6 +80,118 @@ export interface FsSelection {
 
 type DerivedFsMeta = { source: string; story_points: number | null; widget_ids: Set<number> };
 
+type OptionalFsLinkInfo = {
+  requiredNames: string[];
+  optionalNames: string[];
+  hasRequired: boolean;
+};
+
+const REQUIRED_SOLUTIONS_HEADER = 'Обязательно для решений:';
+const OPTIONAL_SOLUTIONS_HEADER = 'Опционально для решений:';
+const OLD_OPTIONAL_LINE_RE = /^Опционально в решении «.+»$/;
+const OLD_REQUIRED_LINE_RE = /^Обязательно для решения «.+»$/;
+const BULLET_LINE_RE = /^[•\-\*]\s+/;
+
+function parseQueueCommentMap(raw: string | null | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function formatSolutionBulletBlock(header: string, names: string[]): string[] {
+  const unique = [...new Set(names.map(n => n.trim()).filter(Boolean))];
+  if (unique.length === 0) return [];
+  return [header, ...unique.map(n => `• ${n}`)];
+}
+
+/**
+ * Обновить блок «Обязательно/Опционально для решений» в комментарии очереди.
+ * Пользовательский текст сохраняется; авто-блок и старые однострочные форматы пересобираются.
+ */
+export function mergeSolutionLinkComments(
+  existing: string | undefined,
+  requiredNames: string[],
+  optionalNames: string[],
+): string {
+  const rawLines = (existing ?? '').split(/\r?\n/).map(l => l.trimEnd());
+  const userLines: string[] = [];
+  let i = 0;
+  while (i < rawLines.length) {
+    const trimmed = rawLines[i].trim();
+    if (trimmed === REQUIRED_SOLUTIONS_HEADER || trimmed === OPTIONAL_SOLUTIONS_HEADER) {
+      i += 1;
+      while (i < rawLines.length && BULLET_LINE_RE.test(rawLines[i].trim())) i += 1;
+      continue;
+    }
+    if (OLD_OPTIONAL_LINE_RE.test(trimmed) || OLD_REQUIRED_LINE_RE.test(trimmed)) {
+      i += 1;
+      continue;
+    }
+    userLines.push(rawLines[i]);
+    i += 1;
+  }
+
+  const managed = [
+    ...formatSolutionBulletBlock(REQUIRED_SOLUTIONS_HEADER, requiredNames),
+    ...formatSolutionBulletBlock(OPTIONAL_SOLUTIONS_HEADER, optionalNames),
+  ];
+
+  const kept = userLines.join('\n').replace(/^\n+|\n+$/g, '');
+  if (managed.length === 0) return kept;
+  if (!kept) return managed.join('\n');
+  return `${kept}\n${managed.join('\n')}`;
+}
+
+/** По выбранным решениям: для каждого пункта ФС — имена обяз./опц. связей. */
+function buildOptionalFsLinkInfo(briefingId: number): Map<number, OptionalFsLinkInfo> {
+  const selected = db.prepare(`
+    SELECT bss.solution_id, sol.name
+    FROM briefing_solution_sel bss
+    JOIN solutions sol ON sol.id = bss.solution_id
+    WHERE bss.briefing_id=?
+  `).all(briefingId) as { solution_id: number; name: string }[];
+  if (selected.length === 0) return new Map();
+
+  const solIds = selected.map(s => s.solution_id);
+  const nameById = new Map(selected.map(s => [s.solution_id, s.name]));
+  const ph = solIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT sfm.fs_item_id, sfm.solution_id, sfm.link_type
+    FROM solution_fs_map sfm
+    JOIN fs_catalog fc ON fc.id = sfm.fs_item_id AND fc.published = 1 AND COALESCE(fc.is_deleted, 0) = 0
+    WHERE sfm.solution_id IN (${ph}) AND (fc.item_type IS NULL OR fc.item_type = 'item')
+  `).all(...solIds) as { fs_item_id: number; solution_id: number; link_type: string }[];
+
+  const map = new Map<number, OptionalFsLinkInfo>();
+  for (const row of rows) {
+    const cur = map.get(row.fs_item_id) ?? { requiredNames: [], optionalNames: [], hasRequired: false };
+    const name = nameById.get(row.solution_id);
+    if (row.link_type === 'optional') {
+      if (name && !cur.optionalNames.includes(name)) cur.optionalNames.push(name);
+    } else {
+      cur.hasRequired = true;
+      if (name && !cur.requiredNames.includes(name)) cur.requiredNames.push(name);
+    }
+    map.set(row.fs_item_id, cur);
+  }
+  return map;
+}
+
+export type DeriveFsResult = {
+  items: FsSelection[];
+  /** Пункты только с optional-связями (нет required ни в одном выбранном решении). */
+  optional_only_fs_ids: number[];
+};
+
 function buildFsQueueAssignments(briefingId: number): Map<number, string> {
   const assigned = new Map<number, string>();
 
@@ -292,29 +404,33 @@ export function getDefaultParams(): BriefingParams {
   };
 }
 
-export function deriveFsFromSelections(briefingId: number): FsSelection[] {
+export function deriveFsFromSelections(briefingId: number): DeriveFsResult {
   const fsMap = buildDerivedFsMap(briefingId);
-  if (fsMap.size === 0 && !db.prepare(`SELECT id FROM briefings WHERE id=?`).get(briefingId)) return [];
+  if (fsMap.size === 0 && !db.prepare(`SELECT id FROM briefings WHERE id=?`).get(briefingId)) {
+    return { items: [], optional_only_fs_ids: [] };
+  }
 
   const existing = db.prepare(`
-    SELECT fs_item_id, enabled, queue, queues_json, source, story_points
+    SELECT fs_item_id, enabled, queue, queues_json, source, story_points, queue_comment_json
     FROM briefing_fs_sel WHERE briefing_id=?
   `).all(briefingId) as {
     fs_item_id: number; enabled: number; queue: string; queues_json: string | null;
-    source: string; story_points: number | null;
+    source: string; story_points: number | null; queue_comment_json: string | null;
   }[];
   const existingMap = new Map(existing.map(e => [e.fs_item_id, e]));
   const queueAssignments = buildFsQueueAssignments(briefingId);
+  const optionalInfo = buildOptionalFsLinkInfo(briefingId);
 
   const upsert = db.prepare(`
-    INSERT INTO briefing_fs_sel (briefing_id, fs_item_id, enabled, queue, queues_json, source, story_points)
-    VALUES (?,?,?,?,?,?,?)
+    INSERT INTO briefing_fs_sel (briefing_id, fs_item_id, enabled, queue, queues_json, source, story_points, queue_comment_json)
+    VALUES (?,?,?,?,?,?,?,?)
     ON CONFLICT(briefing_id, fs_item_id) DO UPDATE SET
       enabled=excluded.enabled,
       queue=excluded.queue,
       queues_json=excluded.queues_json,
       source=excluded.source,
-      story_points=COALESCE(briefing_fs_sel.story_points, excluded.story_points)
+      story_points=COALESCE(briefing_fs_sel.story_points, excluded.story_points),
+      queue_comment_json=excluded.queue_comment_json
   `);
 
   const briefingItemIds = hasBriefingFsSnapshot(briefingId)
@@ -323,6 +439,8 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
         .map(r => r.fs_item_id),
     )
     : null;
+
+  const optionalOnlyIds: number[] = [];
 
   const tx = db.transaction(() => {
     for (const [fsId, meta] of fsMap) {
@@ -352,6 +470,21 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
       const enabled = enabledFromQueues(queues);
       const queue = ex?.queue ?? primaryQueue(queues);
 
+      const opt = optionalInfo.get(fsId);
+      let commentJson: string | null = ex?.queue_comment_json ?? null;
+      if (opt && (opt.requiredNames.length > 0 || opt.optionalNames.length > 0) && enabled) {
+        const comments = parseQueueCommentMap(ex?.queue_comment_json);
+        const targetQueues = FS_QUEUE_KEYS.filter(q => queues[q] === 1);
+        const queuesToAnnotate = targetQueues.length > 0 ? targetQueues : [queue || '1'];
+        for (const q of queuesToAnnotate) {
+          comments[q] = mergeSolutionLinkComments(comments[q], opt.requiredNames, opt.optionalNames);
+        }
+        commentJson = Object.keys(comments).length > 0 ? JSON.stringify(comments) : null;
+      }
+      if (opt && opt.optionalNames.length > 0 && !opt.hasRequired) {
+        optionalOnlyIds.push(fsId);
+      }
+
       upsert.run(
         briefingId, fsId,
         enabled,
@@ -359,6 +492,7 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
         JSON.stringify(queues),
         ex?.source === 'manual' ? 'manual' : meta.source,
         ex?.story_points ?? meta.story_points ?? catalog?.story_points ?? 0,
+        commentJson,
       );
     }
     const derivedIds = [...fsMap.keys()];
@@ -378,7 +512,10 @@ export function deriveFsFromSelections(briefingId: number): FsSelection[] {
   });
   tx();
 
-  return loadFsSelections(briefingId);
+  return {
+    items: loadFsSelections(briefingId),
+    optional_only_fs_ids: [...new Set(optionalOnlyIds)],
+  };
 }
 
 export function loadFsSelections(briefingId: number): FsSelection[] {

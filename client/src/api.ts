@@ -198,7 +198,7 @@ export const createAssessmentSnapshot = (id: number, data: CreateSnapshotPayload
 export const deleteAssessmentSnapshot = (id: number, snapshotId: string) =>
   req<{ ok: boolean }>(`/briefings/${id}/assessment-snapshots/${snapshotId}`, { method: 'DELETE' });
 export const deriveBriefingFs = (id: number) =>
-  req<{ items: unknown[] }>(`/briefings/${id}/derive-fs`, { method: 'POST' });
+  req<{ items: unknown[]; optional_only_fs_ids: number[] }>(`/briefings/${id}/derive-fs`, { method: 'POST' });
 export const getBriefingAvailableFsCatalogItems = (id: number) =>
   req<FsCatalogItem[]>(`/briefings/${id}/fs/available-catalog-items`);
 export const addBriefingFsCatalogItems = (id: number, fs_item_ids: number[]) =>

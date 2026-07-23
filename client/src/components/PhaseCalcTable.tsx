@@ -46,6 +46,193 @@ const PROD_COLS = 5;
 const TEAM_ROLE_COLS = TEAM_LABELS.length;
 const TEAM_EXPANDED_COLS = 1 + TEAM_ROLE_COLS;
 
+/** Исключаются из «Итого внедрение»: проектный аутсорсинг и сопровождение БД. */
+const IMPLEMENTATION_EXCLUDE_IDS = new Set(['r83', 'r90']);
+
+type MoneyTotals = {
+  prodOt: number;
+  prodOtBudget: number;
+  prodOtTravel: number;
+  prodOtCore: number;
+  otTotal: number;
+  otBreakdown: number[];
+  prodDo: number;
+  prodDoBudget: number;
+  prodDoTravel: number;
+  prodDoCore: number;
+  doTotal: number;
+  doBreakdown: number[];
+};
+
+function emptyMoneyTotals(): MoneyTotals {
+  return {
+    prodOt: 0,
+    prodOtBudget: 0,
+    prodOtTravel: 0,
+    prodOtCore: 0,
+    otTotal: 0,
+    otBreakdown: ITogo_BREAKDOWN_LINES.map(() => 0),
+    prodDo: 0,
+    prodDoBudget: 0,
+    prodDoTravel: 0,
+    prodDoCore: 0,
+    doTotal: 0,
+    doBreakdown: ITogo_BREAKDOWN_LINES.map(() => 0),
+  };
+}
+
+function addMoney(
+  acc: MoneyTotals,
+  prod: { ot: PhaseProdSide | null; do: PhaseProdSide | null } | undefined,
+  risksOt: RisksC51C57,
+  risksDo: RisksC51C57,
+) {
+  if (!prod?.ot && !prod?.do) return;
+  if (prod?.ot) {
+    acc.prodOt += prod.ot.production;
+    acc.prodOtBudget += prod.ot.budgetWithRisks;
+    acc.prodOtTravel += prod.ot.travel;
+    acc.prodOtCore += prod.ot.productionCore;
+    acc.otTotal += prod.ot.total;
+    ITogo_BREAKDOWN_LINES.forEach((line, i) => {
+      const amount = computeReserveAmount(prod.ot!.production, risksOt[line.riskKey]);
+      if (amount != null) acc.otBreakdown[i] += amount;
+    });
+  }
+  if (prod?.do) {
+    acc.prodDo += prod.do.production;
+    acc.prodDoBudget += prod.do.budgetWithRisks;
+    acc.prodDoTravel += prod.do.travel;
+    acc.prodDoCore += prod.do.productionCore;
+    acc.doTotal += prod.do.total;
+    ITogo_BREAKDOWN_LINES.forEach((line, i) => {
+      const amount = computeReserveAmount(prod.do!.production, risksDo[line.riskKey]);
+      if (amount != null) acc.doBreakdown[i] += amount;
+    });
+  }
+}
+
+function TotalMoneyCell({ value }: { value: number }) {
+  return (
+    <td className="p-2 border text-right tabular-nums whitespace-nowrap font-semibold">
+      {formatSum(value)}
+    </td>
+  );
+}
+
+function TotalBlankCell({ colSpan = 1 }: { colSpan?: number }) {
+  return (
+    <td className="p-2 border text-right tabular-nums text-slate-400" colSpan={colSpan}>
+      {PLACEHOLDER}
+    </td>
+  );
+}
+
+function TotalProdCells({
+  expanded,
+  collapsed,
+  budget,
+  travel,
+  core,
+}: {
+  expanded: boolean;
+  collapsed: number;
+  budget: number;
+  travel: number;
+  core: number;
+}) {
+  if (expanded) {
+    return (
+      <>
+        <TotalMoneyCell value={budget} />
+        <TotalMoneyCell value={travel} />
+        <TotalMoneyCell value={core} />
+        <TotalBlankCell />
+        <TotalBlankCell />
+      </>
+    );
+  }
+  return <TotalMoneyCell value={collapsed} />;
+}
+
+function TotalItogoCells({
+  expanded,
+  total,
+  breakdown,
+}: {
+  expanded: boolean;
+  total: number;
+  breakdown: number[];
+}) {
+  if (expanded) {
+    return (
+      <>
+        {breakdown.map((v, i) => (
+          <TotalMoneyCell key={i} value={v} />
+        ))}
+        <td className="p-1.5 border text-right tabular-nums whitespace-nowrap font-semibold bg-slate-50/80">
+          {formatSum(total)}
+        </td>
+      </>
+    );
+  }
+  return (
+    <td className="p-2 border text-right tabular-nums whitespace-nowrap font-semibold">
+      {formatSum(total)}
+    </td>
+  );
+}
+
+function PhaseTotalRow({
+  label,
+  hint,
+  totals,
+  teamExpanded,
+  prodOtExpanded,
+  prodDoExpanded,
+  otExpanded,
+  doExpanded,
+}: {
+  label: string;
+  hint?: string;
+  totals: MoneyTotals;
+  teamExpanded: boolean;
+  prodOtExpanded: boolean;
+  prodDoExpanded: boolean;
+  otExpanded: boolean;
+  doExpanded: boolean;
+}) {
+  return (
+    <tr className="bg-slate-100/90 border-t-2 border-slate-300">
+      <td className="p-2 border text-left sticky left-0 z-10 bg-slate-100/90 font-semibold">
+        <span className="inline-flex flex-col gap-0.5">
+          <span>{label}</span>
+          {hint ? <span className="text-[10px] font-normal text-slate-500">{hint}</span> : null}
+        </span>
+      </td>
+      <TotalBlankCell />
+      <td className="p-2 border text-center text-slate-400">{PLACEHOLDER}</td>
+      <TotalBlankCell colSpan={teamExpanded ? TEAM_EXPANDED_COLS : 1} />
+      <TotalProdCells
+        expanded={prodOtExpanded}
+        collapsed={totals.prodOt}
+        budget={totals.prodOtBudget}
+        travel={totals.prodOtTravel}
+        core={totals.prodOtCore}
+      />
+      <TotalItogoCells expanded={otExpanded} total={totals.otTotal} breakdown={totals.otBreakdown} />
+      <TotalProdCells
+        expanded={prodDoExpanded}
+        collapsed={totals.prodDo}
+        budget={totals.prodDoBudget}
+        travel={totals.prodDoTravel}
+        core={totals.prodDoCore}
+      />
+      <TotalItogoCells expanded={doExpanded} total={totals.doTotal} breakdown={totals.doBreakdown} />
+    </tr>
+  );
+}
+
 export type PhaseCalcRiskPatch = {
   risks_ot?: Partial<RisksC51C57>;
   risks_do?: Partial<RisksC51C57>;
@@ -493,6 +680,19 @@ export default function PhaseCalcTable({
   const explainDef = explainLineId ? defs.find(d => d.id === explainLineId) : null;
   const explainResult = explainLineId ? baseByLine[explainLineId] : null;
 
+  const { tableTotals, implementationTotals } = useMemo(() => {
+    const table = emptyMoneyTotals();
+    const impl = emptyMoneyTotals();
+    for (const def of defs) {
+      const prod = prodByLine[def.id];
+      addMoney(table, prod, ot.risks, doSide.risks);
+      if (!IMPLEMENTATION_EXCLUDE_IDS.has(def.id)) {
+        addMoney(impl, prod, ot.risks, doSide.risks);
+      }
+    }
+    return { tableTotals: table, implementationTotals: impl };
+  }, [defs, prodByLine, ot.risks, doSide.risks]);
+
   const prodOtColSpan = prodOtExpanded ? PROD_COLS : 1;
   const prodDoColSpan = prodDoExpanded ? PROD_COLS : 1;
   const teamColSpan = teamExpanded ? TEAM_EXPANDED_COLS : 1;
@@ -899,6 +1099,27 @@ export default function PhaseCalcTable({
               );
             })}
           </tbody>
+          <tfoot>
+            <PhaseTotalRow
+              label="Итого по таблице"
+              totals={tableTotals}
+              teamExpanded={teamExpanded}
+              prodOtExpanded={prodOtExpanded}
+              prodDoExpanded={prodDoExpanded}
+              otExpanded={otExpanded}
+              doExpanded={doExpanded}
+            />
+            <PhaseTotalRow
+              label="Итого внедрение"
+              hint="Без проектного аутсорсинга и сопровождения"
+              totals={implementationTotals}
+              teamExpanded={teamExpanded}
+              prodOtExpanded={prodOtExpanded}
+              prodDoExpanded={prodDoExpanded}
+              otExpanded={otExpanded}
+              doExpanded={doExpanded}
+            />
+          </tfoot>
         </table>
       </div>
       <p className="text-[10px] text-slate-400">

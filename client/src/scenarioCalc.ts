@@ -1,6 +1,6 @@
 import type {
-  AssessmentScenario, BriefingAssessment, BriefingFsSel, FsQueueKey, PhaseCalcLineDef,
-  ScenarioPhaseDetail, ScenarioSnapshotResults, TeamProportions,
+  AssessmentScenario, BriefingAssessment, BriefingFsSel, FsQueueKey, OrgVolumeData, PhaseCalcLineDef,
+  QueueOrgVolume, ScenarioPhaseDetail, ScenarioSnapshotResults, TeamProportions,
 } from './types';
 import { FS_QUEUE_KEYS, anyQueueEnabled, itemQueues } from './types';
 import type { FsQueuesMap } from './types';
@@ -9,7 +9,9 @@ import {
   getEvaluatedQueueKeys, computeQueueSpFromFs, getEffectiveQueueRate,
   getHourlyRateForTechnologyLabel, resolveQueueTechnology,
   normalizeQueueTechnologyLabel, QUEUE_TECHNOLOGY_OPTIONS,
+  recomputeAssessmentDerived,
 } from './assessmentCalc';
+import type { QueueSpTotals } from './fsSpCalc';
 import { computeAllPhaseBases } from './phaseCalc';
 import { computeAllPhaseProds, type PhaseProdSide } from './phaseCalcProd';
 import type { RisksC51C57 } from './types';
@@ -50,21 +52,21 @@ export function addScenarioPhaseDetails(
   };
 }
 
-function detailFromOtSide(ot: PhaseProdSide, risks: RisksC51C57): ScenarioPhaseDetail {
-  const p = ot.production;
+export function detailFromProdSide(side: PhaseProdSide, risks: RisksC51C57): ScenarioPhaseDetail {
+  const p = side.production;
   return {
-    budgetWithRisks: ot.budgetWithRisks,
-    travel: ot.travel,
-    productionCore: ot.productionCore,
-    hours: ot.hours,
-    weeks: ot.weeks,
+    budgetWithRisks: side.budgetWithRisks,
+    travel: side.travel,
+    productionCore: side.productionCore,
+    hours: side.hours,
+    weeks: side.weeks,
     reserveRpo: p * risks.c52_rpo,
     reserveCompany: p * risks.c57_rk,
     salesComp: p * risks.c56_sales_comp,
     companyFund: p * risks.c53_company_fund,
     contractRpoRisks: p * risks.c54_contract_rpo,
     contractFundRisks: p * risks.c55_contract_fund,
-    total: ot.total,
+    total: side.total,
   };
 }
 
@@ -196,6 +198,110 @@ export function resolveScenarioAssessment(
   return result;
 }
 
+/** Keep base partner/geo fields; take FS-derived SP/active from auto org (scenario ФС). */
+function mergeOrgVolumeFsDerived(baseOrg: OrgVolumeData, autoOrg: OrgVolumeData): OrgVolumeData {
+  const queues = {} as Record<FsQueueKey, QueueOrgVolume>;
+  for (const q of FS_QUEUE_KEYS) {
+    const autoQ = autoOrg.queues[q];
+    const baseQ = baseOrg.queues[q] ?? autoQ;
+    queues[q] = {
+      ...autoQ,
+      users: baseQ.users,
+      rp_rpo: baseQ.rp_rpo,
+      executors: baseQ.executors,
+      rg: baseQ.rg,
+      rg_regions: baseQ.rg_regions,
+      region: baseQ.region,
+      breakdown: baseQ.breakdown,
+      evaluated: baseQ.evaluated !== undefined ? baseQ.evaluated : autoQ.evaluated,
+    };
+  }
+  return {
+    ...autoOrg,
+    queues,
+    headcount_category: baseOrg.headcount_category ?? autoOrg.headcount_category,
+  };
+}
+
+function nsiCacheFromAssessment(
+  base: BriefingAssessment,
+  nsi?: AssessmentNsiCache,
+): AssessmentNsiCache {
+  if (nsi && nsi.projectTypes.length > 0) return nsi;
+  return {
+    projectTypes: base.project_types ?? [],
+    ratesByTypeId: nsi?.ratesByTypeId ?? new Map(),
+    coeffsByTypeId: nsi?.coeffsByTypeId ?? new Map(),
+  };
+}
+
+function headcountHintFromAssessment(base: BriefingAssessment): number | null {
+  const users = FS_QUEUE_KEYS.map(q => base.org_volume?.queues?.[q]?.users ?? 0);
+  const maxUsers = Math.max(0, ...users);
+  return maxUsers > 0 ? maxUsers : null;
+}
+
+/**
+ * Effective assessment + ФС for scenario totals.
+ * При −ФС / перераспределении — полный пересчёт (SP, тип, риски, орг. от ФС), затем дельты фаз/технологии.
+ */
+export function resolveScenarioForCalc(
+  base: BriefingAssessment,
+  scenario: AssessmentScenario | null | undefined,
+  fsItems: BriefingFsSel[],
+  nsi?: AssessmentNsiCache,
+  headcount?: number | null,
+): { assessment: BriefingAssessment; fsItems: BriefingFsSel[] } {
+  const scenarioFs = resolveScenarioFsItems(fsItems, scenario);
+  if (!scenario) {
+    return { assessment: base, fsItems: scenarioFs };
+  }
+
+  const nsiCache = nsiCacheFromAssessment(base, nsi);
+  let assessment = base;
+
+  if (hasScenarioFsChanges(scenario)) {
+    const recomputed = recomputeAssessmentDerived(
+      {
+        ...base,
+        project_type_manual: false,
+        org_volume_manual: false,
+      },
+      {
+        headcount: headcount !== undefined ? headcount : headcountHintFromAssessment(base),
+        fs_items: scenarioFs,
+      },
+      nsiCache,
+    );
+
+    if (base.org_volume_manual && base.org_volume?.queues) {
+      assessment = {
+        ...recomputed,
+        org_volume: mergeOrgVolumeFsDerived(base.org_volume, recomputed.org_volume),
+        auto_org_volume: recomputed.auto_org_volume,
+      };
+    } else {
+      assessment = recomputed;
+    }
+
+    if (base.headcount_manual) {
+      assessment = {
+        ...assessment,
+        headcount_manual: true,
+        headcount_category: base.headcount_category,
+        headcount_coeffs: {
+          ...assessment.headcount_coeffs,
+          ...base.headcount_coeffs,
+          c62: base.headcount_category,
+        },
+      };
+    }
+  }
+
+  assessment = resolveScenarioAssessment(assessment, scenario, nsiCache);
+  return { assessment, fsItems: scenarioFs };
+}
+
 export function getBaseQueueTechnologyLabel(
   assessment: BriefingAssessment,
   queue: FsQueueKey,
@@ -231,8 +337,9 @@ export function getScenarioQueueRate(
   scenario: AssessmentScenario | null | undefined,
   queue: FsQueueKey,
   nsi?: AssessmentNsiCache,
+  fsItems: BriefingFsSel[] = [],
 ): number {
-  const effective = resolveScenarioAssessment(base, scenario, nsi);
+  const { assessment: effective } = resolveScenarioForCalc(base, scenario, fsItems, nsi);
   const qc = effective.queue_calcs.find(r => r.queue === queue);
   if (!qc) return 0;
   return getEffectiveQueueRate(qc, effective.unified_rate_enabled, effective.unified_rate);
@@ -412,20 +519,15 @@ export function moveScenarioItemToQueue(
   return setScenarioItemQueues(scenario, item, nextQueues);
 }
 
-export interface ScenarioSpDelta {
-  functional_sp: Record<FsQueueKey, number>;
-  all_queues: number;
-}
+export type ScenarioSpDelta = QueueSpTotals;
 
 export function computeScenarioSpDelta(
   fsItems: BriefingFsSel[],
   scenario: AssessmentScenario | null | undefined,
 ): { base: ScenarioSpDelta; scenario: ScenarioSpDelta } {
-  const base = computeQueueSpFromFs(fsItems);
-  const sc = computeQueueSpFromFs(resolveScenarioFsItems(fsItems, scenario));
   return {
-    base: { functional_sp: base.functional_sp, all_queues: base.all_queues },
-    scenario: { functional_sp: sc.functional_sp, all_queues: sc.all_queues },
+    base: computeQueueSpFromFs(fsItems),
+    scenario: computeQueueSpFromFs(resolveScenarioFsItems(fsItems, scenario)),
   };
 }
 
@@ -527,20 +629,20 @@ export function computeScenarioOtTotals(
     );
     for (const def of assessment.phase_calc_defs ?? []) {
       const enabled = queueLines[def.id] ?? def.default_enabled;
-      const otSide = prods[def.id]?.ot;
-      if (!enabled || !otSide) continue;
+      const doSide = prods[def.id]?.do;
+      if (!enabled || !doSide) continue;
 
-      const piece = detailFromOtSide(otSide, otRisks);
+      const piece = detailFromProdSide(doSide, doRisks);
       detailByPhase[def.id] = addScenarioPhaseDetails(
         detailByPhase[def.id] ?? { ...EMPTY_SCENARIO_PHASE_DETAIL },
         piece,
       );
-      byPhase[def.id] = (byPhase[def.id] ?? 0) + otSide.total;
-      grandTotal += otSide.total;
+      byPhase[def.id] = (byPhase[def.id] ?? 0) + doSide.total;
+      grandTotal += doSide.total;
 
-      if (otSide.weeks > 0) {
-        weeksByPhase[def.id] = (weeksByPhase[def.id] ?? 0) + otSide.weeks;
-        grandTotalWeeks += otSide.weeks;
+      if (doSide.weeks > 0) {
+        weeksByPhase[def.id] = (weeksByPhase[def.id] ?? 0) + doSide.weeks;
+        grandTotalWeeks += doSide.weeks;
       }
       grandDetail = addScenarioPhaseDetails(grandDetail, piece);
     }
@@ -561,10 +663,12 @@ export function computeScenarioComparison(
   accuracyPct: number,
   defaultTeam: TeamProportions,
   nsi?: AssessmentNsiCache,
+  headcount?: number | null,
 ): ScenarioComparison {
   const base = computeScenarioOtTotals(baseAssessment, fsItems, accuracyPct, defaultTeam);
-  const effective = resolveScenarioAssessment(baseAssessment, scenario, nsi);
-  const scenarioFs = resolveScenarioFsItems(fsItems, scenario);
+  const { assessment: effective, fsItems: scenarioFs } = resolveScenarioForCalc(
+    baseAssessment, scenario, fsItems, nsi, headcount,
+  );
   const scenarioTotals = computeScenarioOtTotals(effective, scenarioFs, accuracyPct, defaultTeam);
   return {
     base: normalizeScenarioOtTotals(base),

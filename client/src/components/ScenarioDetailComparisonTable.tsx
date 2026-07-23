@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import type { FsQueueKey, PhaseCalcLineDef, ScenarioPhaseDetail } from '../types';
+import type { PhaseCalcLineDef, ScenarioPhaseDetail } from '../types';
 import type { ScenarioComparison } from '../scenarioCalc';
-import { normalizeScenarioOtTotals } from '../scenarioCalc';
+import { EMPTY_SCENARIO_PHASE_DETAIL, normalizeScenarioOtTotals } from '../scenarioCalc';
 import { formatMoneyRub, formatStepNumber } from '../utils/formatNumber';
 import { yesNoLabel, yesNoClass, YES_NO_BADGE_CLASS } from '../utils/yesNoBadge';
 
@@ -9,13 +9,15 @@ const PLACEHOLDER = '—';
 
 type MetricKey = keyof ScenarioPhaseDetail;
 
-/** Порядок как в таблице фаз: произв. → часы/недели → резервы → итого. */
-const DETAIL_METRICS: { key: MetricKey; label: string; money?: boolean }[] = [
+const PROD_METRICS: { key: MetricKey; label: string; money?: boolean }[] = [
   { key: 'budgetWithRisks', label: 'Бюджет с учётом рисков', money: true },
   { key: 'travel', label: 'Командировочные', money: true },
   { key: 'productionCore', label: 'Производственная оценка', money: true },
   { key: 'hours', label: 'Часы' },
   { key: 'weeks', label: 'Недели' },
+];
+
+const ITOGO_METRICS: { key: MetricKey; label: string; money?: boolean }[] = [
   { key: 'reserveRpo', label: 'Резерв РПО', money: true },
   { key: 'reserveCompany', label: 'Резерв компании', money: true },
   { key: 'salesComp', label: 'Компенсация продаж', money: true },
@@ -24,8 +26,6 @@ const DETAIL_METRICS: { key: MetricKey; label: string; money?: boolean }[] = [
   { key: 'contractFundRisks', label: 'Риски ФК', money: true },
   { key: 'total', label: 'Итого', money: true },
 ];
-
-const PHASE_CTRL_COLS = 2;
 
 export type ScenarioPhaseControlProps = {
   getBaseEnabled: (lineId: string) => boolean;
@@ -41,6 +41,10 @@ function formatStep(n: number): string {
   return n !== 0 ? formatStepNumber(n) : PLACEHOLDER;
 }
 
+function productionCollapsed(detail: ScenarioPhaseDetail): number {
+  return detail.productionCore + detail.travel;
+}
+
 function phaseDetail(
   side: ReturnType<typeof normalizeScenarioOtTotals>,
   lineId: string,
@@ -50,17 +54,8 @@ function phaseDetail(
   const total = side.byPhase[lineId];
   if (total == null || total === 0) return null;
   return {
-    budgetWithRisks: 0,
-    travel: 0,
-    productionCore: 0,
-    hours: 0,
+    ...EMPTY_SCENARIO_PHASE_DETAIL,
     weeks: side.weeksByPhase[lineId] ?? 0,
-    reserveRpo: 0,
-    reserveCompany: 0,
-    salesComp: 0,
-    companyFund: 0,
-    contractRpoRisks: 0,
-    contractFundRisks: 0,
     total,
   };
 }
@@ -105,50 +100,119 @@ function renderExpandButton(expanded: boolean, onToggle: () => void, title: stri
   );
 }
 
-function SideCells({
-  detail,
-  expanded,
+function sideColSpan(prodExpanded: boolean, itogoExpanded: boolean): number {
+  return (prodExpanded ? PROD_METRICS.length : 1) + (itogoExpanded ? ITOGO_METRICS.length : 1);
+}
+
+function SideGroupHeaders({
+  prodExpanded,
+  itogoExpanded,
+  onToggleProd,
+  onToggleItogo,
 }: {
-  detail: ScenarioPhaseDetail;
-  expanded: boolean;
+  prodExpanded: boolean;
+  itogoExpanded: boolean;
+  onToggleProd: () => void;
+  onToggleItogo: () => void;
 }) {
-  if (expanded) {
-    return (
-      <>
-        {DETAIL_METRICS.map(({ key }) => (
-          <td key={key} className="p-1.5 border text-right tabular-nums whitespace-nowrap">
-            {formatMetric(key, detail[key])}
-          </td>
-        ))}
-      </>
-    );
-  }
   return (
-    <td className="p-1.5 border text-right tabular-nums whitespace-nowrap font-medium">
-      {formatMoney(detail.total)}
-    </td>
+    <>
+      <th className="p-2 border text-center" colSpan={prodExpanded ? PROD_METRICS.length : 1}>
+        <span className="inline-flex items-center gap-1">
+          {renderExpandButton(prodExpanded, onToggleProd, 'Производственная ДО — сумма, часы, недели')}
+          Производственная ДО
+        </span>
+      </th>
+      <th className="p-2 border text-center" colSpan={itogoExpanded ? ITOGO_METRICS.length : 1}>
+        <span className="inline-flex items-center gap-1">
+          {renderExpandButton(itogoExpanded, onToggleItogo, 'Итого ДО — детализация резервов')}
+          Итого ДО
+        </span>
+      </th>
+    </>
   );
 }
 
-function SideSubHeaders({ expanded }: { expanded: boolean }) {
-  if (expanded) {
-    return (
-      <>
-        {DETAIL_METRICS.map(({ key, label, money }) => (
+function SideSubHeaders({
+  prodExpanded,
+  itogoExpanded,
+}: {
+  prodExpanded: boolean;
+  itogoExpanded: boolean;
+}) {
+  return (
+    <>
+      {prodExpanded ? (
+        PROD_METRICS.map(({ key, label, money }) => (
           <th
-            key={key}
-            className="p-1 border text-right font-normal whitespace-nowrap min-w-[7rem]"
+            key={`prod-${key}`}
+            className="p-1 border text-right font-normal whitespace-nowrap min-w-[6.5rem]"
           >
             {money ? `${label} ₽` : label}
           </th>
-        ))}
-      </>
-    );
-  }
+        ))
+      ) : (
+        <th className="p-1 border text-right font-normal whitespace-nowrap min-w-[6.5rem]">
+          Произв. ₽
+        </th>
+      )}
+      {itogoExpanded ? (
+        ITOGO_METRICS.map(({ key, label, money }) => (
+          <th
+            key={`itogo-${key}`}
+            className="p-1 border text-right font-normal whitespace-nowrap min-w-[6.5rem]"
+          >
+            {money ? `${label} ₽` : label}
+          </th>
+        ))
+      ) : (
+        <th className="p-1 border text-right font-normal whitespace-nowrap min-w-[6.5rem]">
+          Итого ₽
+        </th>
+      )}
+    </>
+  );
+}
+
+function SideCells({
+  detail,
+  prodExpanded,
+  itogoExpanded,
+}: {
+  detail: ScenarioPhaseDetail;
+  prodExpanded: boolean;
+  itogoExpanded: boolean;
+}) {
   return (
-    <th className="p-1 border text-right font-normal whitespace-nowrap min-w-[7rem]">
-      Итого ₽
-    </th>
+    <>
+      {prodExpanded ? (
+        PROD_METRICS.map(({ key }) => (
+          <td key={`prod-${key}`} className="p-1.5 border text-right tabular-nums whitespace-nowrap">
+            {formatMetric(key, detail[key])}
+          </td>
+        ))
+      ) : (
+        <td className="p-1.5 border text-right tabular-nums whitespace-nowrap">
+          {formatMoney(productionCollapsed(detail))}
+        </td>
+      )}
+      {itogoExpanded ? (
+        ITOGO_METRICS.map(({ key }) => (
+          <td
+            key={`itogo-${key}`}
+            className={`p-1.5 border text-right tabular-nums whitespace-nowrap ${
+              key === 'total' ? 'font-medium' : ''
+            }`}
+          >
+            {formatMetric(key, detail[key])}
+          </td>
+        ))
+      ) : (
+        <td className="p-1.5 border text-right tabular-nums whitespace-nowrap font-medium">
+          {formatMoney(detail.total)}
+        </td>
+      )}
+    </>
   );
 }
 
@@ -159,27 +223,22 @@ function PhaseControlCells({
   lineId: string;
   phaseControl: ScenarioPhaseControlProps;
 }) {
-  const baseEnabled = phaseControl.getBaseEnabled(lineId);
-  const scenarioEnabled = phaseControl.getScenarioEnabled(lineId);
-  const differs = baseEnabled !== scenarioEnabled;
-
+  const baseOn = phaseControl.getBaseEnabled(lineId);
+  const scOn = phaseControl.getScenarioEnabled(lineId);
+  const differs = baseOn !== scOn;
   return (
     <>
       <td className="p-1.5 border text-center">
-        <span className={`${YES_NO_BADGE_CLASS} ${yesNoClass(baseEnabled)}`}>
-          {yesNoLabel(baseEnabled)}
-        </span>
+        <span className={`${YES_NO_BADGE_CLASS} ${yesNoClass(baseOn)}`}>{yesNoLabel(baseOn)}</span>
       </td>
       <td className="p-1.5 border text-center">
         <button
           type="button"
-          className={`${YES_NO_BADGE_CLASS} cursor-pointer ${
-            differs ? 'ring-2 ring-amber-300 ' : ''
-          }${yesNoClass(scenarioEnabled)}`}
+          className={`${YES_NO_BADGE_CLASS} ${yesNoClass(scOn, differs)} cursor-pointer`}
           onClick={() => phaseControl.onToggleScenarioPhase(lineId)}
-          title="Включить / выключить фазу в варианте"
+          title="Переключить фазу в варианте"
         >
-          {yesNoLabel(scenarioEnabled)}
+          {yesNoLabel(scOn)}
         </button>
       </td>
     </>
@@ -204,13 +263,12 @@ export default function ScenarioDetailComparisonTable({
   const base = normalizeScenarioOtTotals(comparison.base);
   const scenario = normalizeScenarioOtTotals(comparison.scenario);
 
-  const [baseExpanded, setBaseExpanded] = useState(false);
-  const [scenarioExpanded, setScenarioExpanded] = useState(false);
+  const [prodExpanded, setProdExpanded] = useState(false);
+  const [itogoExpanded, setItogoExpanded] = useState(false);
 
-  const baseColSpan = baseExpanded ? DETAIL_METRICS.length : 1;
-  const scenarioColSpan = scenarioExpanded ? DETAIL_METRICS.length : 1;
-  const showSubHeader = baseExpanded || scenarioExpanded || !!phaseControl;
-  const headerRowSpan = showSubHeader ? 2 : 1;
+  const sideSpan = sideColSpan(prodExpanded, itogoExpanded);
+  const metricRow = prodExpanded || itogoExpanded;
+  const headerRowSpan = metricRow ? 3 : 2;
 
   return (
     <div className="space-y-1">
@@ -224,30 +282,23 @@ export default function ScenarioDetailComparisonTable({
               >
                 Фаза
               </th>
-              <th className="p-2 border text-center" colSpan={baseColSpan}>
-                <span className="inline-flex items-center gap-1">
-                  {renderExpandButton(
-                    baseExpanded,
-                    () => setBaseExpanded(v => !v),
-                    'База — полная структура стоимости ОТ',
-                  )}
-                  База
-                </span>
+              <th className="p-2 border text-center bg-slate-100/80" colSpan={sideSpan}>
+                База
               </th>
               {phaseControl && (
-                <th className="p-2 border text-center" colSpan={PHASE_CTRL_COLS} rowSpan={1}>
-                  Да/Нет
-                </th>
+                <>
+                  <th className="p-2 border text-center w-16" rowSpan={headerRowSpan}>
+                    База
+                    <div className="text-[9px] font-normal text-slate-400">Да/Нет</div>
+                  </th>
+                  <th className="p-2 border text-center w-16" rowSpan={headerRowSpan}>
+                    Вариант
+                    <div className="text-[9px] font-normal text-slate-400">Да/Нет</div>
+                  </th>
+                </>
               )}
-              <th className="p-2 border text-center" colSpan={scenarioColSpan}>
-                <span className="inline-flex items-center gap-1">
-                  {renderExpandButton(
-                    scenarioExpanded,
-                    () => setScenarioExpanded(v => !v),
-                    `${scenarioLabel} — полная структура стоимости ОТ`,
-                  )}
-                  {scenarioLabel}
-                </span>
+              <th className="p-2 border text-center bg-amber-50/40" colSpan={sideSpan}>
+                {scenarioLabel}
               </th>
               <th
                 className="p-2 border text-center min-w-[6rem]"
@@ -256,16 +307,24 @@ export default function ScenarioDetailComparisonTable({
                 Δ
               </th>
             </tr>
-            {showSubHeader && (
-              <tr className="bg-slate-50/80 text-[10px] text-slate-400">
-                <SideSubHeaders expanded={baseExpanded} />
-                {phaseControl && (
-                  <>
-                    <th className="p-1 border text-center font-normal w-16">База</th>
-                    <th className="p-1 border text-center font-normal w-16">Вариант</th>
-                  </>
-                )}
-                <SideSubHeaders expanded={scenarioExpanded} />
+            <tr className="bg-slate-50/80 text-[10px] text-slate-500">
+              <SideGroupHeaders
+                prodExpanded={prodExpanded}
+                itogoExpanded={itogoExpanded}
+                onToggleProd={() => setProdExpanded(v => !v)}
+                onToggleItogo={() => setItogoExpanded(v => !v)}
+              />
+              <SideGroupHeaders
+                prodExpanded={prodExpanded}
+                itogoExpanded={itogoExpanded}
+                onToggleProd={() => setProdExpanded(v => !v)}
+                onToggleItogo={() => setItogoExpanded(v => !v)}
+              />
+            </tr>
+            {metricRow && (
+              <tr className="bg-slate-50/60 text-[10px] text-slate-400">
+                <SideSubHeaders prodExpanded={prodExpanded} itogoExpanded={itogoExpanded} />
+                <SideSubHeaders prodExpanded={prodExpanded} itogoExpanded={itogoExpanded} />
               </tr>
             )}
           </thead>
@@ -279,19 +338,19 @@ export default function ScenarioDetailComparisonTable({
                 return null;
               }
 
-              const b = baseD ?? { ...scD!, total: 0 };
-              const s = scD ?? { ...baseD!, total: 0 };
+              const b = baseD ?? { ...EMPTY_SCENARIO_PHASE_DETAIL, ...scD!, total: 0 };
+              const s = scD ?? { ...EMPTY_SCENARIO_PHASE_DETAIL, ...baseD!, total: 0 };
 
               return (
                 <tr key={def.id}>
                   <td className="p-2 border text-left sticky left-0 z-10 bg-white">
                     {def.label}
                   </td>
-                  <SideCells detail={b} expanded={baseExpanded} />
+                  <SideCells detail={b} prodExpanded={prodExpanded} itogoExpanded={itogoExpanded} />
                   {phaseControl && (
                     <PhaseControlCells lineId={def.id} phaseControl={phaseControl} />
                   )}
-                  <SideCells detail={s} expanded={scenarioExpanded} />
+                  <SideCells detail={s} prodExpanded={prodExpanded} itogoExpanded={itogoExpanded} />
                   <td className="p-1.5 border text-right text-[10px] text-slate-600 tabular-nums whitespace-nowrap">
                     {renderDelta(b.total, s.total)}
                   </td>
@@ -299,15 +358,23 @@ export default function ScenarioDetailComparisonTable({
               );
             })}
             <tr className="font-semibold bg-blue-50">
-              <td className="p-2 border sticky left-0 z-10 bg-blue-50">Итого ОТ</td>
-              <SideCells detail={base.grandDetail} expanded={baseExpanded} />
+              <td className="p-2 border sticky left-0 z-10 bg-blue-50">Итого ДО</td>
+              <SideCells
+                detail={base.grandDetail}
+                prodExpanded={prodExpanded}
+                itogoExpanded={itogoExpanded}
+              />
               {phaseControl && (
                 <>
                   <td className="p-1.5 border" />
                   <td className="p-1.5 border" />
                 </>
               )}
-              <SideCells detail={scenario.grandDetail} expanded={scenarioExpanded} />
+              <SideCells
+                detail={scenario.grandDetail}
+                prodExpanded={prodExpanded}
+                itogoExpanded={itogoExpanded}
+              />
               <td className="p-1.5 border text-right text-[10px] tabular-nums whitespace-nowrap">
                 {renderDelta(base.grandTotal, scenario.grandTotal)}
               </td>
@@ -316,7 +383,7 @@ export default function ScenarioDetailComparisonTable({
         </table>
       </div>
       <p className="text-[10px] text-slate-400">
-        ▶ База / {scenarioLabel}: свёрнуто — итого ОТ; развернуть — полная структура стоимости.
+        ▶ Производственная ДО / Итого ДО — как на «Оценка РП»; свёрнуто — произв. сумма и итого ДО.
         {phaseControl && ' Колонки «Да/Нет»: база (только просмотр) и переключение фазы в варианте.'}
       </p>
     </div>

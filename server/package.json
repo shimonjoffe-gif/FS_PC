@@ -11,6 +11,7 @@
     "import:lcm": "tsx src/scripts/importLcmFromFiles.ts",
     "clear:solutions": "tsx src/scripts/clearSolutionsCatalog.ts",
     "dedupe:solutions": "tsx src/scripts/deduplicateSolutions.ts",
+    "dedupe:problems": "tsx src/scripts/deduplicateProblems.ts",
     "recompute:solution-codes": "tsx src/scripts/recomputeSolutionCodes.ts",
     "recompute:problem-codes": "tsx src/scripts/recomputeProblemCodes.ts",
     "prune:unlinked-problems": "tsx src/scripts/pruneUnlinkedProblems.ts",

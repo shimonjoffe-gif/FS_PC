@@ -315,10 +315,113 @@ export function updateProblem(id: number, input: Partial<ProblemInput>): Problem
 
 function deleteProblemRow(id: number): void {
   db.prepare(`DELETE FROM hypothesis_problems WHERE problem_id=?`).run(id);
+  db.prepare(`DELETE FROM problem_hypothesis_codes WHERE problem_id=?`).run(id);
   db.prepare(`DELETE FROM problem_solution_map WHERE problem_id=?`).run(id);
   db.prepare(`DELETE FROM briefing_problem_sel WHERE problem_id=?`).run(id);
+  db.prepare(`UPDATE briefing_problem_sel SET linked_problem_id=NULL WHERE linked_problem_id=?`).run(id);
   db.prepare(`UPDATE problems SET parent_id=NULL WHERE parent_id=?`).run(id);
   db.prepare(`DELETE FROM problems WHERE id=?`).run(id);
+}
+
+function problemLinkScore(id: number): number {
+  const solutions = (db.prepare(`SELECT COUNT(*) c FROM problem_solution_map WHERE problem_id=?`)
+    .get(id) as { c: number }).c;
+  const briefing = (db.prepare(`
+    SELECT COUNT(*) c FROM briefing_problem_sel
+    WHERE problem_id=? OR linked_problem_id=?
+  `).get(id, id) as { c: number }).c;
+  return solutions + briefing;
+}
+
+/** Переносит связи дубля на каноническую проблематику и удаляет дубль. */
+function mergeProblemInto(canonicalId: number, duplicateId: number): void {
+  if (canonicalId === duplicateId) return;
+
+  const hypLinks = db.prepare(`
+    SELECT hypothesis_id, sort_order FROM hypothesis_problems WHERE problem_id=?
+  `).all(duplicateId) as { hypothesis_id: number; sort_order: number }[];
+  for (const { hypothesis_id, sort_order } of hypLinks) {
+    db.prepare(`
+      INSERT INTO hypothesis_problems(hypothesis_id, problem_id, sort_order)
+      VALUES (?,?,?)
+      ON CONFLICT(hypothesis_id, problem_id) DO NOTHING
+    `).run(hypothesis_id, canonicalId, sort_order);
+  }
+  db.prepare(`DELETE FROM hypothesis_problems WHERE problem_id=?`).run(duplicateId);
+
+  const codes = db.prepare(`
+    SELECT hypothesis_id, code FROM problem_hypothesis_codes WHERE problem_id=?
+  `).all(duplicateId) as { hypothesis_id: number; code: string }[];
+  for (const { hypothesis_id, code } of codes) {
+    db.prepare(`
+      INSERT INTO problem_hypothesis_codes(problem_id, hypothesis_id, code)
+      VALUES (?,?,?)
+      ON CONFLICT(problem_id, hypothesis_id) DO NOTHING
+    `).run(canonicalId, hypothesis_id, code);
+  }
+  db.prepare(`DELETE FROM problem_hypothesis_codes WHERE problem_id=?`).run(duplicateId);
+
+  db.prepare(`
+    INSERT OR IGNORE INTO problem_solution_map(problem_id, solution_id)
+    SELECT ?, solution_id FROM problem_solution_map WHERE problem_id=?
+  `).run(canonicalId, duplicateId);
+  db.prepare(`DELETE FROM problem_solution_map WHERE problem_id=?`).run(duplicateId);
+
+  const leftoverProblemSels = db.prepare(`
+    SELECT id, briefing_id FROM briefing_problem_sel WHERE problem_id=?
+  `).all(duplicateId) as { id: number; briefing_id: number }[];
+  for (const { id, briefing_id } of leftoverProblemSels) {
+    const clash = db.prepare(`
+      SELECT id FROM briefing_problem_sel
+      WHERE briefing_id=? AND problem_id=? AND id!=?
+    `).get(briefing_id, canonicalId, id);
+    if (clash) {
+      db.prepare(`DELETE FROM briefing_problem_sel WHERE id=?`).run(id);
+    } else {
+      db.prepare(`UPDATE briefing_problem_sel SET problem_id=? WHERE id=?`).run(canonicalId, id);
+    }
+  }
+
+  db.prepare(`
+    UPDATE briefing_problem_sel SET linked_problem_id=? WHERE linked_problem_id=?
+  `).run(canonicalId, duplicateId);
+
+  db.prepare(`UPDATE problems SET parent_id=? WHERE parent_id=?`).run(canonicalId, duplicateId);
+  db.prepare(`DELETE FROM problems WHERE id=?`).run(duplicateId);
+}
+
+/**
+ * Объединяет проблематики с полностью совпадающим name.
+ * Канон: больше связей (решения + брифинги), при равенстве — меньший id.
+ */
+export function deduplicateProblems(): { groups: number; deleted: number } {
+  const all = db.prepare(`SELECT id, name FROM problems`).all() as { id: number; name: string }[];
+  const byName = new Map<string, number[]>();
+  for (const row of all) {
+    const list = byName.get(row.name) ?? [];
+    list.push(row.id);
+    byName.set(row.name, list);
+  }
+
+  let groups = 0;
+  let deleted = 0;
+  const tx = db.transaction(() => {
+    for (const ids of byName.values()) {
+      if (ids.length < 2) continue;
+      groups++;
+      const scored = ids
+        .map(id => ({ id, links: problemLinkScore(id) }))
+        .sort((a, b) => b.links - a.links || a.id - b.id);
+      const canonicalId = scored[0].id;
+      for (const dup of scored.slice(1)) {
+        mergeProblemInto(canonicalId, dup.id);
+        deleted++;
+      }
+    }
+  });
+  tx();
+  recomputeAllProblemCodes();
+  return { groups, deleted };
 }
 
 function deleteProblemSubtree(id: number): void {

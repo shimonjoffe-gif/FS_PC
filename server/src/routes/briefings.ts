@@ -871,9 +871,9 @@ briefingsRouter.put('/:id/params', (req, res) => {
 
 briefingsRouter.post('/:id/derive-fs', (req, res) => {
   const id = Number(req.params.id);
-  const items = deriveFsFromSelections(id);
+  const result = deriveFsFromSelections(id);
   db.prepare(`UPDATE briefings SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(id);
-  res.json({ items });
+  res.json(result);
 });
 
 briefingsRouter.get('/:id/assessment', (req, res) => {

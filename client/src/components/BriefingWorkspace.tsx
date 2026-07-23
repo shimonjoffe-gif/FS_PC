@@ -12,6 +12,7 @@ import {
   anyQueueEnabled, itemQueues,
 } from '../types';
 import { groupFsItemsSorted } from '../utils/fsDisplayGroups';
+import { createAssessmentScenario } from '../scenarioCalc';
 import {
   getBriefing, updateBriefing, saveBriefingProblems, saveBriefingSolutions,
   saveBriefingWidgets, saveBriefingCustomerWidgets, saveBriefingFs, saveBriefingParams, deriveBriefingFs,
@@ -3598,9 +3599,53 @@ export default function BriefingWorkspace({ briefingId, reloadToken = 0, current
         widget_id: w.widget_id,
       })));
     }
-    await deriveBriefingFs(briefingId);
+    const deriveResult = await deriveBriefingFs(briefingId);
     await load();
     if (goToFsTab) setTab('fs');
+
+    const optionalOnly = deriveResult.optional_only_fs_ids ?? [];
+    if (optionalOnly.length === 0) return;
+
+    const scenarioName = 'Минимальный функциональный объём';
+    const wantScenario = window.confirm(
+      `Найдено ${optionalOnly.length} опциональных пунктов ФС (только «Опц.» в решениях).\n\n`
+      + `Создать сценарий «${scenarioName}», исключив эти пункты?\n`
+      + `(Пункты с «Да» хотя бы в одном решении остаются.)`,
+    );
+    if (!wantScenario) return;
+
+    const fresh = await getBriefing(briefingId);
+    const scenarios = [...(fresh.assessment?.assessment_scenarios ?? [])];
+    const existing = scenarios.filter(s => s.name === scenarioName || s.name.startsWith(`${scenarioName} (`));
+
+    let nextScenarios = scenarios;
+    if (existing.length > 0) {
+      const update = window.confirm(
+        `Сценарий «${scenarioName}» уже есть.\n\nОбновить список исключений? (Отмена — следующий шаг)`,
+      );
+      if (update) {
+        const target = existing.find(s => s.name === scenarioName) ?? existing[0];
+        nextScenarios = scenarios.map(s => (
+          s.id === target.id
+            ? { ...s, fs_excluded: optionalOnly, updated_at: new Date().toISOString() }
+            : s
+        ));
+      } else {
+        const createNew = window.confirm('Создать новый сценарий с этим именем (копия)?');
+        if (!createNew) return;
+        const n = existing.length + 1;
+        const scenario = createAssessmentScenario(`${scenarioName} (${n})`);
+        scenario.fs_excluded = optionalOnly;
+        nextScenarios = [...scenarios, scenario];
+      }
+    } else {
+      const scenario = createAssessmentScenario(scenarioName);
+      scenario.fs_excluded = optionalOnly;
+      nextScenarios = [...scenarios, scenario];
+    }
+
+    updateAssessment({ assessment_scenarios: nextScenarios });
+    await patchBriefingAssessment(briefingId, { assessment_scenarios: nextScenarios });
   }
 
   async function updateFsItem(item: BriefingFsSel, patch: Partial<BriefingFsSel>) {
