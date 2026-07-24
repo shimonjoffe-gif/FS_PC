@@ -95,7 +95,11 @@ function readImageBase64(imagePath: string | null | undefined): string | null {
   return `data:image/${mime};base64,${buf.toString('base64')}`;
 }
 
-function buildExportPayload(briefingId: number, blocks: ExportBlocks) {
+function buildExportPayload(
+  briefingId: number,
+  blocks: ExportBlocks,
+  kpVariants?: unknown,
+) {
   const full = getBriefingFull(briefingId) as Record<string, unknown> | null;
   if (!full) return null;
 
@@ -672,6 +676,10 @@ function buildExportPayload(briefingId: number, blocks: ExportBlocks) {
     payload.widget_context_by_id = widgetContextById;
   }
 
+  if (blocks.fs && kpVariants && typeof kpVariants === 'object') {
+    payload.kp_variants = kpVariants;
+  }
+
   return payload;
 }
 
@@ -912,13 +920,25 @@ textarea{min-height:60px;resize:vertical}
 .btn-link{background:none;border:none;color:#2563eb;font-size:10px;cursor:pointer;padding:0}
 .btn-link:hover{text-decoration:underline}
 .org-readonly{display:block;text-align:right;padding:2px 4px;background:#f1f5f9;border-radius:4px;min-height:1.4rem}
+.kp-table{width:100%;border-collapse:collapse;font-size:12px}
+.kp-table th,.kp-table td{border:1px solid #e2e8f0;padding:6px 8px;vertical-align:top}
+.kp-table th{background:#f8fafc;text-align:left;font-weight:600;color:#475569}
+.kp-table td.num,.kp-table th.num{text-align:right;white-space:nowrap}
+.kp-table tr.kp-group td{background:#fffbeb;font-weight:600;color:#78350f}
+.kp-table tr.kp-total td{background:#eff6ff;font-weight:600}
+.kp-note{font-size:11px;color:#64748b;margin:0 0 8px}
+.kp-table .empty{text-align:center;color:#94a3b8}
 `;
 
 const INLINE_JS = BRIEFING_HTML_EXPORT_CLIENT_JS;
 
-export function buildBriefingHtmlExport(briefingId: number, blocks: ExportBlocks): string | null {
+export function buildBriefingHtmlExport(
+  briefingId: number,
+  blocks: ExportBlocks,
+  kpVariants?: unknown,
+): string | null {
   const normalizedBlocks = normalizeExportBlocksForFill(blocks);
-  const payload = buildExportPayload(briefingId, normalizedBlocks);
+  const payload = buildExportPayload(briefingId, normalizedBlocks, kpVariants);
   if (!payload) return null;
 
   const json = JSON.stringify(payload);

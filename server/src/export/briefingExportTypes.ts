@@ -62,7 +62,7 @@ export interface ImportOptions {
 export const EXPORT_BLOCK_LABELS: Record<ExportBlockKey, string> = {
   customer: 'Заказчик (данные, отборы, проблематики)',
   fs: 'ФС + очереди',
-  assessment_criteria: 'Параметры оценки (критерии)',
+  assessment_criteria: 'Требования к работам и результатам',
   assessment_contract: 'Параметры договора',
   assessment_org_volume: 'Орг. объём',
   assessment_headcount: 'Численность',

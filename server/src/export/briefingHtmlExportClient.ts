@@ -597,7 +597,7 @@ ${getFsClientJs()}
       rows+='<tr><td colspan="4" class="child-row"><button type="button" data-extra-custom-add class="link-btn">+ Добавить свой документ</button></td></tr>';
     }
     return sectionWrap('assessment_criteria', 'Требования к работам и результатам',
-      '<table class="tbl criteria-tbl"><thead><tr><th>Критерий</th><th style="text-align:center;width:96px">РП</th><th style="text-align:center;width:96px">ОП</th><th style="text-align:center;width:112px">Технология</th></tr></thead><tbody>'+rows+'</tbody></table>'
+      '<table class="tbl criteria-tbl"><thead><tr><th>Критерий</th><th style="text-align:center;width:96px">РП</th><th style="text-align:center;width:96px">ОП</th><th style="text-align:center;width:112px">Влияние на тип</th></tr></thead><tbody>'+rows+'</tbody></table>'
     );
   }
 
@@ -1722,6 +1722,71 @@ ${getFsClientJs()}
       '<div class="solution-scroll"><table class="solution-tbl"><thead>'+head1+head2+'</thead><tbody>'+rows+'</tbody></table></div>');
   }
 
+  function formatKpMoney(n){
+    if(n==null||!isFinite(n)||n===0) return '—';
+    return Math.round(n).toLocaleString('ru-RU')+' ₽';
+  }
+  function kpQueueLabels(queues, colId, queueKeys, queueLabels){
+    var qmap=(queues&&queues[colId])||{};
+    var parts=[];
+    (queueKeys||[]).forEach(function(q){
+      if(qmap[q]) parts.push((queueLabels&&queueLabels[q])||q);
+    });
+    return parts.length?parts.join(', '):'—';
+  }
+  function renderKpVariants(){
+    var kp=data.kp_variants;
+    if(!kp||!kp.columns||!kp.columns.length) return '';
+    var cols=kp.columns;
+    var qKeys=kp.queue_keys||['1','2','3','4'];
+    var qLabels=kp.queue_labels||{};
+    var fsHead='<tr><th>№</th><th>Пункт ФС</th><th>SP</th>';
+    cols.forEach(function(c){ fsHead+='<th>'+esc(c.name)+'</th>'; });
+    fsHead+='</tr>';
+    var fsBody='';
+    var lastGroup=null;
+    (kp.fs_items||[]).forEach(function(it){
+      var g=(it.group_prefix?it.group_prefix+'. ':'')+(it.group_name||'');
+      if(g!==lastGroup){
+        lastGroup=g;
+        fsBody+='<tr class="kp-group"><td colspan="'+(3+cols.length)+'">'+esc(g||'Прочее')+'</td></tr>';
+      }
+      fsBody+='<tr><td>'+esc(it.prefix||'')+'</td><td>'+esc(it.name||'')+'</td><td class="num">'+esc(it.story_points||0)+'</td>';
+      cols.forEach(function(c){
+        fsBody+='<td class="num">'+esc(kpQueueLabels(it.queues,c.id,qKeys,qLabels))+'</td>';
+      });
+      fsBody+='</tr>';
+    });
+    var fsTable='<div class="kp-note">Только просмотр. В ячейках варианта — очереди с «Да».</div>'+
+      '<div class="tbl-wrap"><table class="kp-table"><thead>'+fsHead+'</thead><tbody>'+
+      (fsBody||'<tr><td colspan="'+(3+cols.length)+'" class="empty">Нет пунктов с «Да»</td></tr>')+
+      '</tbody></table></div>';
+
+    var totHead='<tr><th>Фаза</th>';
+    cols.forEach(function(c){ totHead+='<th class="num">'+esc(c.name)+'</th>'; });
+    totHead+='</tr>';
+    var totBody='';
+    (kp.phase_rows||[]).forEach(function(row){
+      totBody+='<tr><td>'+esc(row.label)+'</td>';
+      cols.forEach(function(c){
+        totBody+='<td class="num">'+formatKpMoney((row.totals||{})[c.id])+'</td>';
+      });
+      totBody+='</tr>';
+    });
+    totBody+='<tr class="kp-total"><td>Итого ДО</td>';
+    cols.forEach(function(c){
+      totBody+='<td class="num">'+formatKpMoney((kp.grand_totals||{})[c.id])+'</td>';
+    });
+    totBody+='</tr>';
+    var totTable='<div class="kp-note">Только просмотр. Суммы ДО по фазам для базы и выбранных вариантов.</div>'+
+      '<div class="tbl-wrap"><table class="kp-table"><thead>'+totHead+'</thead><tbody>'+
+      totBody+
+      '</tbody></table></div>';
+
+    return sectionWrap('kp_fs','КП: ФС по вариантам',fsTable)+
+      sectionWrap('kp_totals','КП: итоги ДО по вариантам',totTable);
+  }
+
   function renderOrgVolumeSection(){
     var ctx=orgVolumeContext();
     if(!ctx) return '';
@@ -1762,10 +1827,13 @@ ${getFsClientJs()}
     saveSectionsFromDom();
     var app=document.getElementById('app');
     var exported=new Date(data.exported_at).toLocaleString('ru-RU');
+    var instr=data.kp_variants
+      ? 'Заполните разделы по порядку. Блоки «КП: ФС по вариантам» и «КП: итоги ДО» — только для просмотра. Нажмите «Скачать заполненный файл» внизу и передайте исполнителю.'
+      : 'Заполните разделы по порядку: заказчик, виджеты, решения, ФС, орг. объём, параметры оценки. Нажмите «Скачать заполненный файл» внизу и передайте исполнителю.';
     app.innerHTML='<div class="hdr"><h1>'+esc(data.briefing_name)+'</h1>'+
       '<div class="meta">Предоценка для заполнения · экспорт '+exported+'</div>'+
-      '<div class="instr">Заполните разделы по порядку: заказчик, виджеты, решения, ФС, орг. объём, параметры оценки. Нажмите «Скачать заполненный файл» внизу и передайте исполнителю.</div></div>'+
-      renderCustomer()+renderWidgets()+renderSolutions()+renderFs()+renderOrgVolumeSection()+renderCriteria()+renderContract()+renderHeadcountLegacy()+renderOrgVolumeLegacy()+renderProblemsLegacy();
+      '<div class="instr">'+instr+'</div></div>'+
+      renderCustomer()+renderWidgets()+renderSolutions()+renderFs()+renderKpVariants()+renderOrgVolumeSection()+renderCriteria()+renderContract()+renderHeadcountLegacy()+renderOrgVolumeLegacy()+renderProblemsLegacy();
     bindEvents();
   }
 

@@ -326,14 +326,18 @@ interface SnapshotRow {
   results_json: string;
   extended_dump_json: string | null;
   base_revision: string | null;
+  kp_html: string | null;
 }
 
 function loadAssessmentSnapshots(briefingId: number) {
   const rows = db.prepare(`
-    SELECT * FROM briefing_assessment_snapshots
+    SELECT id, briefing_id, scenario_id, name, frozen_at, sent_to_client, extended,
+           scenario_overrides_json, results_json, extended_dump_json, base_revision,
+           CASE WHEN kp_html IS NOT NULL AND length(kp_html) > 0 THEN 1 ELSE 0 END AS has_kp_html
+    FROM briefing_assessment_snapshots
     WHERE briefing_id=?
     ORDER BY frozen_at DESC
-  `).all(briefingId) as SnapshotRow[];
+  `).all(briefingId) as (Omit<SnapshotRow, 'kp_html'> & { has_kp_html: number })[];
 
   return rows.map(row => ({
     id: row.id,
@@ -349,6 +353,7 @@ function loadAssessmentSnapshots(briefingId: number) {
       ? parseJson(row.extended_dump_json, undefined)
       : undefined,
     base_revision: row.base_revision ?? undefined,
+    has_kp_html: row.has_kp_html === 1,
   }));
 }
 
@@ -371,8 +376,8 @@ export function getBriefingFull(id: number) {
   `).all(id);
 
   const solutions = db.prepare(`
-    SELECT bss.solution_id AS id, sol.name, sol.description, bss.queue, bss.queue_comment_json,
-           bss.source_problem_sel_id
+    SELECT bss.solution_id AS id, sol.name, sol.description, sol.parent_id, sol.catalog_code, sol.lcm_code,
+           sol.sort_order, bss.queue, bss.queue_comment_json, bss.source_problem_sel_id
     FROM briefing_solution_sel bss
     JOIN solutions sol ON sol.id = bss.solution_id
     WHERE bss.briefing_id=?
@@ -1217,6 +1222,7 @@ briefingsRouter.post('/:id/assessment-snapshots', (req, res) => {
     results?: unknown;
     extended_dump?: unknown;
     base_revision?: string;
+    kp_html?: string;
   };
 
   if (!body.name?.trim()) {
@@ -1228,13 +1234,14 @@ briefingsRouter.post('/:id/assessment-snapshots', (req, res) => {
 
   const snapshotId = `snap_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
   const frozenAt = new Date().toISOString();
+  const kpHtml = typeof body.kp_html === 'string' && body.kp_html.trim() ? body.kp_html : null;
 
   db.prepare(`
     INSERT INTO briefing_assessment_snapshots (
       id, briefing_id, scenario_id, name, frozen_at,
       sent_to_client, extended, scenario_overrides_json,
-      results_json, extended_dump_json, base_revision
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      results_json, extended_dump_json, base_revision, kp_html
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     snapshotId,
     id,
@@ -1247,9 +1254,30 @@ briefingsRouter.post('/:id/assessment-snapshots', (req, res) => {
     JSON.stringify(body.results),
     body.extended && body.extended_dump != null ? JSON.stringify(body.extended_dump) : null,
     body.base_revision ?? briefing.updated_at,
+    kpHtml,
   );
 
   res.status(201).json(loadAssessmentSnapshots(id).find(s => s.id === snapshotId));
+});
+
+briefingsRouter.get('/:id/assessment-snapshots/:snapshotId/kp-html', (req, res) => {
+  const id = Number(req.params.id);
+  const snapshotId = req.params.snapshotId;
+  const row = db.prepare(`
+    SELECT name, kp_html FROM briefing_assessment_snapshots
+    WHERE briefing_id=? AND id=?
+  `).get(id, snapshotId) as { name: string; kp_html: string | null } | undefined;
+  if (!row) return res.status(404).json({ error: 'not found' });
+  if (!row.kp_html) return res.status(404).json({ error: 'kp html not found' });
+  const rawName = (row.name || 'kp').slice(0, 80);
+  const asciiName = rawName.replace(/[^\w\- ]+/g, '_').replace(/\s+/g, '_').replace(/_+/g, '_') || 'kp';
+  const utf8Name = encodeURIComponent(`${rawName}.html`);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader(
+    'Content-Disposition',
+    `inline; filename="${asciiName}.html"; filename*=UTF-8''${utf8Name}`,
+  );
+  res.send(row.kp_html);
 });
 
 briefingsRouter.delete('/:id/assessment-snapshots/:snapshotId', (req, res) => {
@@ -1348,8 +1376,9 @@ briefingsRouter.post('/:id/export', (req, res) => {
   const briefing = db.prepare(`SELECT id, name FROM briefings WHERE id=?`).get(id);
   if (!briefing) return res.status(404).json({ error: 'not found' });
 
-  const blocks = mergeExportBlocks((req.body as { blocks?: Partial<ExportBlocks> }).blocks);
-  const html = buildBriefingHtmlExport(id, blocks);
+  const body = req.body as { blocks?: Partial<ExportBlocks>; kp_variants?: unknown };
+  const blocks = mergeExportBlocks(body.blocks);
+  const html = buildBriefingHtmlExport(id, blocks, body.kp_variants);
   if (!html) return res.status(404).json({ error: 'not found' });
 
   const filename = `${sanitizeExportFilename((briefing as { name: string }).name)}-customer.html`;

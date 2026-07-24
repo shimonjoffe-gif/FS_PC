@@ -197,6 +197,12 @@ export const createAssessmentSnapshot = (id: number, data: CreateSnapshotPayload
   });
 export const deleteAssessmentSnapshot = (id: number, snapshotId: string) =>
   req<{ ok: boolean }>(`/briefings/${id}/assessment-snapshots/${snapshotId}`, { method: 'DELETE' });
+
+export const getAssessmentSnapshotKpHtml = async (id: number, snapshotId: string): Promise<string> => {
+  const r = await fetch(`${BASE}/briefings/${id}/assessment-snapshots/${snapshotId}/kp-html`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.text();
+};
 export const deriveBriefingFs = (id: number) =>
   req<{ items: unknown[]; optional_only_fs_ids: number[] }>(`/briefings/${id}/derive-fs`, { method: 'POST' });
 export const getBriefingAvailableFsCatalogItems = (id: number) =>
@@ -210,11 +216,15 @@ export const calculateBriefing = (id: number) => req<BriefingCalcResult>(`/brief
 export const generateProjectFromBriefing = (id: number, data: { name?: string; created_by?: number }) =>
   req<{ project_id: number }>(`/briefings/${id}/generate-project`, { method: 'POST', body: JSON.stringify(data) });
 
-export const exportBriefingHtml = async (id: number, blocks: ExportBlocks): Promise<void> => {
+export const exportBriefingHtml = async (
+  id: number,
+  blocks: ExportBlocks,
+  options?: { kp_variants?: unknown },
+): Promise<void> => {
   const r = await fetch(`${BASE}/briefings/${id}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ blocks }),
+    body: JSON.stringify({ blocks, kp_variants: options?.kp_variants }),
   });
   if (!r.ok) throw new Error(await r.text());
   const blob = await r.blob();

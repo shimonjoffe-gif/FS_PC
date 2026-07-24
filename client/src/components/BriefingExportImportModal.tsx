@@ -193,6 +193,7 @@ export default function BriefingExportImportModal({
             <>
               <p className="text-xs text-slate-500">
                 Будет сформирован HTML-файл для заполнения заказчиком в браузере. Внутренние данные (риски, ставки, РП) не включаются.
+                Коммерческое предложение (КП) фиксируется отдельно: «Варианты оценки» → «Зафиксировать КП».
               </p>
               <div className="space-y-1">
                 {BLOCK_KEYS.map(key => (

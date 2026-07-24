@@ -869,6 +869,8 @@ export interface AssessmentScenarioSnapshot {
     team_fte_sum: number;
   };
   base_revision?: string;
+  /** HTML КП сохранён вместе со снимком (тело не отдаётся в списке). */
+  has_kp_html?: boolean;
 }
 
 export interface BriefingAssessment {
@@ -1013,7 +1015,7 @@ export const DEFAULT_EXPORT_BLOCKS: ExportBlocks = {
 export const EXPORT_BLOCK_LABELS: Record<ExportBlockKey, string> = {
   customer: 'Заказчик (данные, отборы, проблематики)',
   fs: 'ФС + очереди',
-  assessment_criteria: 'Параметры оценки (критерии)',
+  assessment_criteria: 'Требования к работам и результатам',
   assessment_contract: 'Параметры договора',
   assessment_org_volume: 'Орг. объём',
   assessment_headcount: 'Численность',

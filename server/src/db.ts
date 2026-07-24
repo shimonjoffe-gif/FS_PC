@@ -842,6 +842,16 @@ export function initDB() {
     )
   `);
 
+  {
+    const snapCols = new Set(
+      (db.prepare(`PRAGMA table_info(briefing_assessment_snapshots)`).all() as { name: string }[])
+        .map(c => c.name),
+    );
+    if (!snapCols.has('kp_html')) {
+      db.exec(`ALTER TABLE briefing_assessment_snapshots ADD COLUMN kp_html TEXT`);
+    }
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS briefing_versions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

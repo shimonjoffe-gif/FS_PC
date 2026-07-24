@@ -5,7 +5,10 @@ import type {
 } from '../types';
 import { FS_QUEUE_KEYS, FS_QUEUE_LABELS } from '../types';
 import type { AssessmentNsiCache } from '../assessmentNsi';
-import { createAssessmentSnapshot, deleteAssessmentSnapshot } from '../api';
+import {
+  createAssessmentSnapshot, deleteAssessmentSnapshot, getAssessmentSnapshotKpHtml,
+  getBriefing, getProblemSolutionLinks, getSolutionFsLinksAll, getSolutions,
+} from '../api';
 import {
   QUEUE_TECHNOLOGY_OPTIONS, getEvaluatedQueueKeys,
 } from '../assessmentCalc';
@@ -29,6 +32,11 @@ import {
   setScenarioQueueTechnology,
   toggleScenarioFsExcluded,
 } from '../scenarioCalc';
+import {
+  buildKpCommercialProposalHtml,
+  buildKpProblemBlocks,
+  buildKpSolutionFsList,
+} from '../kpHtmlExport';
 import { formatMoneyRub } from '../utils/formatNumber';
 import ScenarioDetailComparisonTable from './ScenarioDetailComparisonTable';
 import ScenarioFsQueueTable from './ScenarioFsQueueTable';
@@ -82,8 +90,12 @@ export default function AssessmentScenariosTab({
   const [freezeName, setFreezeName] = useState('');
   const [freezeSent, setFreezeSent] = useState(false);
   const [freezeExtended, setFreezeExtended] = useState(false);
+  const [freezeScenarioIds, setFreezeScenarioIds] = useState<string[]>([]);
   const [freezing, setFreezing] = useState(false);
   const [viewingSnapshotId, setViewingSnapshotId] = useState<string | null>(null);
+  const [kpPreview, setKpPreview] = useState<{ name: string; html: string } | null>(null);
+  const [kpPreviewLoading, setKpPreviewLoading] = useState(false);
+  const [freezeError, setFreezeError] = useState<string | null>(null);
 
   const selected = scenarios.find(s => s.id === selectedId) ?? null;
   const viewingSnapshot = snapshots.find(s => s.id === viewingSnapshotId) ?? null;
@@ -211,13 +223,77 @@ export default function AssessmentScenariosTab({
     setFreezeName(`КП — ${label} — ${date}`);
     setFreezeSent(false);
     setFreezeExtended(false);
+    setFreezeScenarioIds(scenarios.map(s => s.id));
+    setFreezeError(null);
     setFreezeOpen(true);
+  }
+
+  function toggleFreezeScenario(id: string) {
+    setFreezeScenarioIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id],
+    );
   }
 
   async function confirmFreeze() {
     if (!freezeName.trim() || freezing) return;
     setFreezing(true);
+    setFreezeError(null);
     try {
+      const [briefing, problemLinks, fsLinksAll, catalogSolutions] = await Promise.all([
+        getBriefing(briefingId),
+        getProblemSolutionLinks(),
+        getSolutionFsLinksAll(),
+        getSolutions(),
+      ]);
+
+      const solutionsByProblemId = new Map<number, { id: number; name: string; catalog_code?: string | null }[]>();
+      const selectedSolIds = new Set((briefing.solutions ?? []).map(s => s.id));
+      for (const link of problemLinks) {
+        if (link.problem_id == null || link.solution_id == null) continue;
+        if (!selectedSolIds.has(link.solution_id)) continue;
+        const sol = (briefing.solutions ?? []).find(s => s.id === link.solution_id);
+        const usage = {
+          id: link.solution_id,
+          name: sol?.name ?? link.solution_name ?? '',
+          catalog_code: sol?.catalog_code ?? null,
+        };
+        const list = solutionsByProblemId.get(link.problem_id) ?? [];
+        if (!list.some(x => x.id === usage.id)) list.push(usage);
+        solutionsByProblemId.set(link.problem_id, list);
+      }
+
+      const frozenAt = new Date().toISOString();
+      const problems = buildKpProblemBlocks(
+        briefing.problems ?? [],
+        briefing.solutions ?? [],
+        solutionsByProblemId,
+        catalogSolutions,
+      );
+      const groupParentIds = new Set(
+        problems.flatMap(b => b.solutionRows.filter(r => r.variant === 'parent').map(r => r.id)),
+      );
+      const solutionFs = buildKpSolutionFsList(
+        briefing.solutions ?? [],
+        fsLinksAll,
+        fsItems,
+        groupParentIds,
+      );
+      const kp_html = buildKpCommercialProposalHtml({
+        briefingName: briefing.name,
+        snapshotName: freezeName.trim(),
+        frozenAt,
+        problems,
+        solutionFs,
+        assessment,
+        fsItems,
+        scenarios,
+        selectedScenarioIds: freezeScenarioIds,
+        accuracyPct,
+        defaultTeam,
+        queueLabels: queueLabels as Record<string, string>,
+        nsi,
+      });
+
       const payload = buildScenarioSnapshotPayload(
         assessment,
         fsItems,
@@ -232,13 +308,43 @@ export default function AssessmentScenariosTab({
         },
         nsi,
       );
+      payload.kp_html = kp_html;
+
       const created = await createAssessmentSnapshot(briefingId, payload);
       onSnapshotsChange([created, ...snapshots]);
       setViewingSnapshotId(created.id);
       setFreezeOpen(false);
+      if (created.has_kp_html) {
+        setKpPreview({ name: created.name, html: kp_html });
+      }
+    } catch (e) {
+      setFreezeError(e instanceof Error ? e.message : String(e));
     } finally {
       setFreezing(false);
     }
+  }
+
+  async function openKpPreview(snap: AssessmentScenarioSnapshot) {
+    if (!snap.has_kp_html) return;
+    setKpPreviewLoading(true);
+    try {
+      const html = await getAssessmentSnapshotKpHtml(briefingId, snap.id);
+      setKpPreview({ name: snap.name, html });
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setKpPreviewLoading(false);
+    }
+  }
+
+  function downloadKpHtml(name: string, html: string) {
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${name.replace(/[^\w\u0400-\u04FF\- ]+/g, '_').slice(0, 80) || 'kp'}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   async function removeSnapshot(id: string) {
@@ -535,7 +641,33 @@ export default function AssessmentScenariosTab({
                         {snap.extended && (
                           <span className="ml-1 text-slate-500">· расшир.</span>
                         )}
+                        {snap.has_kp_html && (
+                          <span className="ml-1 text-blue-700">· HTML КП</span>
+                        )}
                       </button>
+                      {snap.has_kp_html && (
+                        <>
+                          <button
+                            type="button"
+                            className="text-blue-600 hover:underline px-1 shrink-0"
+                            title="Просмотр HTML КП"
+                            disabled={kpPreviewLoading}
+                            onClick={() => void openKpPreview(snap)}
+                          >
+                            Открыть
+                          </button>
+                          <button
+                            type="button"
+                            className="text-slate-600 hover:underline px-1 shrink-0"
+                            title="Скачать HTML КП"
+                            onClick={() => void getAssessmentSnapshotKpHtml(briefingId, snap.id)
+                              .then(html => downloadKpHtml(snap.name, html))
+                              .catch(e => window.alert(e instanceof Error ? e.message : String(e)))}
+                          >
+                            ↓
+                          </button>
+                        </>
+                      )}
                       <button
                         type="button"
                         className="text-slate-400 hover:text-red-600 px-1"
@@ -578,7 +710,7 @@ export default function AssessmentScenariosTab({
                 <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-4 space-y-3 my-4">
                   <h3 className="text-sm font-semibold text-slate-800">Зафиксировать КП</h3>
                   <p className="text-xs text-slate-500">
-                    Сохраняются итоги и настройки сценария. База и live-сценарий продолжат пересчитываться.
+                    Сохраняется снимок сравнения и HTML КП (заказчик, фазы, ФС, допущения) по базе и выбранным сценариям.
                   </p>
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">Название</label>
@@ -588,6 +720,23 @@ export default function AssessmentScenariosTab({
                       value={freezeName}
                       onChange={e => setFreezeName(e.target.value)}
                     />
+                  </div>
+                  <div className="border border-slate-100 rounded-lg p-3 space-y-1.5 bg-slate-50/80">
+                    <div className="text-xs font-medium text-slate-700">Варианты в HTML КП (База всегда)</div>
+                    {scenarios.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">Сценариев нет — в HTML только «База».</p>
+                    ) : (
+                      scenarios.map(s => (
+                        <label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={freezeScenarioIds.includes(s.id)}
+                            onChange={() => toggleFreezeScenario(s.id)}
+                          />
+                          {s.name}
+                        </label>
+                      ))
+                    )}
                   </div>
                   <label className="flex items-center gap-2 text-sm">
                     <input
@@ -605,6 +754,7 @@ export default function AssessmentScenariosTab({
                     />
                     Расширенная фиксация (полный дамп assessment + ФС)
                   </label>
+                  {freezeError && <div className="text-xs text-red-600">{freezeError}</div>}
                   <div className="flex justify-end gap-2 pt-2">
                     <button
                       type="button"
@@ -624,6 +774,38 @@ export default function AssessmentScenariosTab({
                     </button>
                   </div>
                 </div>
+                </div>
+              </div>
+            )}
+
+            {kpPreview && (
+              <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] flex flex-col overflow-hidden">
+                  <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-slate-100 shrink-0">
+                    <div className="text-sm font-semibold text-slate-800 truncate">{kpPreview.name}</div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        className="text-xs px-3 py-1.5 rounded border border-slate-200 hover:bg-slate-50"
+                        onClick={() => downloadKpHtml(kpPreview.name, kpPreview.html)}
+                      >
+                        Скачать
+                      </button>
+                      <button
+                        type="button"
+                        className="text-slate-400 hover:text-slate-700 text-lg leading-none px-1"
+                        onClick={() => setKpPreview(null)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  <iframe
+                    title={kpPreview.name}
+                    className="flex-1 w-full border-0 bg-white"
+                    sandbox="allow-scripts allow-same-origin"
+                    srcDoc={kpPreview.html}
+                  />
                 </div>
               </div>
             )}

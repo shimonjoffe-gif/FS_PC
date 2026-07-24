@@ -694,6 +694,8 @@ export interface CreateSnapshotPayload {
     team_fte_sum: number;
   };
   base_revision?: string;
+  /** Self-contained HTML коммерческого предложения */
+  kp_html?: string;
 }
 
 export function buildScenarioSnapshotPayload(
